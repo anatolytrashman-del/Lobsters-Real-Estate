@@ -1,37 +1,41 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 
+/* PAGESPEED_PLAN.md, Э1 — TTF (260 КБ/файл) заменены на WOFF2 с сабсетом
+   (~24 КБ/файл, кириллица+латиница+пунктуация+валюты, tnum/pnum/lnum/onum/
+   liga сохранены — используются на страницах с tabular-nums). Thin/Light
+   убраны совсем: font-thin/font-extralight/font-light нигде не встречаются
+   в TSX-файлах проекта (проверено grep) — эти два веса грузились бы зря,
+   ничего их не использует. Сабсет собран pyftsubset (fonttools), пересобрать
+   при добавлении нового языка/символа в интерфейс: unicodes в команде —
+   см. журнал CLAUDE.md/PAGESPEED_PLAN.md.
+   ВАЖНО для будущих правок: в CSS-комментариях никогда не писать путь с
+   глобом звёздочка-звёздочка-слэш-звёздочка и точечным расширением, и не
+   писать буквально открывающий и закрывающий CSS-комментарий как пример
+   синтаксиса — обе формы содержат звёздочку вплотную перед слэшем, а это и
+   есть последовательность, которой лексер CSS закрывает комментарий; из-за
+   такой закрывающей последовательности внутри текста сам комментарий
+   обрывается раньше, чем предполагалось, и минификатор (lightningcss)
+   молча теряет следующее за ним правило — на этом самом месте (дважды
+   подряд, второй раз — в этой же попытке описать первый случай) однажды
+   пропадало правило @font-face для Regular, проверено воспроизведением. */
 @font-face {
   font-family: 'Montserrat';
-  src: url('/fonts/Montserrat-Thin.ttf') format('truetype');
-  font-weight: 100 199;
+  src: url('/fonts/Montserrat-Regular.woff2') format('woff2');
+  font-weight: 100 449;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: 'Montserrat';
-  src: url('/fonts/Montserrat-Light.ttf') format('truetype');
-  font-weight: 200 349;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Montserrat';
-  src: url('/fonts/Montserrat-Regular.ttf') format('truetype');
-  font-weight: 350 449;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Montserrat';
-  src: url('/fonts/Montserrat-Medium.ttf') format('truetype');
+  src: url('/fonts/Montserrat-Medium.woff2') format('woff2');
   font-weight: 450 549;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: 'Montserrat';
-  src: url('/fonts/Montserrat-SemiBold.ttf') format('truetype');
+  src: url('/fonts/Montserrat-SemiBold.woff2') format('woff2');
   font-weight: 550 899;
   font-style: normal;
   font-display: swap;
@@ -41,7 +45,7 @@
      (font-bold/font-extrabold) по-прежнему рендерится SemiBold,
      как и раньше. Используется точечно для "RED" в логотипе. */
   font-family: 'Montserrat';
-  src: url('/fonts/Montserrat-ExtraBold.ttf') format('truetype');
+  src: url('/fonts/Montserrat-ExtraBold.woff2') format('woff2');
   font-weight: 900 900;
   font-style: normal;
   font-display: swap;

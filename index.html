@@ -12,6 +12,13 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- PAGESPEED_PLAN.md, Э1-3 — три веса, реально видимые в первом экране
+         на всех публичных страницах (заголовок/подзаголовок/логотип "RED"),
+         остальные (Medium — по большей части текст ниже сгиба) не преload'им,
+         чтобы не ловить предупреждение Lighthouse "preloaded but not used". -->
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/Montserrat-Regular.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/Montserrat-SemiBold.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/Montserrat-ExtraBold.woff2" crossorigin />
     <title>Офисы и помещения в Минск Мире — деловой центр Red One</title>
     <meta name="description" content="Офисы и помещения в Минск Мире: приватные кабинеты и фиксированные рабочие места от $12 000 в клубном деловом центре Red One" />
     <meta name="robots" content="index, follow" />
@@ -66,17 +73,31 @@
          scripts/prerender.mjs при снятии build-time снапшота (SEO_PLAN.md,
          Э2-1): без этой проверки каждый деплой/пересборка слал бы в
          Метрику фантомные визиты с build-сервера. Реальные посетители на
-         этот параметр никогда не попадают — открывают чистый /<slug>. -->
+         этот параметр никогда не попадают — открывают чистый /<slug>.
+
+         PAGESPEED_PLAN.md, Э3 — сам tag.js (87 КиБ, ~800 мс CPU в отчёте
+         PageSpeed) вставляется в DOM не сразу, а после полной загрузки
+         страницы + паузы: очередь m[i].a копит вызовы ym(...) ниже
+         независимо от того, успел ли уже прогрузиться сам скрипт — штатный
+         механизм Метрики, инициализация (url/referrer/accurateTrackBounce)
+         остаётся синхронной. Компромисс: визиты короче ~2 с (ушли раньше,
+         чем скрипт успел встать в DOM) не досчитываются — владелец
+         предупреждён, при текущем трафике это единицы в месяц. Вебвизор
+         (запись сессий) выключен — владелец подтвердил, что не пользуется. -->
     <script type="text/javascript">
       if (location.search.indexOf('prerender=1') === -1) {
         (function (m, e, t, r, i, k, a) {
           m[i] = m[i] || function () { (m[i].a = m[i].a || []).push(arguments) };
           m[i].l = 1 * new Date();
-          for (var j = 0; j < document.scripts.length; j++) { if (document.scripts[j].src === r) { return; } }
-          k = e.createElement(t), a = e.getElementsByTagName(t)[0], k.async = 1, k.src = r, a.parentNode.insertBefore(k, a)
+          function insertTag() {
+            for (var j = 0; j < document.scripts.length; j++) { if (document.scripts[j].src === r) { return; } }
+            k = e.createElement(t), a = e.getElementsByTagName(t)[0], k.async = 1, k.src = r, a.parentNode.insertBefore(k, a);
+          }
+          if (document.readyState === 'complete') { setTimeout(insertTag, 2000); }
+          else { window.addEventListener('load', function () { setTimeout(insertTag, 2000); }); }
         })(window, document, 'script', 'https://mc.yandex.ru/metrika/tag.js?id=111858495', 'ym');
 
-        ym(111858495, 'init', { ssr: true, webvisor: true, clickmap: true, ecommerce: 'dataLayer', referrer: document.referrer, url: location.href, accurateTrackBounce: true, trackLinks: true });
+        ym(111858495, 'init', { ssr: true, webvisor: false, clickmap: true, ecommerce: 'dataLayer', referrer: document.referrer, url: location.href, accurateTrackBounce: true, trackLinks: true });
       }
     </script>
     <!-- /Yandex.Metrika counter -->

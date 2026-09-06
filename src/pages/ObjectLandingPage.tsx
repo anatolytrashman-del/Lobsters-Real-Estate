@@ -45,7 +45,9 @@ const STARTING_PRICE_FROM = 12000;
 // ссылкой на ibb.co, перезалито в собственное хранилище (тот же файл теперь
 // используется и на гайде по району, DistrictGuidePage.tsx — фон вырезан тем
 // же приёмом, что и у логотипа Dana Holdings там же).
-const MINSK_MIR_LOGO_URL = '/images/district/minsk-mir-logo.png';
+// PAGESPEED_PLAN.md, Э4-1 — WebP 108×126 (было 171×200 PNG), тот же файл,
+// что и у DistrictGuidePage.tsx.
+const MINSK_MIR_LOGO_URL = '/images/district/minsk-mir-logo.webp';
 
 // Логотип Telegram — нарисован инлайн-SVG (фирменный синий кружок с бумажным
 // самолётиком), а не скачан картинкой: внешние хосты недоступны из песочницы
@@ -300,7 +302,7 @@ export function ObjectLandingPage() {
             alt={`Офисы и кабинеты рядом с Минск Миром — ${object.name || object.address}`}
           />
           <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-white/95 px-3 py-2 shadow-card backdrop-blur">
-            <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" className="h-4 w-auto" />
+            <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" width={108} height={126} className="h-4 w-auto" />
             <span className="text-xs font-semibold text-ink">Рядом с Минск Миром</span>
           </div>
         </div>

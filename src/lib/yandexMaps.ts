@@ -8,6 +8,19 @@ const YANDEX_MAPS_API_KEY = import.meta.env.VITE_YANDEX_MAPS_API_KEY ?? 'a7182a3
 let ymapsLoadPromise: Promise<typeof window.ymaps> | null = null;
 
 export function loadYmaps(): Promise<typeof window.ymaps> {
+  // ?prerender=1 — тот же сигнал, что и у Яндекс.Метрики в index.html
+  // (scripts/prerender.mjs снимает build-time снапшоты headless-браузером).
+  // Обе карты в гиде района не нужны AI-краулерам/Яндексу в HTML (интерактив
+  // всё равно недоступен без JS), а сам API — самый тяжёлый и нестабильный
+  // ресурс страницы (689 КиБ, 2+ с CPU, см. PAGESPEED_PLAN.md) — незачем
+  // грузить его на каждую из ~190 build-time страниц. Промис нарочно
+  // никогда не разрешается — компонент карты остаётся в состоянии
+  // "Загрузка карты…" (уже штатная разметка, ничего нового рисовать не
+  // нужно) и просто не попадает в снапшот; на реальных визитах параметра
+  // нет, поведение не меняется.
+  if (typeof location !== 'undefined' && location.search.includes('prerender=1')) {
+    return new Promise(() => {});
+  }
   if (ymapsLoadPromise) return ymapsLoadPromise;
   ymapsLoadPromise = new Promise((resolve, reject) => {
     if (window.ymaps) {
