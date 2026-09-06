@@ -34,6 +34,29 @@ export const DISTRICT_SLUG_TO_NAME: Record<string, string> = Object.fromEntries(
   Object.entries(DISTRICT_SLUGS).map(([name, slug]) => [slug, name]),
 );
 
+// Предложный падеж района ("в Московском районе", не "в Московский районе")
+// — нужен только для связного текста комбинированных хабов класс×район
+// (владелец, 2026-09-06: "структура урлов [пересечений]"), на одноосевых
+// хабах район используется как ярлык без предлога ("Минска: Московский
+// район"), склонение не требовалось. Явная карта на 9 районов (конечное
+// известное множество, как и сами DISTRICT_SLUGS) — надёжнее, чем угадывать
+// суффикс регуляркой на разномастных окончаниях (-ский/-ой/-ный).
+const DISTRICT_PREPOSITIONAL: Record<string, string> = {
+  Центральный: 'Центральном',
+  Октябрьский: 'Октябрьском',
+  Советский: 'Советском',
+  Фрунзенский: 'Фрунзенском',
+  Заводской: 'Заводском',
+  Первомайский: 'Первомайском',
+  Партизанский: 'Партизанском',
+  Московский: 'Московском',
+  Ленинский: 'Ленинском',
+};
+
+export function districtPrepositional(district: string): string {
+  return DISTRICT_PREPOSITIONAL[district] ?? district;
+}
+
 export function districtHubUrl(district: string): string | null {
   const slug = DISTRICT_SLUGS[district];
   return slug ? `/minsk/bcminsk/raion/${slug}` : null;

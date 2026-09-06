@@ -36,6 +36,7 @@ import {
   classDistrictHubUrl,
   classHubUrl,
   districtHubUrl,
+  districtPrepositional,
 } from '../lib/businessCenterHubs';
 import type { BusinessCenter } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
@@ -214,7 +215,7 @@ export function BusinessCentersMinskPage() {
     }
     const hubTitle =
       classFilter && districtFilter
-        ? `Бизнес-центры класса ${classFilter} в ${districtFilter} районе Минска`
+        ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
         : classFilter
           ? `Бизнес-центры класса ${classFilter} в Минске`
           : districtFilter
@@ -222,11 +223,11 @@ export function BusinessCentersMinskPage() {
             : TITLE;
     const hubDescription =
       classFilter && districtFilter
-        ? `Бизнес-центры класса ${classFilter} в ${districtFilter} районе Минска: адреса, площадь, этажность, метро.`
+        ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска: адреса, площадь, этажность, метро.`
         : classFilter
           ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
           : districtFilter
-            ? `Бизнес-центры в ${districtFilter} районе Минска: адреса, деловой класс, площадь, метро.`
+            ? `Бизнес-центры в ${districtPrepositional(districtFilter)} районе Минска: адреса, деловой класс, площадь, метро.`
             : DESCRIPTION;
     const hubUrl =
       classFilter && districtFilter
@@ -358,11 +359,11 @@ export function BusinessCentersMinskPage() {
   // среди visibleCenters, не выдумка.
   const scopeLabel =
     classFilter && districtFilter
-      ? `класса ${classFilter} в ${districtFilter} районе`
+      ? `класса ${classFilter} в ${districtPrepositional(districtFilter)} районе`
       : classFilter
         ? `класса ${classFilter}`
         : districtFilter
-          ? `в ${districtFilter} районе`
+          ? `в ${districtPrepositional(districtFilter)} районе`
           : 'в Минске';
   const biggest = useMemo(
     () => visibleCenters.filter((c) => c.totalArea != null).sort((a, b) => (b.totalArea ?? 0) - (a.totalArea ?? 0))[0] ?? null,
@@ -453,7 +454,7 @@ export function BusinessCentersMinskPage() {
   // фильтр (то же значение, что уже посчитано для meta-тегов выше).
   const heroH1 =
     classFilter && districtFilter
-      ? `Бизнес-центры класса ${classFilter} в ${districtFilter} районе Минска`
+      ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
       : classFilter
         ? `Бизнес-центры класса ${classFilter} в Минске`
         : districtFilter
@@ -461,11 +462,11 @@ export function BusinessCentersMinskPage() {
           : PAGE_H1;
   const heroIntro =
     classFilter && districtFilter
-      ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в ${districtFilter} районе Минска — адреса, площадь, этажность, метро.`
+      ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска — адреса, площадь, этажность, метро.`
       : classFilter
         ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
         : districtFilter
-          ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtFilter} районе Минска — сравнивайте по классу, площади и расположению.`
+          ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtPrepositional(districtFilter)} районе Минска — сравнивайте по классу, площади и расположению.`
           : INTRO_TEXT;
 
   // Содержимое бокового меню — общий JSX для десктопной sticky-колонки и
