@@ -9,9 +9,11 @@ import {
   Building2,
   Calendar,
   Car,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Clock,
   FileText,
   Globe,
   Info,
@@ -40,6 +42,8 @@ import type { BusinessCenter, HighlightIconKey, TenantOrganization } from '../da
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 import type { BusinessCenterOffer } from '../data/businessCenterOffers';
 import { fetchBusinessCenterOffers } from '../lib/businessCenterOffersApi';
+import type { BusinessCenter2gisSnapshot, Gis2Schedule, Gis2ScheduleDay } from '../data/businessCenter2gis';
+import { fetchBusinessCenter2gisSnapshot } from '../lib/businessCenter2gisApi';
 
 // Отдельная страница одного бизнес-центра (владелец, 2026-09-04: "для SEO
 // лучше хаб + отдельная страница на каждый БЦ" — согласился с этим доводом
@@ -55,12 +59,25 @@ export function BusinessCenterDetailPage() {
   const { slug } = useParams<{ slug: string }>();
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
   const [offers, setOffers] = useState<BusinessCenterOffer[] | null>(null);
+  const [gis2, setGis2] = useState<BusinessCenter2gisSnapshot | null>(null);
 
   useEffect(() => {
     fetchBusinessCenters()
       .then(setCenters)
       .catch(() => setCenters([]));
   }, []);
+
+  // Снапшот 2GIS (владелец подключил API в параллельной ветке, 2026-09-06:
+  // "давай выведем на страницы вообще всю инфу, которую мы спарсили") —
+  // отдельная таблица `business_center_2gis_snapshots`, тот же принцип
+  // отдельного запроса по слагу, что и у business_center_offers ниже.
+  useEffect(() => {
+    if (!slug) return;
+    setGis2(null);
+    fetchBusinessCenter2gisSnapshot(slug)
+      .then(setGis2)
+      .catch(() => setGis2(null));
+  }, [slug]);
 
   // Объявления о продаже/аренде из business_center_offers (владелец,
   // 2026-09-05: "хочу спарсить объявления... эту инфу мы будем выводить в
@@ -99,6 +116,7 @@ export function BusinessCenterDetailPage() {
   // Яндекс.Карт — более ценная инфа, чем метры по прямой) — показываются
   // оба факта, если оба заполнены, см. комментарий у BusinessCenter.metro.
   const nearestMetro = useMemo(() => nearestMetroStation(center?.nearestMetroStations ?? []), [center]);
+  const scheduleLines = useMemo(() => (gis2?.schedule ? formatSchedule(gis2.schedule) : []), [gis2]);
   const visibleHighlights = useMemo(() => center?.highlights.filter((h) => h.icon !== 'rating') ?? [], [center]);
 
   useEffect(() => {
@@ -266,6 +284,18 @@ export function BusinessCenterDetailPage() {
                     {mapRating.value} · {mapRating.source}
                   </Badge>
                 )}
+                {/* Рейтинг 2ГИС — отдельный источник от Яндекс.Карт выше,
+                    оба честно подписаны, не смешиваются в один бейдж
+                    (владелец, 2026-09-06: "выведи всю инфу, которую мы
+                    спарсили"). org_review_count может быть null у части
+                    записей (реже — только рейтинг без числа оценок). */}
+                {gis2?.reviews?.orgRating != null && (
+                  <Badge tone="neutral">
+                    <Star className="h-3 w-3 shrink-0 fill-current" />
+                    {gis2.reviews.orgRating.toLocaleString('ru-RU')} · 2ГИС
+                    {gis2.reviews.orgReviewCount != null && ` (${gis2.reviews.orgReviewCount})`}
+                  </Badge>
+                )}
               </div>
             </div>
 
@@ -386,6 +416,66 @@ export function BusinessCenterDetailPage() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Данные 2ГИС (владелец подключил API в параллельной ветке,
+            2026-09-06: "давай выведем на страницы всю инфу, которую мы
+            спарсили") — расписание, особенности здания (доступная среда,
+            допуслуги) и парковка из отдельной таблицы
+            business_center_2gis_snapshots. Рейтинг 2ГИС — уже показан
+            бейджем у заголовка (см. выше), сюда не дублируем. Рендерится
+            только когда есть хотя бы один непустой раздел — часть БЦ
+            (37 из 143, `match_status='building_only'`) не имеют организации
+            в 2GIS, только геокод здания, для них тут показывать нечего. */}
+        {gis2 && (scheduleLines.length > 0 || gis2.attributeGroups.length > 0 || gis2.parking.length > 0) && (
+          <div className={cn('mt-6 flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+            <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" />
+              Данные 2ГИС
+            </h2>
+            <div className="flex flex-col divide-y divide-border">
+              {scheduleLines.length > 0 && (
+                <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
+                  <Clock className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Часы работы</p>
+                    <div className="mt-1 flex flex-col gap-0.5 text-sm text-ink-muted">
+                      {scheduleLines.map((line) => (
+                        <span key={line}>{line}</span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {gis2.parking.length > 0 && (
+                <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
+                  <Car className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Парковка (2ГИС)</p>
+                    <div className="mt-1 flex flex-col gap-0.5 text-sm text-ink-muted">
+                      {gis2.parking.map((p, i) => (
+                        <span key={i}>
+                          {p.name}
+                          {p.isPaid ? ' — платная' : ' — бесплатная'}
+                          {p.capacity != null && `, ${p.capacity} машиномест`}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {gis2.attributeGroups.map((group, i) => (
+                <div key={i} className="flex gap-3 py-3 first:pt-0 last:pb-0">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{group.name}</p>
+                    <p className="mt-1 text-sm text-ink-muted">{group.attributes.join(', ')}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-ink-faint">Собрано автоматически по данным 2ГИС.</p>
           </div>
         )}
 
@@ -635,6 +725,50 @@ function extractMapRating(text: string): { value: string; source: string } | nul
   if (!valueMatch) return null;
   const sourceMatch = line.match(/^[-\s]*([^:]+):/);
   return { value: valueMatch[1], source: sourceMatch ? sourceMatch[1].trim() : 'карты' };
+}
+
+// Расписание из 2GIS (владелец, 2026-09-06) — группирует подряд идущие дни
+// с одинаковыми часами в одну строку ("Пн–Пт: 08:00–17:00"), а не по строке
+// на каждый день недели — иначе для типового графика 5/2 получилось бы 5
+// почти одинаковых строк подряд. День без записи в schedule.days — выходной
+// (2GIS просто не включает нерабочие дни в объект, не шлёт их с пустым
+// массивом часов).
+const SCHEDULE_DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+const SCHEDULE_DAY_LABELS: Record<(typeof SCHEDULE_DAY_ORDER)[number], string> = {
+  Mon: 'Пн',
+  Tue: 'Вт',
+  Wed: 'Ср',
+  Thu: 'Чт',
+  Fri: 'Пт',
+  Sat: 'Сб',
+  Sun: 'Вс',
+};
+
+function formatWorkingHours(day: Gis2ScheduleDay): string {
+  return day.workingHours.map((h) => `${h.from}–${h.to}`).join(', ');
+}
+
+function formatSchedule(schedule: Gis2Schedule): string[] {
+  if (schedule.is24x7) return ['Круглосуточно'];
+  const lines: string[] = [];
+  let i = 0;
+  while (i < SCHEDULE_DAY_ORDER.length) {
+    const day = SCHEDULE_DAY_ORDER[i];
+    const entry = schedule.days[day];
+    const hoursKey = entry ? formatWorkingHours(entry) : null;
+    let j = i;
+    while (j + 1 < SCHEDULE_DAY_ORDER.length) {
+      const nextEntry = schedule.days[SCHEDULE_DAY_ORDER[j + 1]];
+      const nextKey = nextEntry ? formatWorkingHours(nextEntry) : null;
+      if (nextKey !== hoursKey) break;
+      j++;
+    }
+    const label =
+      i === j ? SCHEDULE_DAY_LABELS[day] : `${SCHEDULE_DAY_LABELS[day]}–${SCHEDULE_DAY_LABELS[SCHEDULE_DAY_ORDER[j]]}`;
+    lines.push(hoursKey ? `${label}: ${hoursKey}` : `${label}: выходной`);
+    i = j + 1;
+  }
+  return lines;
 }
 
 // Сколько категорий показывать сразу — у части БЦ (владелец, 2026-09-06:
