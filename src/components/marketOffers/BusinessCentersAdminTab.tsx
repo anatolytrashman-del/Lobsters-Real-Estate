@@ -326,6 +326,10 @@ export function BusinessCentersAdminTab() {
         // отдельным ресерчем, не вручную) — при правке сохраняем как было, у
         // новой записи начинаем с пустого массива.
         technicalParams: editing !== 'new' && editing ? editing.technicalParams : [],
+        // Не редактируется здесь — заполняется отдельным импортом из 2GIS
+        // (см. комментарий у BusinessCenter.nearestMetroStations), тот же
+        // принцип, что и у technicalParams выше.
+        nearestMetroStations: editing !== 'new' && editing ? editing.nearestMetroStations : [],
         photos: form.photos
           .split('\n')
           .map((s) => s.trim())

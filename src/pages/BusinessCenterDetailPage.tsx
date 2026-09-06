@@ -35,6 +35,7 @@ import { Badge } from '../components/ui/Badge';
 import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
 import { setBreadcrumbJsonLd, setFaqJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
 import { shortName, sortByShortName } from '../lib/businessCenterDisplay';
+import { nearestMetroStation } from '../lib/metroStations';
 import type { BusinessCenter, HighlightIconKey, TenantOrganization } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 import type { BusinessCenterOffer } from '../data/businessCenterOffers';
@@ -92,6 +93,12 @@ export function BusinessCenterDetailPage() {
   // общем списке как были.
   const ratingHighlight = useMemo(() => center?.highlights.find((h) => h.icon === 'rating') ?? null, [center]);
   const mapRating = useMemo(() => (ratingHighlight ? extractMapRating(ratingHighlight.text) : null), [ratingHighlight]);
+  // Точное расстояние до метро из 2GIS (владелец подключает в параллельной
+  // ветке, 2026-09-06) — по прямой, в метрах, НЕ заменяет свободный текст
+  // `metro` (тот может нести реальный пройденный маршрут из веб-архивов
+  // Яндекс.Карт — более ценная инфа, чем метры по прямой) — показываются
+  // оба факта, если оба заполнены, см. комментарий у BusinessCenter.metro.
+  const nearestMetro = useMemo(() => nearestMetroStation(center?.nearestMetroStations ?? []), [center]);
   const visibleHighlights = useMemo(() => center?.highlights.filter((h) => h.icon !== 'rating') ?? [], [center]);
 
   useEffect(() => {
@@ -272,6 +279,15 @@ export function BusinessCenterDetailPage() {
                 в метрах не найдено веб-поиском, строка честно показывает то,
                 что есть, без выдуманных цифр. */}
             {center.metro && <FactRow icon={TrainFront}>{center.metro}</FactRow>}
+            {/* Точное расстояние из 2GIS — отдельной строкой, не вместо
+                center.metro (см. комментарий у nearestMetro выше): по прямой,
+                не пройденный маршрут, честно подписано, чтобы не путать с
+                минутами пешком из веб-архивов. */}
+            {nearestMetro && (
+              <FactRow icon={TrainFront}>
+                «{nearestMetro.name}» — {nearestMetro.distanceMeters} м по прямой (2GIS)
+              </FactRow>
+            )}
             {center.developer && <FactRow icon={Building2}>{center.developer}</FactRow>}
 
             {/* Ровно 4 плитки — класс/площадь/год/этажность (владелец,

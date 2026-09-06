@@ -104,6 +104,18 @@ export interface BusinessCenter {
   // МФЦ — ещё стройка), либо адрес не удалось надёжно сопоставить (риск
   // приписать чужие характеристики зданию — оставили пустым, не гадаем).
   technicalParams: TechnicalParamGroup[];
+  // Ближайшие станции метро — владелец подключает 2GIS API в параллельной
+  // ветке (2026-09-06), формат ответа (`nearest_stations`) уже согласован
+  // как основа для этого поля (см. журнал CLAUDE.md). Массив, не одна
+  // станция — 2GIS отдаёт несколько, для отображения обычно нужна только
+  // ближайшая по distanceMeters (сортируется на месте, не хранится
+  // предварительно отсортированным — источник может прислать в любом
+  // порядке). distanceMeters — расстояние по прямой (не время пешком и не
+  // по дорожной сети), это НЕ заменяет свободный текст `metro` — тот может
+  // содержать реально пройденный маршрут из веб-архивов Яндекс.Карт (см.
+  // BusinessCenter.metro), более ценный, чем метры по прямой. Оба поля
+  // независимы, на карточке показываются оба, если оба заполнены.
+  nearestMetroStations: NearestMetroStation[];
   photos: string[];
   // 'built' по умолчанию. 'under_construction' — как МФЦ, ещё строится.
   status: 'built' | 'under_construction';
@@ -172,6 +184,18 @@ export interface TechnicalParamGroup {
   params: TechnicalParam[];
 }
 
+// См. комментарий у BusinessCenter.nearestMetroStations выше. Поля — прямое
+// отображение того, что реально даёт 2GIS (`nearest_stations[i]`), без
+// лишних полей вроде `id`/`route_logo`, которые нам не нужны для показа.
+export interface NearestMetroStation {
+  name: string;
+  distanceMeters: number;
+  // "Московская линия" — текст линии как есть у источника (2GIS `comment`),
+  // не структурированный id линии.
+  line: string | null;
+  color: string | null;
+}
+
 // Форма строки в таблице Supabase (snake_case-колонки) — см. lib/businessCentersApi.ts
 export interface BusinessCenterRow {
   id: string;
@@ -193,6 +217,7 @@ export interface BusinessCenterRow {
   map_snapshot_files: DocumentFile[] | null;
   tenant_organizations: TenantOrganization[] | null;
   technical_params: TechnicalParamGroup[] | null;
+  nearest_metro_stations: NearestMetroStation[] | null;
   photos: string[] | null;
   status: string | null;
   sort_order: number;
