@@ -4,8 +4,10 @@ import { Link, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowUpDown,
   Award,
   Banknote,
+  Building,
   Building2,
   Calendar,
   Car,
@@ -22,15 +24,21 @@ import {
   Layers,
   Leaf,
   MapPin,
+  MapPinned,
   MessageSquareQuote,
   Newspaper,
   Palette,
   Phone,
   Ruler,
   ScrollText,
+  Snowflake,
   Sparkles,
   Star,
+  Store,
   TrainFront,
+  Users,
+  Wifi,
+  Wrench,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from '../lib/glass';
@@ -39,7 +47,7 @@ import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/Bus
 import { setBreadcrumbJsonLd, setFaqJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
 import { shortName, sortByShortName } from '../lib/businessCenterDisplay';
 import { nearestMetroStation } from '../lib/metroStations';
-import type { BusinessCenter, HighlightIconKey, TenantOrganization } from '../data/businessCenters';
+import type { BusinessCenter, HighlightIconKey, TechnicalParam, TenantOrganization } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 import type { BusinessCenterOffer } from '../data/businessCenterOffers';
 import { fetchBusinessCenterOffers } from '../lib/businessCenterOffersApi';
@@ -400,56 +408,136 @@ export function BusinessCenterDetailPage() {
         </div>
 
         {/* Технические характеристики — прямой парсинг структурных блоков
-            .bccharacteristics с карточки здания на prometr.by (владелец,
-            2026-09-06: "выведи на страницу вообще все данные, которые ты
-            смог спарсить"). Таблица параметр-значение, показывает только
-            непустые строки; для уже смерженных в нашей базе многокорпусных
-            комплексов (Riviera Plaza, Парк Плаза) — отдельная таблица на
-            каждый корпус со своей подписью. Значения — как у источника, без
-            сглаживания расхождений с нашими собственными полями (см.
-            комментарий у BusinessCenter.technicalParams в
-            data/businessCenters.ts) — отсюда честная атрибуция "по данным
-            prometr.by" у пары строк, которые могут не совпасть с площадью/
-            этажностью, показанными выше в карточке. Пусто у части БЦ — не
-            найдены на prometr.by или адрес не удалось надёжно сопоставить
-            (см. тот же комментарий) — не гадаем, просто не рендерим блок. */}
+            .bccharacteristics с карточки здания на prometr.by. Изначально
+            (2026-09-06) была одна плоская таблица параметр-значение — владелец
+            тем же днём позже: "часть данных типа класса здания дублируется,
+            остальное размещено нечитаемо, разбей на смысловые блоки и оформи
+            карточками/иконками в нашем стиле". Разложено на 3 смысловых блока
+            (TECH_GROUP_META/TECH_PARAM_META ниже) — короткие значения идут
+            мини-плитками в сетке, длинные перечисления (инфраструктура/
+            провайдеры/кондиционирование/управление) — обычными подписанными
+            строками. Пара строк с одинаковыми (по факту) с нашими полями
+            карточки данными (класс/метро) СКРЫВАЕТСЯ, только если у ЭТОЙ
+            конкретной записи есть свой источник этих данных выше на странице
+            (иначе, если наше поле пустое, а у prometr.by значение есть — это
+            единственный источник, не прячем). "Общая площадь"/"Этажность" НЕ
+            скрываются никогда, несмотря на потенциальное совпадение с нашими
+            полями — они специально подписаны "(по данным prometr.by)" именно
+            для честной сверки при расхождении (см. комментарий у
+            BusinessCenter.technicalParams в data/businessCenters.ts, кейс
+            "Стратег-1"/S Union/Призма) — эта атрибуция сохранена отдельной
+            подписью под значением, не спрятана. Для многокорпусных комплексов
+            (Riviera Plaza, Парк Плаза) — отдельный набор блоков на каждый
+            корпус. Параметр с незнакомым label (на случай, если prometr.by
+            заведёт новое поле) не теряется — попадает в резервную таблицу
+            внизу блока, не гадаем, но и не отбрасываем. */}
         {center.technicalParams.length > 0 && (
           <div className={cn('mt-6 flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
             <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
               <ClipboardList className="h-5 w-5 shrink-0 text-primary" />
               Технические характеристики
             </h2>
-            <div className="flex flex-col gap-5">
-              {center.technicalParams.map((group, i) => (
-                <div key={i} className="flex flex-col gap-2">
-                  {group.corpusLabel && <p className="text-sm font-bold text-ink">{group.corpusLabel}</p>}
-                  <div className="overflow-hidden rounded-control border border-border">
-                    <table className="w-full border-collapse text-sm">
-                      <tbody>
-                        {group.params.map((p, j) => (
-                          <tr key={j} className="border-b border-border last:border-b-0 odd:bg-surface-muted/40">
-                            <th
-                              scope="row"
-                              className="w-1/2 py-2 pl-3 pr-2 text-left align-top font-medium text-ink-muted sm:w-2/5"
-                            >
-                              {p.label}
-                            </th>
-                            <td className="py-2 pl-2 pr-3 text-ink">{p.value}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+            <div className="flex flex-col gap-6">
+              {center.technicalParams.map((group, i) => {
+                const hideMetro = Boolean(nearestMetro || center.metro);
+                const hideClass = Boolean(center.businessClass);
+                const visibleParams = group.params.filter((p) => {
+                  const meta = TECH_PARAM_META[p.label];
+                  if (meta?.hideIfDuplicate === 'metro' && hideMetro) return false;
+                  if (meta?.hideIfDuplicate === 'businessClass' && hideClass) return false;
+                  return true;
+                });
+                if (visibleParams.length === 0) return null;
+
+                const byGroup: Record<TechGroupKey, TechnicalParam[]> = { general: [], space: [], amenities: [] };
+                const unknown: TechnicalParam[] = [];
+                for (const p of visibleParams) {
+                  const meta = TECH_PARAM_META[p.label];
+                  if (meta) byGroup[meta.group].push(p);
+                  else unknown.push(p);
+                }
+
+                return (
+                  <div key={i} className="flex flex-col gap-4">
+                    {group.corpusLabel && <p className="text-sm font-bold text-ink">{group.corpusLabel}</p>}
+
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      {(['general', 'space', 'amenities'] as const).map((groupKey) => {
+                        const params = byGroup[groupKey];
+                        if (params.length === 0) return null;
+                        const { icon: GroupIcon, title } = TECH_GROUP_META[groupKey];
+                        const tileParams = params.filter((p) => TECH_PARAM_META[p.label].style === 'tile');
+                        const textParams = params.filter((p) => TECH_PARAM_META[p.label].style === 'text');
+
+                        return (
+                          <div key={groupKey} className="rounded-control border border-border bg-surface-muted/40 p-3.5">
+                            <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink">
+                              <GroupIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
+                              {title}
+                            </h3>
+                            {tileParams.length > 0 && (
+                              <div className="grid grid-cols-2 gap-2">
+                                {tileParams.map((p, j) => {
+                                  const suffix = ' (по данным prometr.by)';
+                                  const hasAttribution = p.label.endsWith(suffix);
+                                  const shortLabel = hasAttribution ? p.label.slice(0, -suffix.length) : p.label;
+                                  return (
+                                    <div key={j} className="rounded-control border border-border bg-surface px-2.5 py-2">
+                                      <p className="text-[10px] font-medium uppercase leading-tight tracking-wide text-ink-faint">
+                                        {shortLabel}
+                                      </p>
+                                      <p className="mt-0.5 text-sm font-semibold leading-tight text-ink">{p.value}</p>
+                                      {hasAttribution && (
+                                        <p className="mt-0.5 text-[10px] leading-tight text-ink-faint">по данным prometr.by</p>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {textParams.length > 0 && (
+                              <div className={cn('flex flex-col divide-y divide-border', tileParams.length > 0 && 'mt-1')}>
+                                {textParams.map((p, j) => (
+                                  <LabeledTextRow key={j} icon={TECH_PARAM_META[p.label].icon} label={p.label} text={p.value} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {unknown.length > 0 && (
+                      <div className="overflow-hidden rounded-control border border-border">
+                        <table className="w-full border-collapse text-sm">
+                          <tbody>
+                            {unknown.map((p, j) => (
+                              <tr key={j} className="border-b border-border last:border-b-0 odd:bg-surface-muted/40">
+                                <th
+                                  scope="row"
+                                  className="w-1/2 py-2 pl-3 pr-2 text-left align-top font-medium text-ink-muted sm:w-2/5"
+                                >
+                                  {p.label}
+                                </th>
+                                <td className="py-2 pl-2 pr-3 text-ink">{p.value}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    <a
+                      href={group.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-ink-faint hover:text-primary hover:underline"
+                    >
+                      Источник: prometr.by
+                    </a>
                   </div>
-                  <a
-                    href={group.sourceUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-ink-faint hover:text-primary hover:underline"
-                  >
-                    Источник: prometr.by
-                  </a>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -693,6 +781,47 @@ export function BusinessCenterDetailPage() {
     </div>
   );
 }
+
+// Смысловая группировка "Технических характеристик" (см. комментарий в самом
+// рендере блока) — один и тот же фиксированный набор из 18 label'ов, которые
+// реально встречаются в спарсенных с prometr.by данных (см. журнал CLAUDE.md,
+// запись про технические характеристики от 2026-09-06). style: 'tile' —
+// короткое значение (число/пара слов), 'text' — обычно перечисление,
+// удобнее строкой. hideIfDuplicate — прячет строку, только если у ЭТОЙ
+// записи выше на странице уже есть та же информация из другого поля (см.
+// использование в рендере).
+type TechGroupKey = 'general' | 'space' | 'amenities';
+
+const TECH_GROUP_META: Record<TechGroupKey, { icon: typeof FileText; title: string }> = {
+  general: { icon: Building, title: 'Статус и локация' },
+  space: { icon: Ruler, title: 'Площади и планировка' },
+  amenities: { icon: Wrench, title: 'Инфраструктура и сервис' },
+};
+
+const TECH_PARAM_META: Record<
+  string,
+  { group: TechGroupKey; icon: typeof FileText; style: 'tile' | 'text'; hideIfDuplicate?: 'metro' | 'businessClass' }
+> = {
+  'Класс бизнес-центра': { group: 'general', icon: Award, style: 'tile', hideIfDuplicate: 'businessClass' },
+  'Административный район': { group: 'general', icon: MapPin, style: 'tile' },
+  'Степень готовности': { group: 'general', icon: CheckCircle2, style: 'tile' },
+  'Свободные площади': { group: 'general', icon: Ruler, style: 'tile' },
+  'Станция метро': { group: 'general', icon: TrainFront, style: 'tile', hideIfDuplicate: 'metro' },
+  'Удалённость от метро': { group: 'general', icon: TrainFront, style: 'tile', hideIfDuplicate: 'metro' },
+  'Общая площадь (по данным prometr.by)': { group: 'space', icon: Ruler, style: 'tile' },
+  'Площадь офисов': { group: 'space', icon: Ruler, style: 'tile' },
+  'Площадь типового этажа': { group: 'space', icon: Ruler, style: 'tile' },
+  'Высота потолков типового этажа, м': { group: 'space', icon: Layers, style: 'tile' },
+  'Тип планировки': { group: 'space', icon: Layers, style: 'tile' },
+  'Количество этажей (по данным prometr.by)': { group: 'space', icon: Layers, style: 'tile' },
+  'Количество лифтов': { group: 'amenities', icon: ArrowUpDown, style: 'tile' },
+  'Обеспеченность парковкой (маш./100 м²)': { group: 'amenities', icon: Car, style: 'tile' },
+  'Система кондиционирования': { group: 'amenities', icon: Snowflake, style: 'text' },
+  'Управление БЦ': { group: 'amenities', icon: Users, style: 'text' },
+  'Внутренняя инфраструктура': { group: 'amenities', icon: Store, style: 'text' },
+  'Инфраструктура в шаговой доступности': { group: 'amenities', icon: MapPinned, style: 'text' },
+  'Интернет-провайдеры': { group: 'amenities', icon: Wifi, style: 'text' },
+};
 
 // Одна строка блока "Условия для арендаторов" — иконка + подпись раздела +
 // Иконка на раздел "Интересных фактов" по ключу из HighlightSection.icon —
