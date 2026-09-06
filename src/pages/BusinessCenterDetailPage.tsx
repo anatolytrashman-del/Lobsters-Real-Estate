@@ -461,43 +461,44 @@ export function BusinessCenterDetailPage() {
                   <div key={i} className="flex flex-col gap-5">
                     {group.corpusLabel && <p className="text-sm font-bold text-ink">{group.corpusLabel}</p>}
 
-                    {(['general', 'space', 'amenities'] as const).map((groupKey, gi) => {
+                    {(['general', 'space', 'amenities'] as const).map((groupKey) => {
                       const params = byGroup[groupKey];
                       if (params.length === 0) return null;
                       const { icon: GroupIcon, title } = TECH_GROUP_META[groupKey];
-                      const tileParams = params.filter((p) => TECH_PARAM_META[p.label].style === 'tile');
-                      const textParams = params.filter((p) => TECH_PARAM_META[p.label].style === 'text');
 
                       return (
-                        <div key={groupKey} className={cn('flex flex-col gap-3', gi > 0 && 'border-t border-border pt-5')}>
+                        <div key={groupKey} className="flex flex-col gap-2">
                           <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-faint">
                             <GroupIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
                             {title}
                           </h3>
-                          {tileParams.length > 0 && (
-                            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                              {tileParams.map((p, j) => {
-                                const suffix = ' (по данным prometr.by)';
-                                const hasAttribution = p.label.endsWith(suffix);
-                                const shortLabel = hasAttribution ? p.label.slice(0, -suffix.length) : p.label;
-                                return (
-                                  <FactTile
-                                    key={j}
-                                    icon={TECH_PARAM_META[p.label].icon}
-                                    value={p.value}
-                                    label={hasAttribution ? `${shortLabel} · по данным prometr.by` : shortLabel}
-                                  />
-                                );
-                              })}
-                            </div>
-                          )}
-                          {textParams.length > 0 && (
-                            <div className="flex flex-col divide-y divide-border">
-                              {textParams.map((p, j) => (
-                                <LabeledTextRow key={j} icon={TECH_PARAM_META[p.label].icon} label={p.label} text={p.value} />
-                              ))}
-                            </div>
-                          )}
+                          <div className="overflow-hidden rounded-control border border-border">
+                            <table className="w-full border-collapse text-sm">
+                              <tbody>
+                                {params.map((p, j) => {
+                                  const suffix = ' (по данным prometr.by)';
+                                  const hasAttribution = p.label.endsWith(suffix);
+                                  const shortLabel = hasAttribution ? p.label.slice(0, -suffix.length) : p.label;
+                                  return (
+                                    <tr key={j} className="border-b border-border last:border-b-0 odd:bg-surface-muted/40">
+                                      <th
+                                        scope="row"
+                                        className="w-1/2 py-2 pl-3 pr-2 text-left align-top font-medium text-ink-muted sm:w-2/5"
+                                      >
+                                        {shortLabel}
+                                        {hasAttribution && (
+                                          <span className="mt-0.5 block text-[10px] font-normal normal-case text-ink-faint">
+                                            по данным prometr.by
+                                          </span>
+                                        )}
+                                      </th>
+                                      <td className="py-2 pl-2 pr-3 text-ink">{p.value}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
                       );
                     })}
