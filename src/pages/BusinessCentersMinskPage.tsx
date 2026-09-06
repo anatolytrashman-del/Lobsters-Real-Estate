@@ -1,12 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowRight, BadgeCheck, Calendar, Camera, Layers, MapPin, Menu, Ruler, TrainFront, X } from 'lucide-react';
+import {
+  ArrowRight,
+  Award,
+  BadgeCheck,
+  Building2,
+  Calendar,
+  Camera,
+  HardHat,
+  Layers,
+  MapPin,
+  Menu,
+  Ruler,
+  TrainFront,
+  X,
+} from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from '../lib/glass';
 import { Badge } from '../components/ui/Badge';
 import { HeroImageSlider } from '../components/objects/HeroImageSlider';
 import { ObjectMapWidget } from '../components/objects/ObjectMapWidget';
-import { PhotoBlock, FactRow } from '../components/businessCenters/BusinessCenterVisuals';
+import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
 import { setArticleJsonLd, setBreadcrumbJsonLd, setGenericPageMeta, setNoIndex, clearNoIndex } from '../lib/pageMeta';
 import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
 import {
@@ -264,6 +278,27 @@ export function BusinessCentersMinskPage() {
     [visibleCenters],
   );
 
+  // Сводка по рынку (Fable-анализ, 2026-09-06, приоритет 1: "закрывает
+  // обещание аналитика... 5-8 цифр в плитках, считаются из базы"). Честно
+  // — только то, что реально можно посчитать по данным: средний год
+  // постройки НЕ включён (известен лишь у 21 из 145 записей — bad-faith
+  // "средняя" по 15% выборки выдавала бы её за общую), ставки НЕ включены
+  // (структурных данных по ставкам на уровне каталога нет вовсе, только у
+  // отдельных БЦ в "Объявления с Kufar и Realt"). Считается от
+  // `visibleCenters`, не от всего `centers` — на хаб-странице класса/района
+  // сводка автоматически становится сводкой по этому классу/району, не по
+  // всему городу.
+  const marketStats = useMemo(() => {
+    const withArea = visibleCenters.filter((c) => c.totalArea != null);
+    const totalArea = withArea.reduce((sum, c) => sum + (c.totalArea ?? 0), 0);
+    const withMetro = visibleCenters.filter((c) => c.metro);
+    const nearMetro = withMetro.filter((c) => /пешком|шагов/i.test(c.metro ?? ''));
+    const underConstruction = visibleCenters.filter((c) => c.status === 'under_construction').length;
+    const byClass: Record<string, number> = {};
+    for (const c of visibleCenters) if (c.businessClass) byClass[c.businessClass] = (byClass[c.businessClass] ?? 0) + 1;
+    return { total: visibleCenters.length, totalArea, withAreaCount: withArea.length, nearMetro: nearMetro.length, withMetroCount: withMetro.length, underConstruction, byClass };
+  }, [visibleCenters]);
+
   if (notFound) {
     return (
       <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-bg px-4 text-center">
@@ -486,6 +521,42 @@ export function BusinessCentersMinskPage() {
                 )}
               </div>
             </div>
+
+            {centers !== null && marketStats.total > 0 && (
+              <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+                <h2 className="text-lg font-bold text-ink">Рынок в цифрах</h2>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <FactTile icon={Building2} value={marketStats.total} label="Всего бизнес-центров" />
+                  {marketStats.withAreaCount > 0 && (
+                    <FactTile
+                      icon={Ruler}
+                      value={`${Math.round(marketStats.totalArea).toLocaleString('ru-RU')} м²`}
+                      label={`Суммарная площадь (по ${marketStats.withAreaCount} из ${marketStats.total})`}
+                    />
+                  )}
+                  {marketStats.underConstruction > 0 && (
+                    <FactTile icon={HardHat} value={marketStats.underConstruction} label="Строится" />
+                  )}
+                  {marketStats.withMetroCount > 0 && (
+                    <FactTile
+                      icon={TrainFront}
+                      value={`${marketStats.nearMetro} из ${marketStats.withMetroCount}`}
+                      label="В шаговой доступности от метро"
+                    />
+                  )}
+                  {/* Разбивка по классам — только когда сама сводка не по
+                      одному классу (на хаб-странице класса это было бы
+                      избыточно: все плитки, кроме одной, показали бы 0). */}
+                  {!classFilter &&
+                    (['A', 'B+', 'B', 'C'] as const).map(
+                      (cls) =>
+                        marketStats.byClass[cls] > 0 && (
+                          <FactTile key={cls} icon={Award} value={marketStats.byClass[cls]} label={`Класса ${cls}`} />
+                        ),
+                    )}
+                </div>
+              </div>
+            )}
 
             <ObjectMapWidget address="Бизнес-центры Минска" mapEmbedUrl={MAP_EMBED_URL} aspectClassName="aspect-[21/9]" />
 
