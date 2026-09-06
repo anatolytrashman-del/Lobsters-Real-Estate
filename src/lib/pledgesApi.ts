@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
 import { compressImageIfNeeded } from './imageCompress';
+import { queueImageCompression } from './tinypngCompress';
 import type { Pledge, PledgeRow } from '../data/pledges';
 
 const PLEDGE_PHOTOS_BUCKET = 'pledge-photos';
@@ -112,6 +113,7 @@ export async function uploadPledgePhoto(file: File): Promise<string> {
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from(PLEDGE_PHOTOS_BUCKET).upload(path, toUpload);
       if (error) throw error;
+      queueImageCompression(PLEDGE_PHOTOS_BUCKET, path);
       return path;
     },
     1500,

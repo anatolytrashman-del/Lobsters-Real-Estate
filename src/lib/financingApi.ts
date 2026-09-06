@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
 import { compressImageIfNeeded } from './imageCompress';
+import { queueImageCompression } from './tinypngCompress';
 import type { FinancingOffer, FinancingOfferRow } from '../data/financing';
 
 // Логотип банка — не приватные данные (в отличие от фото лида/подрядчика),
@@ -101,6 +102,7 @@ export async function uploadFinancingLogo(file: File): Promise<string> {
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from(FINANCING_LOGOS_BUCKET).upload(path, toUpload);
       if (error) throw error;
+      queueImageCompression(FINANCING_LOGOS_BUCKET, path);
       const { data } = supabase.storage.from(FINANCING_LOGOS_BUCKET).getPublicUrl(path);
       return data.publicUrl;
     },

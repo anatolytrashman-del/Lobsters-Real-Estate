@@ -231,6 +231,125 @@ curl -sS -X POST "https://api.supabase.com/v1/projects/iohcdylttyuhwovztrbk/data
   PLAN.md`, §2 Э7-4 и журнал §6. Ветка `claude/pagespeed-analytics-
   optimization-1rcvip`, смержено в прод (`oodobu`) сразу.
 
+- **2026-09-06 — Автосжатие картинок через TinyPNG (по умолчанию для всех
+  загрузок + очередь на лимит 500/месяц + разовый прогон статики).**
+  Владелец: "подключим к платформе API TinyPNG и прогоним через него все
+  изображения, что на платформе... лимит 500 картинок в месяц, поэтому
+  просто по умолчанию сжимать все картинки, загруженные на платформу, а
+  если вышли за лимит — делай очередь и прогоняй в новый месяц", ключ дал
+  в чате открытым текстом (`TINYPNG_API_KEY` — секрет, никогда не
+  коммитить/не печатать; в код и в этот файл не попал). Следом уточнил
+  приоритет: "в первую очередь сожми лендинг комплекса one, страницу про
+  Минск Мир и бизнес-центры, а потом всё остальное".
+  1. **Vercel Hobby-план (12 функций, уже был в притык)** — под новый
+     `tinypng-compress.js` понадобился слот: `api/transcribe-start.js` +
+     `api/transcribe-poll.js` слиты в один `api/transcribe.js`
+     (диспетчеризация по HTTP-методу — POST старт, GET опрос; логика не
+     менялась, только объединены файлы), клиент (`meetingTranscribeApi.ts`)
+     переведён на новый путь. Счётчик — снова ровно 12.
+  2. **`api/_tinypng.js`** — общий HTTP-клиент Tinify (`shrink` + скачивание
+     результата, Basic-авторизация `api:<ключ>`), обычный ESM-модуль без
+     Vercel-специфики — импортируется и из `api/*.js`, и напрямую из
+     `scripts/*.mjs` относительным путём (проверено: `node
+     scripts/process-image-compression-queue.mjs --dry-run` резолвит
+     `../api/_tinypng.js` без сборки). На 429 (месячный лимит TinyPNG
+     исчерпан) бросает `TinifyQuotaExceededError` — свой счётчик
+     компрессий не ведём, полагаемся на лимит самого TinyPNG.
+  3. **`api/tinypng-compress.js`** — вызывается клиентом (fire-and-forget,
+     не await'ится) сразу после каждой успешной загрузки картинки в
+     Supabase Storage. Специально БЕЗ `requireStaffAuth` (часть загрузок
+     идёт с публичных страниц без входа — например счета/КП в
+     `object-documents` через `/estimate/:token`) — вместо авторизации:
+     (а) `bucket` только из фиксированного списка бакетов с картинками
+     (`object-photos`/`building-plans`/`financing-logos`/
+     `design-project-photos`/`lead-photos`/`pledge-photos`/
+     `contractor-photos`/`object-documents`; резюме и аудио — не в списке,
+     туда картинки не грузят); (б) `path` строго вида `<uuid>.<ext>` — ровно
+     то, что генерируют ВСЕ `uploadX`-функции в `src/lib/*Api.ts`
+     (`crypto.randomUUID()+расширение`, без участия пользовательского
+     ввода) — угадать чужой путь нереально; (в) идемпотентность через
+     новую таблицу `image_compressions` (`bucket`+`path` unique,
+     `INSERT ... ON CONFLICT DO NOTHING` — один и тот же объект
+     компрессируется не больше раза, повторный вызов не жжёт квоту).
+     На 429 — строка остаётся `status='pending'`, заберёт месячный докат.
+     Таблица — RLS без единой policy (доступ только service_role, тот же
+     принцип, что у `deploy_debounce`, см. `trigger-rebuild.js`).
+  4. **`src/lib/tinypngCompress.ts`** (`queueImageCompression(bucket, path)`)
+     подключена в КАЖДУЮ функцию загрузки картинки: `objectsApi.ts`
+     (`uploadObjectImage`+`uploadObjectDocument`), `buildingPlansApi.ts`,
+     `designProjectsApi.ts`, `pledgesApi.ts`, `contractorsApi.ts` (только
+     фото, не резюме — то PDF/DOC), `financingApi.ts`, `leadsApi.ts`,
+     `supplierResearchApi.ts`. НЕ подключена: `contractor-resumes`
+     (резюме, не картинки), `meeting-audio` (аудио).
+  5. **Месячный докат очереди** — `scripts/process-image-compression-queue.mjs`
+     + `.github/workflows/process-image-compression-queue.yml` (1-го числа
+     каждого месяца, `workflow_dispatch` тоже есть) — дочищает
+     `status='pending'` строки (то, что упёрлось в 429 при загрузке),
+     останавливается сама на первом же повторном 429, остаток ждёт
+     следующего месяца. Нужны секреты в GitHub Actions:
+     `SUPABASE_SERVICE_ROLE_KEY` (уже есть) + **новый `TINYPNG_API_KEY`
+     (владельцу нужно добавить самому)**.
+  6. **Бэкафилл существующих (уже загруженных ДО этой правки) картинок** —
+     `scripts/backfill-image-compression-queue.mjs`, идемпотентный
+     (`ON CONFLICT DO NOTHING`), перечисляет все файлы во всех бакетах-
+     картинках через Storage API и ставит недостающие в очередь как
+     `pending`. **Уже прогнан вживую в этой сессии** (нужен был только
+     `SUPABASE_SERVICE_ROLE_KEY`, получен временно через Management API
+     `/api-keys?reveal=true`, в чат/лог не попадал) — **262 существующих
+     файла добавлены в очередь** (`object-photos` 76, `building-plans` 5,
+     `financing-logos` 13, `design-project-photos` 71, `lead-photos` 4,
+     `pledge-photos` 16, `contractor-photos` 15, `object-documents` 62).
+     Приоритетная выборка фото объекта "one" по `landing_slug` в скрипте
+     сначала упала на опечатке в имени колонки (`photos` вместо реального
+     `photo_urls` — сверился с `RealtyObjectRow` в `data/objects.ts`),
+     исправлено; отдельно приоритизировать её не потребовалось — весь
+     бэклог (262) с большим запасом укладывается в 500/месяц одним
+     прогоном, порядок для полноты значения не имеет.
+  7. **Статические картинки в самом репозитории (`public/images/**`) —
+     ОТДЕЛЬНЫЙ путь**, не через `image_compressions` (это не Storage-
+     аплоады, а обычные закоммиченные файлы). Именно они — три страницы из
+     приоритета владельца: гид района (`public/images/district`, 12 файлов
+     — включая логотип "Минск Мир", который показывается и на самом
+     лендинге "one") и карточки бизнес-центров
+     (`public/images/business-centers[-hero]`, 144 файла). Сам лендинг
+     "one" при этом использует фото объекта из Storage (`object-photos`,
+     уже в очереди см. п.6) — там своих статических файлов нет.
+     `scripts/compress-static-images.mjs` — обходит `public/images/**`
+     именно в этом порядке (`PRIORITY_DIRS = ['district',
+     'business-centers-hero', 'business-centers']`, остальное — после),
+     манифест `scripts/data/tinypng-static-manifest.json` (sha256
+     сжатого файла) — повторный запуск не жжёт квоту на уже сжатые
+     файлы, пересжимает только реально заменённые. Останавливается на
+     первом 429 (сохраняя прогресс в манифест после каждого файла — прогон
+     можно прерывать без потери сделанного). `.github/workflows/
+     compress-static-images.yml` (`workflow_dispatch`) — гоняет скрипт и
+     коммитит результат обратно в ту же ветку.
+  8. **Реальный сетевой блокер, не устранённый в этой сессии**:
+     `api.tinify.com` не в Allowed Domains песочницы (`curl` — `403
+     connect_rejected`, тот же класс блокировки, что и у других сторонних
+     API-доменов в этом проекте, см. записи про `api-maps.yandex.ru`/
+     `vercel.com` выше) — САМО сжатие (вызов TinyPNG) в этой сессии не
+     выполнено ни разу, ни для статики, ни для очереди. **Владельцу нужно
+     сделать три вещи, чтобы всё заработало**: (1) `TINYPNG_API_KEY` в
+     Vercel env (сжатие при новых загрузках); (2) `TINYPNG_API_KEY`
+     секретом в GitHub Actions репозитория (месячный докат + разовый
+     прогон статики — оба воркфлоу его используют); (3) — опционально,
+     если хочется, чтобы сжатие прошло прямо в этой сессии, а не ждало
+     следующего запуска раннера — открыть `api.tinify.com` в Allowed
+     Domains окружения. Как только секреты будут добавлены — можно
+     запустить `compress-static-images.yml` и
+     `process-image-compression-queue.yml` вручную (`workflow_dispatch`,
+     доступно и мне через MCP-инструмент `actions_run_trigger`, не только
+     владельцу из интерфейса GitHub) — оба готовы и ждут только ключа.
+  Проверено: `npx tsc -b`/`npx vite build`/`npx oxlint` чистые; все новые
+  `api/*.js` — `node --check`; `scripts/*.mjs` — реальный `--dry-run` через
+  `npm install` в песочнице (кросс-директорийный импорт `../api/_tinypng.js`
+  из `scripts/` резолвится корректно); backfill-скрипт — прогнан по-настоящему
+  (не dry-run) против реальной базы, итог подтверждён прямым SQL-подсчётом
+  (`select status, count(*) from image_compressions group by status` →
+  `pending: 262`). Само сжатие TinyPNG (сетевая часть) не проверено вживую
+  нигде — заблокировано в песочнице, см. п.8.
+
 - **2026-09-06 — PageSpeed: пререндер по воркерам со своим браузером на
   каждый (продолжение записи ниже — билд после мерджа занял 13+ минут).**
   `WORKER_COUNT=1` (строго последовательный рендер, из предыдущей записи)

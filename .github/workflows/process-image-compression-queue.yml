@@ -1,0 +1,24 @@
+name: Process image compression queue
+
+on:
+  schedule:
+    # 1-го числа каждого месяца — после того как месячный лимит TinyPNG
+    # обнуляется. Время сдвинуто от других месячных cron (см. соседние
+    # workflow), чтобы не запускаться одновременно.
+    - cron: '0 5 1 * *'
+  workflow_dispatch:
+
+jobs:
+  process-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/process-image-compression-queue.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TINYPNG_API_KEY: ${{ secrets.TINYPNG_API_KEY }}
