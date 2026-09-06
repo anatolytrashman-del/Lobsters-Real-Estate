@@ -43,3 +43,49 @@ export function FactRow({ icon: Icon, children }: { icon: typeof Camera; childre
     </div>
   );
 }
+
+// Плитка факта — тот же визуальный язык, что и у "Ключевых цифр" на гиде
+// района Минск Мир (DistrictGuidePage.tsx: круглая иконка + крупное значение
+// + подпись, белая карточка на фоне glass-карточки). Владелец, 2026-09-06:
+// "переработай блок фактов в плиточки, можно разного размера... пример бери
+// с минск мира". Два режима контента:
+// - "stat" (по умолчанию) — крупное жирное значение + мелкая серая подпись,
+//   для коротких числовых фактов (площадь/год/этажи/метро после разбивки).
+// - "text" — обычный текст без крупного значения, для факта, который не
+//   раскладывается на "число + подпись" (парковка, застройщик) — те же
+//   карточка/иконка, просто без искусственного разделения на две строки.
+// wide — растягивает плитку на 2 колонки (для более длинного текста).
+export function FactTile({
+  icon: Icon,
+  value,
+  label,
+  text,
+  wide,
+}: {
+  icon: typeof Camera;
+  value?: ReactNode;
+  label?: ReactNode;
+  text?: ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <div
+      className={
+        'flex flex-col gap-2 rounded-control border border-border/60 bg-white p-4 shadow-card' +
+        (wide ? ' col-span-2' : '')
+      }
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-muted text-ink">
+        <Icon className="h-4 w-4" />
+      </span>
+      {text ? (
+        <p className="text-sm font-semibold leading-snug text-ink">{text}</p>
+      ) : (
+        <>
+          <div className="text-lg font-extrabold leading-tight text-ink">{value}</div>
+          {label && <p className="text-xs leading-snug text-ink-muted">{label}</p>}
+        </>
+      )}
+    </div>
+  );
+}

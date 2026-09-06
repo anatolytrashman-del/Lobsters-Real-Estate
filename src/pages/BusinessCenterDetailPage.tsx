@@ -29,7 +29,7 @@ import {
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from '../lib/glass';
 import { Badge } from '../components/ui/Badge';
-import { PhotoBlock, FactRow } from '../components/businessCenters/BusinessCenterVisuals';
+import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
 import { setBreadcrumbJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
 import { businessClassTone, shortName, sortByShortName } from '../lib/businessCenterDisplay';
 import type { BusinessCenter, HighlightIconKey, TenantOrganization } from '../data/businessCenters';
@@ -186,19 +186,42 @@ export function BusinessCenterDetailPage() {
 
             <FactRow icon={MapPin}>{center.address}</FactRow>
 
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {/* Плитки фактов вместо простого списка строк — владелец,
+                2026-09-06: "переработай этот блок в плиточки, можно разного
+                размера, но чтобы выглядело как концепт... пример бери с
+                минск мира" (см. "Ключевые цифры" в DistrictGuidePage.tsx —
+                тот же визуальный язык: круглая иконка, белая карточка).
+                Короткие числовые факты (площадь/год/этажи/метро) — в
+                "stat"-режиме FactTile (крупное значение + подпись); метро
+                разбивается на "станция"/"расстояние" по первой запятой в
+                тексте, если запятой нет — вся строка уходит в подпись.
+                Парковка/застройщик — свободный текст произвольной длины,
+                не раскладывается на число+подпись, поэтому "text"-режим
+                (просто текст покрупнее) и парковка — на всю ширину (wide),
+                как самый длинный факт на практике. */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {center.totalArea != null && (
-                <FactRow icon={Ruler}>{center.totalArea.toLocaleString('ru-RU')} м² общая площадь</FactRow>
+                <FactTile icon={Ruler} value={`${center.totalArea.toLocaleString('ru-RU')} м²`} label="Общая площадь" />
               )}
               {center.yearBuilt != null && (
-                <FactRow icon={Calendar}>
-                  {center.status === 'under_construction' ? `Ожидаемая сдача — ${center.yearBuilt} г.` : `Сдан в ${center.yearBuilt} г.`}
-                </FactRow>
+                <FactTile
+                  icon={Calendar}
+                  value={`${center.yearBuilt} г.`}
+                  label={center.status === 'under_construction' ? 'Ожидаемая сдача' : 'Сдан в этом году'}
+                />
               )}
-              {center.floors != null && <FactRow icon={Layers}>{center.floors} этажей</FactRow>}
-              {center.metro && <FactRow icon={TrainFront}>{center.metro}</FactRow>}
-              {center.parking && <FactRow icon={Car}>{center.parking}</FactRow>}
-              {center.developer && <FactRow icon={Building2}>{center.developer}</FactRow>}
+              {center.floors != null && <FactTile icon={Layers} value={center.floors} label="Этажей" />}
+              {center.metro &&
+                (() => {
+                  const idx = center.metro.indexOf(',');
+                  return idx === -1 ? (
+                    <FactTile icon={TrainFront} value={center.metro} label="Метро" />
+                  ) : (
+                    <FactTile icon={TrainFront} value={center.metro.slice(0, idx)} label={center.metro.slice(idx + 1).trim()} />
+                  );
+                })()}
+              {center.developer && <FactTile icon={Building2} text={center.developer} />}
+              {center.parking && <FactTile icon={Car} text={center.parking} wide />}
             </div>
 
             {center.description && <p className="text-sm text-ink-muted">{center.description}</p>}
