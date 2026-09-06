@@ -195,75 +195,146 @@ async function main() {
     return;
   }
 
+  // Владелец, 2026-09-06: "оптимизируй пайплайн" — с ростом каталога (145
+  // карточек БЦ + хабы класса/района + 32 новых хаба пересечений класс×район
+  // + лендинги объектов, 190+ страниц) старая схема "новый браузер на КАЖДУЮ
+  // страницу и КАЖДУЮ попытку" стала заметно давить на время сборки — запуск
+  // headless-браузера на порядок дороже, чем открытие вкладки в уже
+  // запущенном. Теперь браузер ОДИН на всю сборку, но с self-healing (см.
+  // ensureBrowser ниже) — если он всё же неожиданно умрёт (та самая
+  // нестабильность на билд-контейнере Vercel, из-за которой раньше и
+  // появилась схема "браузер на каждую попытку", см. историю в
+  // SEO_PLAN.md), следующая попытка перезапускает его заново, а не роняет
+  // всю сборку. Ключевое отличие от прежней (уже отклонённой) попытки
+  // переиспользовать браузер: каждая страница получает СВОЮ вкладку
+  // (browser.newPage()), которая гарантированно закрывается в finally —
+  // если раньше вкладки копились и не закрывались явно, это могло быть
+  // реальной причиной падения по памяти на длинной сборке, а не просто
+  // "браузер иногда падает сам по себе".
+  //
+  // Вторая часть оптимизации — ограниченный пул параллельных вкладок
+  // (WORKER_COUNT), не строго по одной странице за раз: основное время на
+  // страницу уходит не на сам рендер, а на ожидание ответа Supabase (один
+  // и тот же браузер прекрасно обслуживает несколько вкладок одновременно,
+  // сетевые запросы разных вкладок друг друга не блокируют). Число
+  // воркеров — умеренное (не разгонять сильно на build-контейнере с
+  // ограниченными CPU/RAM), тот же порядок величины, что и у пула в
+  // meetingTranscribeApi.ts (CHUNK_CONCURRENCY).
+  const WORKER_COUNT = 4;
+
   const serverProc = startPreviewServer();
-  try {
-    await waitForServer();
-    for (const path of paths) {
-      // Свежий браузер на каждую попытку — не один на всю сборку. На
-      // build-контейнере Vercel браузер один раз неожиданно закрылся между
-      // слагами (browser.newPage(): Target page, context or browser has
-      // been closed), а сам вызов newPage() лежал ВНЕ try/catch — ошибка
-      // не гасилась, роняла весь npm run build (3 неудачных деплоя подряд,
-      // см. журнал SEO_PLAN.md, прод при этом не падал — Vercel просто
-      // продолжал отдавать последний удачный билд). Полная изоляция
-      // браузера на попытку убирает весь этот класс сбоев независимо от
-      // первопричины падения.
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        let browser;
+  let browser = null;
+  // Единственный "полёт" перезапуска браузера на все воркеры разом — при
+  // WORKER_COUNT>1 несколько вкладок могут словить "browser closed" от
+  // ОДНОГО и того же упавшего браузера одновременно (проверено локальным
+  // тестом пула перед деплоем: без этой блокировки 4 воркера гонялись за
+  // релончем разом и запускали браузер 5 раз вместо 1 — не падение сборки,
+  // но чистая трата времени, обратная всему смыслу оптимизации). Пока
+  // relaunchPromise не пуст — все параллельные вызовы просто ждут его
+  // результат, не плодя свои собственные launchBrowser().
+  let relaunchPromise = null;
+
+  async function ensureBrowser() {
+    if (browser && browser.isConnected()) return browser;
+    if (!relaunchPromise) {
+      relaunchPromise = (async () => {
         try {
-          browser = await launchBrowser();
-          const page = await browser.newPage();
-          // ?prerender=1 — сигнал для инлайн-скрипта Яндекс.Метрики в
-          // index.html не считать этот заход реальным визитом (см.
-          // комментарий там же). В сохранённый HTML параметр не попадает —
-          // только управляет тем, что выполнится при заходе именно отсюда.
-          await page.goto(`${BASE_URL}/${path}?prerender=1`, { waitUntil: 'domcontentloaded' });
-          // ObjectLandingPage держит спиннер, пока не пришли данные из
-          // Supabase (см. состояние loading) — h1 в разметке появляется
-          // только у реального контента, это и есть сигнал готовности
-          // (для статических страниц вроде DistrictGuidePage h1 есть сразу).
-          await page.waitForSelector('h1', { timeout: 20_000 });
-          // У гида района h1 статический и появляется ДО прихода данных из
-          // Supabase — таблицы первичного/вторичного рынка в этот момент ещё
-          // показывают плейсхолдер «Загрузка…», и он попадал в снапшот
-          // (проверено на проде 2026-08-25: обе таблицы отсутствовали в
-          // сохранённом HTML). Дожидаемся, пока на странице не останется ни
-          // одного «Загрузка…» (данные пришли ИЛИ отрисовался терминальный
-          // «Данные пока не собраны»). Не фатально: по таймауту снимаем как
-          // есть — хуже прежнего поведения не станет.
-          await page
-            .waitForFunction(() => !document.body.innerText.includes('Загрузка…'), { timeout: 15_000 })
-            .catch(() => console.warn(`[prerender] /${path}: «Загрузка…» не исчезла за 15с — снапшот с плейсхолдером`));
-          const html = await page.content();
-          const dir = join(DIST_DIR, path);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(join(dir, 'index.html'), html);
-          console.log(`[prerender] /${path} → dist/${path}/index.html (${Math.round(html.length / 1024)} КБ)`);
-          break;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (attempt === 2) {
-            // Одна проблемная страница не должна ронять сборку остальных —
-            // без снапшота роут просто останется на клиентском рендере, как
-            // и было раньше, до Э2-1 (не хуже текущего состояния).
-            console.error(`[prerender] /${path} пропущен после 2 попыток:`, message);
-          } else {
-            console.warn(`[prerender] /${path}: попытка ${attempt} не удалась (${message}), повтор`);
+          await browser?.close();
+        } catch {
+          // мог быть уже мёртв — не мешает перезапуску
+        }
+        browser = await launchBrowser();
+        relaunchPromise = null;
+        return browser;
+      })();
+    }
+    return relaunchPromise;
+  }
+
+  async function renderPath(path) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let page;
+      try {
+        const activeBrowser = await ensureBrowser();
+        page = await activeBrowser.newPage();
+        // ?prerender=1 — сигнал для инлайн-скрипта Яндекс.Метрики в
+        // index.html не считать этот заход реальным визитом (см.
+        // комментарий там же). В сохранённый HTML параметр не попадает —
+        // только управляет тем, что выполнится при заходе именно отсюда.
+        await page.goto(`${BASE_URL}/${path}?prerender=1`, { waitUntil: 'domcontentloaded' });
+        // ObjectLandingPage держит спиннер, пока не пришли данные из
+        // Supabase (см. состояние loading) — h1 в разметке появляется
+        // только у реального контента, это и есть сигнал готовности
+        // (для статических страниц вроде DistrictGuidePage h1 есть сразу).
+        await page.waitForSelector('h1', { timeout: 20_000 });
+        // У гида района h1 статический и появляется ДО прихода данных из
+        // Supabase — таблицы первичного/вторичного рынка в этот момент ещё
+        // показывают плейсхолдер «Загрузка…», и он попадал в снапшот
+        // (проверено на проде 2026-08-25: обе таблицы отсутствовали в
+        // сохранённом HTML). Дожидаемся, пока на странице не останется ни
+        // одного «Загрузка…» (данные пришли ИЛИ отрисовался терминальный
+        // «Данные пока не собраны»). Не фатально: по таймауту снимаем как
+        // есть — хуже прежнего поведения не станет.
+        await page
+          .waitForFunction(() => !document.body.innerText.includes('Загрузка…'), { timeout: 15_000 })
+          .catch(() => console.warn(`[prerender] /${path}: «Загрузка…» не исчезла за 15с — снапшот с плейсхолдером`));
+        const html = await page.content();
+        const dir = join(DIST_DIR, path);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'index.html'), html);
+        console.log(`[prerender] /${path} → dist/${path}/index.html (${Math.round(html.length / 1024)} КБ)`);
+        return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (attempt === 2) {
+          // Одна проблемная страница не должна ронять сборку остальных —
+          // без снапшота роут просто останется на клиентском рендере, как
+          // и было раньше, до Э2-1 (не хуже текущего состояния).
+          console.error(`[prerender] /${path} пропущен после 2 попыток:`, message);
+        } else {
+          console.warn(`[prerender] /${path}: попытка ${attempt} не удалась (${message}), повтор`);
+        }
+        // Ошибка похожа на "браузер умер" — форсируем переоткрытие на
+        // следующей попытке/следующем воркере, а не оставляем висеть мёртвый
+        // объект, который ensureBrowser() иначе продолжил бы считать живым.
+        if (message.includes('closed') || message.includes('crashed') || message.includes('disconnected')) {
+          try {
+            await browser?.close();
+          } catch {
+            // уже мёртв — и так сойдёт
           }
-        } finally {
-          if (browser) {
-            try {
-              await browser.close();
-            } catch {
-              // браузер мог уже быть мёртв (та самая нестабильность) —
-              // не роняем сборку из-за неудачного close()
-            }
+          browser = null;
+        }
+      } finally {
+        if (page) {
+          try {
+            await page.close();
+          } catch {
+            // страница могла умереть вместе с браузером — не роняем сборку
           }
         }
       }
     }
+  }
+
+  try {
+    await waitForServer();
+    await ensureBrowser();
+    let cursor = 0;
+    async function worker() {
+      while (cursor < paths.length) {
+        const path = paths[cursor++];
+        await renderPath(path);
+      }
+    }
+    await Promise.all(Array.from({ length: WORKER_COUNT }, worker));
   } finally {
     serverProc.kill();
+    try {
+      await browser?.close();
+    } catch {
+      // не мешаем финалу сборки из-за неудачного close()
+    }
   }
 }
 
