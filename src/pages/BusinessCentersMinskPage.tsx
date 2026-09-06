@@ -21,7 +21,14 @@ import { Badge } from '../components/ui/Badge';
 import { HeroImageSlider } from '../components/objects/HeroImageSlider';
 import { ObjectMapWidget } from '../components/objects/ObjectMapWidget';
 import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
-import { setArticleJsonLd, setBreadcrumbJsonLd, setGenericPageMeta, setNoIndex, clearNoIndex } from '../lib/pageMeta';
+import {
+  setArticleJsonLd,
+  setBreadcrumbJsonLd,
+  setFaqJsonLd,
+  setGenericPageMeta,
+  setNoIndex,
+  clearNoIndex,
+} from '../lib/pageMeta';
 import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
 import {
   CLASS_SLUG_TO_VALUE,
@@ -299,6 +306,58 @@ export function BusinessCentersMinskPage() {
     return { total: visibleCenters.length, totalArea, withAreaCount: withArea.length, nearMetro: nearMetro.length, withMetroCount: withMetro.length, underConstruction, byClass };
   }, [visibleCenters]);
 
+  // FAQ (Fable-анализ, приоритет 1: "5-8 вопросов, ответы короткие, с
+  // цифрами из базы" + FAQPage-разметка). Только вопросы, на которые честно
+  // есть ответ из реальных данных — "сколько стоит аренда офиса класса A"
+  // из исходного списка Fable НЕ включён (структурных данных по ставкам на
+  // уровне каталога нет, см. комментарий у marketStats выше). Скоуп — тот
+  // же отфильтрованный `visibleCenters`/`marketStats`, что и у сводки: на
+  // хаб-странице класса/района FAQ отвечает про этот класс/район, не про
+  // весь город. "Самый большой" — определённый максимум по `totalArea`
+  // среди visibleCenters, не выдумка.
+  const scopeLabel = classFilter ? `класса ${classFilter}` : districtFilter ? `в ${districtFilter} районе` : 'в Минске';
+  const biggest = useMemo(
+    () => visibleCenters.filter((c) => c.totalArea != null).sort((a, b) => (b.totalArea ?? 0) - (a.totalArea ?? 0))[0] ?? null,
+    [visibleCenters],
+  );
+  const underConstructionNames = useMemo(
+    () => visibleCenters.filter((c) => c.status === 'under_construction').map((c) => shortName(c)),
+    [visibleCenters],
+  );
+  const faqItems = useMemo(() => {
+    const items: { question: string; answer: string }[] = [];
+    if (marketStats.total > 0) {
+      items.push({
+        question: `Сколько бизнес-центров ${scopeLabel} есть в каталоге?`,
+        answer: `В каталоге redevelopment.pro сейчас ${marketStats.total} бизнес-центров ${scopeLabel === 'в Минске' ? 'Минска' : scopeLabel}.`,
+      });
+    }
+    if (biggest) {
+      items.push({
+        question: `Какой самый большой бизнес-центр ${scopeLabel}?`,
+        answer: `По площади в каталоге лидирует ${shortName(biggest)} — ${biggest.totalArea?.toLocaleString('ru-RU')} м².`,
+      });
+    }
+    items.push({
+      question: `Какие бизнес-центры ${scopeLabel} сейчас строятся?`,
+      answer:
+        underConstructionNames.length > 0
+          ? `Строятся: ${underConstructionNames.join(', ')}.`
+          : `Среди бизнес-центров ${scopeLabel} в каталоге сейчас нет строящихся объектов.`,
+    });
+    items.push({
+      question: 'Чем класс A отличается от B+, B и C?',
+      answer:
+        'Класс A — самый высокий уровень: качественная инженерия (климат-контроль, резервное питание), развитая инфраструктура, вместительная парковка и расположение в деловых зонах. Класс B+ и B — хорошее качество отделки и инженерии, но менее престижное расположение или меньшая парковка. Класс C — более простая отделка и инженерные системы, обычно ниже ставки аренды.',
+    });
+    return items;
+  }, [marketStats.total, scopeLabel, biggest, underConstructionNames]);
+
+  useEffect(() => {
+    if (notFound) return;
+    setFaqJsonLd(faqItems);
+  }, [faqItems, notFound]);
+
   if (notFound) {
     return (
       <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-bg px-4 text-center">
@@ -569,6 +628,20 @@ export function BusinessCentersMinskPage() {
                 {visibleCenters.map((c) => (
                   <BusinessCenterCard key={c.slug} center={c} />
                 ))}
+              </div>
+            )}
+
+            {faqItems.length > 0 && (
+              <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+                <h2 className="text-lg font-bold text-ink">Частые вопросы</h2>
+                <div className="flex flex-col divide-y divide-border">
+                  {faqItems.map((item) => (
+                    <div key={item.question} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
+                      <p className="text-sm font-semibold text-ink">{item.question}</p>
+                      <p className="text-sm leading-relaxed text-ink-muted">{item.answer}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
