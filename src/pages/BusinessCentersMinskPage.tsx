@@ -81,12 +81,14 @@ const HERO_IMAGES: string[] = ['/images/business-centers-hero/hero-1.jpg'];
 // и страницу yandex.ru/maps/?um=constructor:<id> — ни один не подходит как
 // src iframe (тот же нюанс, что уже задокументирован в ObjectMapWidget.tsx
 // и в CLAUDE.md про карту объекта): нужен именно map-widget/v1 с тем же id.
+// Обновлено 2026-09-06 — владелец перезалил карту с координатами ВСЕХ 143 БЦ
+// (см. журнал CLAUDE.md, запись про CSV для Конструктора) — новый id карты.
 const MAP_EMBED_URL =
-  'https://yandex.ru/map-widget/v1/?um=constructor:40aec344a3d242ccc8c9562de875da3b03e8a49f93d956273f82830664696b1a&source=constructorLink';
+  'https://yandex.ru/map-widget/v1/?um=constructor:2faf8b114a74f188414091fd2e5e0f17d2fcde9f125ebbee51c25197b78c7736&source=constructorLink';
 
 // Только дата последнего пересмотра фактов/добавления БЦ — держать в одном
 // месте, тот же принцип, что и DATE_MODIFIED в DistrictGuidePage.tsx.
-const DATE_MODIFIED = '2026-09-04';
+const DATE_MODIFIED = '2026-09-06';
 
 const MONTH_NAMES = [
   'январь',
