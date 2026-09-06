@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
 import { extractTelegramHandle } from './telegramHandle';
 import { fetchTelegramAvatarBlob } from './telegramAvatarApi';
+import { queueImageCompression } from './tinypngCompress';
 import { isBirthdayToday, type Contractor, type ContractorRow } from '../data/contractors';
 
 const CONTRACTOR_PHOTOS_BUCKET = 'contractor-photos';
@@ -121,6 +122,7 @@ export function uploadContractorPhoto(file: File): Promise<string> {
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from(CONTRACTOR_PHOTOS_BUCKET).upload(path, file);
       if (error) throw error;
+      queueImageCompression(CONTRACTOR_PHOTOS_BUCKET, path);
       return path;
     },
     1000,

@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
 import { compressImageIfNeeded } from './imageCompress';
+import { queueImageCompression } from './tinypngCompress';
 import { authFetch } from './authFetch';
 import type { ContactChannel, RealtyObject, RealtyObjectRow } from '../data/objects';
 
@@ -194,6 +195,7 @@ export async function uploadObjectImage(file: File): Promise<string> {
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from('object-photos').upload(path, toUpload);
       if (error) throw error;
+      queueImageCompression('object-photos', path);
       const { data } = supabase.storage.from('object-photos').getPublicUrl(path);
       return data.publicUrl;
     },
@@ -210,6 +212,7 @@ export function uploadObjectDocument(file: File): Promise<{ url: string; fileNam
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from('object-documents').upload(path, file);
       if (error) throw error;
+      queueImageCompression('object-documents', path);
       const { data } = supabase.storage.from('object-documents').getPublicUrl(path);
       return { url: data.publicUrl, fileName: file.name };
     },

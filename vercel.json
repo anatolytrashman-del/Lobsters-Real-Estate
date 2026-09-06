@@ -1,9 +1,9 @@
 {
   "functions": {
-    "api/transcribe-start.js": { "maxDuration": 300 },
-    "api/transcribe-poll.js": { "maxDuration": 60 },
+    "api/transcribe.js": { "maxDuration": 300 },
     "api/meeting-ai.js": { "maxDuration": 300 },
-    "api/supplier-web-search.js": { "maxDuration": 300 }
+    "api/supplier-web-search.js": { "maxDuration": 300 },
+    "api/tinypng-compress.js": { "maxDuration": 30 }
   },
   "headers": [
     {
