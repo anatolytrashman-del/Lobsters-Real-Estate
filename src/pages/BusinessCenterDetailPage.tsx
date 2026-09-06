@@ -32,7 +32,7 @@ import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from '../lib/glass';
 import { Badge } from '../components/ui/Badge';
 import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
-import { setBreadcrumbJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
+import { setBreadcrumbJsonLd, setFaqJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
 import { shortName, sortByShortName } from '../lib/businessCenterDisplay';
 import type { BusinessCenter, HighlightIconKey, TenantOrganization } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
@@ -102,6 +102,50 @@ export function BusinessCenterDetailPage() {
       { name: shortName(center) },
     ]);
   }, [center]);
+
+  // FAQ по зданию (Fable-анализ, приоритет 1: "Какой класс?.. сколько
+  // парковочных мест?.. кто собственник?.. какие станции метро рядом?..
+  // какие компании арендуют?"). Только вопросы, на которые у ЭТОГО
+  // конкретного БЦ реально есть заполненное поле — не выдумываем факт,
+  // чтобы набрать вопросов побольше (у многих новых записей из prometr.by,
+  // например, `developer`/`parking` пустые — для них соответствующий
+  // вопрос просто не появляется).
+  const faqItems = useMemo(() => {
+    if (!center) return [];
+    const name = shortName(center);
+    const items: { question: string; answer: string }[] = [];
+    if (center.businessClass) {
+      items.push({ question: `Какой класс у бизнес-центра «${name}»?`, answer: `«${name}» относится к деловому классу ${center.businessClass}.` });
+    }
+    if (center.totalArea != null) {
+      items.push({
+        question: `Какая общая площадь у «${name}»?`,
+        answer: `Общая площадь «${name}» — ${center.totalArea.toLocaleString('ru-RU')} м²${center.floors != null ? `, здание насчитывает ${center.floors} этажей` : ''}.`,
+      });
+    }
+    if (center.metro) {
+      items.push({ question: `Какое метро рядом с «${name}»?`, answer: `Ближайшая станция метро — ${center.metro.replace(/[«»]/g, '')}.` });
+    }
+    if (center.developer) {
+      items.push({ question: `Кто застройщик «${name}»?`, answer: `Застройщик «${name}» — ${center.developer}.` });
+    }
+    if (center.parking) {
+      items.push({ question: `Есть ли парковка у «${name}»?`, answer: center.parking });
+    }
+    if (center.tenantOrganizations.length > 0) {
+      const sample = center.tenantOrganizations.slice(0, 5).map((o) => o.name);
+      items.push({
+        question: `Какие компании арендуют помещения в «${name}»?`,
+        answer: `Среди организаций в здании: ${sample.join(', ')}${center.tenantOrganizations.length > sample.length ? ' и другие' : ''}.`,
+      });
+    }
+    return items;
+  }, [center]);
+
+  useEffect(() => {
+    if (!center) return;
+    setFaqJsonLd(faqItems);
+  }, [center, faqItems]);
 
   // Слаг не найден (опечатка в ссылке, удалённый БЦ) — soft-404: страница
   // остаётся доступной (200, не редирект), но не индексируется, тот же
@@ -428,6 +472,20 @@ export function BusinessCenterDetailPage() {
                   <OfferDealSection title="Аренда" rows={rentRows} />
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {faqItems.length > 0 && (
+          <div className={cn('mt-6 flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+            <h2 className="text-lg font-bold text-ink">Частые вопросы</h2>
+            <div className="flex flex-col divide-y divide-border">
+              {faqItems.map((item) => (
+                <div key={item.question} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
+                  <p className="text-sm font-semibold text-ink">{item.question}</p>
+                  <p className="text-sm leading-relaxed text-ink-muted">{item.answer}</p>
+                </div>
+              ))}
             </div>
           </div>
         )}
