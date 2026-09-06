@@ -42,3 +42,20 @@ export function districtHubUrl(district: string): string | null {
 export function classHubUrl(businessClass: NonNullable<BusinessCenter['businessClass']>): string {
   return `/minsk/bcminsk/class/${CLASS_SLUGS[businessClass]}`;
 }
+
+// Хаб-страницы по пересечению класс×район (владелец, 2026-09-06: "давай
+// пока сделаем ту самую структуру урлов [дерево пересечений]... точечные
+// страницы будут очень хорошо приняты поиском, увеличит количество страниц
+// в выдаче" — идея была впервые предложена самим владельцем и записана как
+// задел на будущее в BCMINSK_SEO_PLAN.md, теперь реализована). Схема
+// `/minsk/bcminsk/class/:classSlug/raion/:districtSlug` — та же, что
+// называл сам план. Метро×класс/метро×район из того же плана НЕ делаем —
+// метро всё ещё свободный текст, не структурное поле (см. блокер в плане).
+export function classDistrictHubUrl(
+  businessClass: NonNullable<BusinessCenter['businessClass']>,
+  district: string,
+): string | null {
+  const districtSlug = DISTRICT_SLUGS[district];
+  if (!districtSlug) return null;
+  return `/minsk/bcminsk/class/${CLASS_SLUGS[businessClass]}/raion/${districtSlug}`;
+}

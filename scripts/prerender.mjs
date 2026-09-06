@@ -73,6 +73,40 @@ const STATIC_PATHS = [
   ...DISTRICT_HUB_SLUGS.map((s) => `minsk/bcminsk/raion/${s}`),
 ];
 
+// Хаб-страницы по пересечению класс×район (владелец, 2026-09-06: "структура
+// урлов [пересечений]... точечные страницы будут очень хорошо приняты
+// поиском") — slug'и класса/района из тех же конечных списков выше, но сам
+// список НЕПУСТЫХ пар — динамический (запрос business_class+district всех
+// БЦ, группировка на месте), не хардкожен: план (`BCMINSK_SEO_PLAN.md`)
+// явно предупреждал не генерировать хаб для комбинации без единого БЦ.
+const CLASS_HUB_SLUG_BY_VALUE = { A: 'a', 'B+': 'b-plus', B: 'b', C: 'c' };
+const DISTRICT_HUB_SLUG_BY_NAME = {
+  Центральный: 'tsentralny',
+  Октябрьский: 'oktyabrsky',
+  Советский: 'sovetsky',
+  Фрунзенский: 'frunzensky',
+  Заводской: 'zavodskoy',
+  Первомайский: 'pervomaysky',
+  Партизанский: 'partizansky',
+  Московский: 'moskovsky',
+  Ленинский: 'leninsky',
+};
+
+async function fetchClassDistrictComboPaths() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=business_class,district`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_class/district`);
+  const rows = await res.json();
+  const combos = new Set();
+  for (const r of rows) {
+    const classSlug = CLASS_HUB_SLUG_BY_VALUE[r.business_class];
+    const districtSlug = DISTRICT_HUB_SLUG_BY_NAME[r.district];
+    if (classSlug && districtSlug) combos.add(`minsk/bcminsk/class/${classSlug}/raion/${districtSlug}`);
+  }
+  return [...combos];
+}
+
 async function fetchLandingPaths() {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/objects?select=landing_slug&landing_slug=not.is.null`, {
     headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
@@ -150,7 +184,12 @@ async function launchBrowser() {
 async function main() {
   if (!existsSync(DIST_DIR)) throw new Error('dist/ не найден — запускать после vite build');
 
-  const paths = [...(await fetchLandingPaths()), ...(await fetchBusinessCenterPaths()), ...STATIC_PATHS];
+  const paths = [
+    ...(await fetchLandingPaths()),
+    ...(await fetchBusinessCenterPaths()),
+    ...(await fetchClassDistrictComboPaths()),
+    ...STATIC_PATHS,
+  ];
   if (paths.length === 0) {
     console.warn('[prerender] пререндерить нечего — нет ни объектов с landing_slug, ни статических страниц');
     return;

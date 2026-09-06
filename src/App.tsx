@@ -171,6 +171,13 @@ export default function App() {
           Регистрируются ДО ":slug", чтобы не конфликтовать с ним. */}
       <Route path="/minsk/bcminsk/class/:classSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
+      {/* Пересечение класс×район (владелец, 2026-09-06: "структура урлов...
+          точечные страницы будут хорошо приняты поиском") — тот же
+          компонент, оба параметра сразу, регистрируется ПОСЛЕ одноосевых
+          хабов (react-router не заботит порядок непересекающихся паттернов,
+          но так рядом с ними явно видно, что это третий, более узкий
+          вариант того же роута), тоже ДО ":slug". */}
+      <Route path="/minsk/bcminsk/class/:classSlug/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
       <Route path="/plan/:token" element={<PublicBuildingPlan />} />
       <Route path="/tz/:token" element={<BriefPublicPage />} />

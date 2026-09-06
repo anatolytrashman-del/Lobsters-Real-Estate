@@ -33,6 +33,7 @@ import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/b
 import {
   CLASS_SLUG_TO_VALUE,
   DISTRICT_SLUG_TO_NAME,
+  classDistrictHubUrl,
   classHubUrl,
   districtHubUrl,
 } from '../lib/businessCenterHubs';
@@ -188,7 +189,17 @@ export function BusinessCentersMinskPage() {
   // что и у неизвестного :slug на BusinessCenterDetailPage.tsx).
   const badClassSlug = Boolean(classSlug) && classFilter === null;
   const badDistrictSlug = Boolean(districtSlug) && districtFilter === null;
-  const notFound = badClassSlug || badDistrictSlug;
+  // Пересечение класс×район без единого БЦ (владелец, 2026-09-06: "делай
+  // структуру урлов [дерево пересечений]") — тот же soft-404, что и у
+  // невалидного slug: сам план (`BCMINSK_SEO_PLAN.md`) явно предупреждал не
+  // генерировать хаб для комбинации без единого БЦ (риск тонкого
+  // контента). `centers !== null` — не 404-им во время самой загрузки.
+  const comboEmpty =
+    classFilter !== null &&
+    districtFilter !== null &&
+    centers !== null &&
+    !centers.some((c) => c.businessClass === classFilter && c.district === districtFilter);
+  const notFound = badClassSlug || badDistrictSlug || comboEmpty;
 
   useEffect(() => {
     fetchBusinessCenters()
@@ -201,21 +212,30 @@ export function BusinessCentersMinskPage() {
       setNoIndex();
       return () => clearNoIndex();
     }
-    const hubTitle = classFilter
-      ? `Бизнес-центры класса ${classFilter} в Минске`
-      : districtFilter
-        ? `Бизнес-центры Минска: ${districtFilter} район`
-        : TITLE;
-    const hubDescription = classFilter
-      ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
-      : districtFilter
-        ? `Бизнес-центры в ${districtFilter} районе Минска: адреса, деловой класс, площадь, метро.`
-        : DESCRIPTION;
-    const hubUrl = classFilter
-      ? `https://redevelopment.pro${classHubUrl(classFilter)}`
-      : districtFilter
-        ? `https://redevelopment.pro${districtHubUrl(districtFilter) ?? ''}`
-        : PAGE_URL;
+    const hubTitle =
+      classFilter && districtFilter
+        ? `Бизнес-центры класса ${classFilter} в ${districtFilter} районе Минска`
+        : classFilter
+          ? `Бизнес-центры класса ${classFilter} в Минске`
+          : districtFilter
+            ? `Бизнес-центры Минска: ${districtFilter} район`
+            : TITLE;
+    const hubDescription =
+      classFilter && districtFilter
+        ? `Бизнес-центры класса ${classFilter} в ${districtFilter} районе Минска: адреса, площадь, этажность, метро.`
+        : classFilter
+          ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
+          : districtFilter
+            ? `Бизнес-центры в ${districtFilter} районе Минска: адреса, деловой класс, площадь, метро.`
+            : DESCRIPTION;
+    const hubUrl =
+      classFilter && districtFilter
+        ? `https://redevelopment.pro${classDistrictHubUrl(classFilter, districtFilter) ?? ''}`
+        : classFilter
+          ? `https://redevelopment.pro${classHubUrl(classFilter)}`
+          : districtFilter
+            ? `https://redevelopment.pro${districtHubUrl(districtFilter) ?? ''}`
+            : PAGE_URL;
 
     setGenericPageMeta({ title: hubTitle, description: hubDescription, url: hubUrl, image: OG_IMAGE, ogType: 'article' });
     setArticleJsonLd({
@@ -227,23 +247,44 @@ export function BusinessCentersMinskPage() {
       image: OG_IMAGE,
     });
     setBreadcrumbJsonLd(
-      classFilter || districtFilter
+      classFilter && districtFilter
         ? [
             { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
             { name: 'Бизнес-центры Минска', url: PAGE_URL },
-            { name: classFilter ? `Класс ${classFilter}` : (districtFilter as string) },
+            { name: `Класс ${classFilter}`, url: `https://redevelopment.pro${classHubUrl(classFilter)}` },
+            { name: `${districtFilter} район` },
           ]
-        : [
-            { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
-            { name: 'Бизнес-центры Минска' },
-          ],
+        : classFilter || districtFilter
+          ? [
+              { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
+              { name: 'Бизнес-центры Минска', url: PAGE_URL },
+              { name: classFilter ? `Класс ${classFilter}` : (districtFilter as string) },
+            ]
+          : [
+              { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
+              { name: 'Бизнес-центры Минска' },
+            ],
     );
   }, [classFilter, districtFilter, notFound]);
 
+  // Districts/классы для сайдбара — считаются НЕ от всего `centers`, а от
+  // среза по ДРУГОЙ активной оси (владелец, 2026-09-06: "структура урлов
+  // [пересечений]") — на хабе класса список районов должен показывать
+  // только районы, где у ЭТОГО класса реально есть БЦ (иначе ссылка на
+  // пересечение вела бы на пустой soft-404), и наоборот. Без активного
+  // фильтра по другой оси — обычный полный список, как было.
+  const centersForDistrictList = useMemo(
+    () => (classFilter ? (centers ?? []).filter((c) => c.businessClass === classFilter) : (centers ?? [])),
+    [centers, classFilter],
+  );
+  const centersForClassList = useMemo(
+    () => (districtFilter ? (centers ?? []).filter((c) => c.district === districtFilter) : (centers ?? [])),
+    [centers, districtFilter],
+  );
+
   const availableClasses = useMemo(
-    () =>
-      Array.from(new Set((centers ?? []).map((c) => c.businessClass).filter((v): v is NonNullable<typeof v> => !!v))).sort(),
-    [centers],
+    () => Array.from(new Set(centersForClassList.map((c) => c.businessClass).filter((v): v is NonNullable<typeof v> => !!v))).sort(),
+    [centersForClassList],
   );
   // "Все" + N классов: до 3 пилюль — один ряд, от 4 — два ряда поровну
   // (см. комментарий у самой сетки ниже).
@@ -258,16 +299,16 @@ export function BusinessCentersMinskPage() {
   // Минска (сейчас только "Аден", в индустриальном парке), владелец: "внизу
   // списка, не по алфавиту вместе с городскими районами".
   const districts = useMemo(() => {
-    const all = Array.from(new Set((centers ?? []).map((c) => c.district).filter((v): v is string => !!v)));
+    const all = Array.from(new Set(centersForDistrictList.map((c) => c.district).filter((v): v is string => !!v)));
     const inCity = all.filter((d) => d !== OUT_OF_TOWN_DISTRICT).sort((a, b) => a.localeCompare(b, 'ru'));
     const outOfCity = all.filter((d) => d === OUT_OF_TOWN_DISTRICT);
     return [...inCity, ...outOfCity];
-  }, [centers]);
+  }, [centersForDistrictList]);
   const districtCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const c of centers ?? []) if (c.district) counts[c.district] = (counts[c.district] ?? 0) + 1;
+    for (const c of centersForDistrictList) if (c.district) counts[c.district] = (counts[c.district] ?? 0) + 1;
     return counts;
-  }, [centers]);
+  }, [centersForDistrictList]);
 
   const visibleCenters = useMemo(
     () =>
@@ -315,7 +356,14 @@ export function BusinessCentersMinskPage() {
   // хаб-странице класса/района FAQ отвечает про этот класс/район, не про
   // весь город. "Самый большой" — определённый максимум по `totalArea`
   // среди visibleCenters, не выдумка.
-  const scopeLabel = classFilter ? `класса ${classFilter}` : districtFilter ? `в ${districtFilter} районе` : 'в Минске';
+  const scopeLabel =
+    classFilter && districtFilter
+      ? `класса ${classFilter} в ${districtFilter} районе`
+      : classFilter
+        ? `класса ${classFilter}`
+        : districtFilter
+          ? `в ${districtFilter} районе`
+          : 'в Минске';
   const biggest = useMemo(
     () => visibleCenters.filter((c) => c.totalArea != null).sort((a, b) => (b.totalArea ?? 0) - (a.totalArea ?? 0))[0] ?? null,
     [visibleCenters],
@@ -403,16 +451,22 @@ export function BusinessCentersMinskPage() {
   // Заголовок/подзаголовок hero — на общем каталоге статичные PAGE_H1/
   // INTRO_TEXT, на хаб-подстранице класса/района — уникальные под конкретный
   // фильтр (то же значение, что уже посчитано для meta-тегов выше).
-  const heroH1 = classFilter
-    ? `Бизнес-центры класса ${classFilter} в Минске`
-    : districtFilter
-      ? `Бизнес-центры Минска: ${districtFilter} район`
-      : PAGE_H1;
-  const heroIntro = classFilter
-    ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
-    : districtFilter
-      ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtFilter} районе Минска — сравнивайте по классу, площади и расположению.`
-      : INTRO_TEXT;
+  const heroH1 =
+    classFilter && districtFilter
+      ? `Бизнес-центры класса ${classFilter} в ${districtFilter} районе Минска`
+      : classFilter
+        ? `Бизнес-центры класса ${classFilter} в Минске`
+        : districtFilter
+          ? `Бизнес-центры Минска: ${districtFilter} район`
+          : PAGE_H1;
+  const heroIntro =
+    classFilter && districtFilter
+      ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в ${districtFilter} районе Минска — адреса, площадь, этажность, метро.`
+      : classFilter
+        ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
+        : districtFilter
+          ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtFilter} районе Минска — сравнивайте по классу, площади и расположению.`
+          : INTRO_TEXT;
 
   // Содержимое бокового меню — общий JSX для десктопной sticky-колонки и
   // мобильной шторки (владелец: "боковое меню... как на странице Минск
@@ -420,8 +474,11 @@ export function BusinessCentersMinskPage() {
   const filterContent = (
     <>
       <span className="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">Район</span>
+      {/* "Все районы" сбрасывает только район, класс (если выбран) сохраняется
+          — владелец, 2026-09-06: пересечение класс×район, оси комбинируются,
+          не сбрасывают друг друга при переключении. */}
       <Link
-        to="/minsk/bcminsk"
+        to={classFilter ? classHubUrl(classFilter) : '/minsk/bcminsk'}
         onClick={() => setMobileNavOpen(false)}
         className={cn(
           'rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
@@ -431,7 +488,7 @@ export function BusinessCentersMinskPage() {
         Все районы
       </Link>
       {districts.map((d) => {
-        const url = districtHubUrl(d);
+        const url = classFilter ? classDistrictHubUrl(classFilter, d) : districtHubUrl(d);
         if (!url) return null;
         return (
           <Link
@@ -469,7 +526,7 @@ export function BusinessCentersMinskPage() {
             }}
           >
             <Link
-              to="/minsk/bcminsk"
+              to={districtFilter ? (districtHubUrl(districtFilter) ?? '/minsk/bcminsk') : '/minsk/bcminsk'}
               onClick={() => setMobileNavOpen(false)}
               className={cn(
                 'rounded-full px-2 py-1 text-center text-xs font-semibold transition-colors',
@@ -481,7 +538,7 @@ export function BusinessCentersMinskPage() {
             {availableClasses.map((cls) => (
               <Link
                 key={cls}
-                to={classHubUrl(cls)}
+                to={districtFilter ? (classDistrictHubUrl(cls, districtFilter) ?? classHubUrl(cls)) : classHubUrl(cls)}
                 onClick={() => setMobileNavOpen(false)}
                 className={cn(
                   'rounded-full px-2 py-1 text-center text-xs font-semibold transition-colors',
