@@ -4,47 +4,44 @@ import { Loader2 } from 'lucide-react';
 import { RequirePage } from './components/layout/RequirePage';
 import { RequireSuperAdmin } from './components/layout/RequireSuperAdmin';
 import { useParams } from 'react-router-dom';
+import { PublicBuildingPlan } from './pages/PublicBuildingPlan';
+import { ObjectLandingPage } from './pages/ObjectLandingPage';
+import { DistrictGuidePage } from './pages/DistrictGuidePage';
+import { BusinessCentersMinskPage } from './pages/BusinessCentersMinskPage';
+import { BusinessCenterDetailPage } from './pages/BusinessCenterDetailPage';
+import { MinskHub } from './pages/MinskHub';
+import { BriefPublicPage } from './pages/BriefPublicPage';
+import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
 
 // Вся админка (CRM с десятком разделов — финмодели, сметы, документы и т.д.)
 // нужна только за PasswordGate на /admin/*, но раньше грузилась тем же JS-
 // бандлом, что и продающая страница объекта — посетитель лендинга скачивал
 // весь код CRM, даже никогда его не открыв. lazy() выносит каждую админ-
-// страницу в свой чанк, догружаемый при переходе в /admin.
+// страницу в свой чанк, догружаемый при переходе в /admin — публичные
+// страницы (лендинг объекта и три токенизированные, см. Routes ниже) этого
+// веса больше не тащат.
 //
-// PAGESPEED_PLAN.md, Э7 — публичные страницы (лендинг объекта, гид района и
-// т.д.) раньше были ЕДИНСТВЕННЫМ, что оставалось статическим импортом:
-// комментарий тут прямо говорил "им нельзя добавлять лишний сетевой перелёт
-// на догрузку чанка" — это было верно ДО пререндера (Э0). С пререндером
-// реальный контент страницы виден в HTML ДО того, как вообще загрузился
-// React, поэтому лишний round-trip за JS-чанком уже не блокирует то, что
-// видит посетитель/краулер — а вот отсутствие сплиттинга означало, что
-// лендинг объекта тянул за собой код каталога БЦ, гида района и всех
-// остальных публичных страниц разом (реальный эффект на живом отчёте
-// PageSpeed — LCP упирался именно в конкуренцию за throttled-канал между
-// hero-картинкой и главным JS-чанком). Теперь публичные страницы лениво
-// грузятся так же, как и админские — каждая своим чанком.
-const PublicBuildingPlan = lazy(() =>
-  import('./pages/PublicBuildingPlan').then((m) => ({ default: m.PublicBuildingPlan })),
-);
-const ObjectLandingPage = lazy(() =>
-  import('./pages/ObjectLandingPage').then((m) => ({ default: m.ObjectLandingPage })),
-);
-const DistrictGuidePage = lazy(() =>
-  import('./pages/DistrictGuidePage').then((m) => ({ default: m.DistrictGuidePage })),
-);
-const BusinessCentersMinskPage = lazy(() =>
-  import('./pages/BusinessCentersMinskPage').then((m) => ({ default: m.BusinessCentersMinskPage })),
-);
-const BusinessCenterDetailPage = lazy(() =>
-  import('./pages/BusinessCenterDetailPage').then((m) => ({ default: m.BusinessCenterDetailPage })),
-);
-const MinskHub = lazy(() => import('./pages/MinskHub').then((m) => ({ default: m.MinskHub })));
-const BriefPublicPage = lazy(() => import('./pages/BriefPublicPage').then((m) => ({ default: m.BriefPublicPage })));
-const MeetingSummaryPublicPage = lazy(() =>
-  import('./pages/MeetingSummaryPublicPage').then((m) => ({ default: m.MeetingSummaryPublicPage })),
-);
-
+// PAGESPEED_PLAN.md, Э7 — публичные страницы ОДИН РАЗ переводились на
+// lazy() (та же схема, что у админки) и были отменены: реальный прогон
+// PageSpeed на проде показал, что это УХУДШИЛО LCP/FCP/SI (например LCP
+// 4,4с → 5,7с), хотя главный чанк формально стал вдвое легче. Причина —
+// приложение не делает настоящую SSR-гидратацию (`main.tsx`: `createRoot`,
+// не `hydrateRoot`), пререндер-снапшот (Э0) — это просто статический HTML
+// для первой краски и краулеров, а не разметка, которую React подхватывает
+// без пересборки. Как только грузится JS, React рендерит дерево заново с
+// нуля поверх этого HTML — при обычном (не-lazy) компоненте страницы это
+// происходит за один кадр и незаметно (итоговый DOM совпадает с уже
+// показанным), а если КОРНЕВОЙ компонент страницы — lazy(), React обязан
+// сначала показать Suspense fallback (спиннер), СТИРАЯ уже видимый
+// пререндеренный контент, и только после догрузки чанка отрисовать
+// страницу заново — это и есть реальный лишний "Element render delay"
+// (в отчёте вырос с ~100мс до ~1870мс), который целиком съедает выигрыш
+// от пререндера. lazy() безопасен для админ-страниц (там нет пререндер-
+// снапшота, стирать нечего) и для второстепенных публичных путей без
+// собственного пререндера (BusinessUploadPublicPage/EstimatePublicPage
+// ниже — токен-страницы для одного исполнителя, не для посетителей с
+// поиска) — но не для страниц, ради которых и делался Э0.
 const AppLayout = lazy(() => import('./components/layout/AppLayout').then((m) => ({ default: m.AppLayout })));
 const PasswordGate = lazy(() => import('./components/layout/PasswordGate').then((m) => ({ default: m.PasswordGate })));
 const AdminIndex = lazy(() => import('./pages/AdminIndex').then((m) => ({ default: m.AdminIndex })));
@@ -87,16 +84,19 @@ const MeetingSummaryDetail = lazy(() => import('./pages/MeetingSummaryDetail').t
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 
 // Публичная (без PasswordGate) страница для фрилансера — см. её же
-// комментарий. Тянет за собой разбор .webarchive/bplist — свой чанк, не
-// общий с остальными публичными страницами.
+// комментарий. lazy(), а не статический импорт как у остальных публичных
+// страниц выше: она тянет за собой разбор .webarchive/bplist, этот код не
+// должен попадать в основной бандл продающих лендингов ради одной
+// рабочей ссылки для одного исполнителя.
 const BusinessUploadPublicPage = lazy(() =>
   import('./pages/BusinessUploadPublicPage').then((m) => ({ default: m.BusinessUploadPublicPage })),
 );
 
-// Публичная ссылка на построчную смету для строителя (Артём и т.п.) — тянет
-// за собой EstimateLineItemsTable/FormModal/CommentsModal (те же компоненты,
-// что уже есть в чанке /admin/estimates) — свой чанк, не дублируется в чанки
-// остальных публичных страниц.
+// Публичная ссылка на построчную смету для строителя (Артём и т.п.) — тот
+// же принцип, что и у BusinessUploadPublicPage выше: lazy(), а не статический
+// импорт, потому что тянет за собой EstimateLineItemsTable/FormModal/
+// CommentsModal (иначе те же компоненты дублировались бы в основной бандл
+// продающих лендингов, хотя уже есть в чанке /admin/estimates).
 const EstimatePublicPage = lazy(() =>
   import('./pages/EstimatePublicPage').then((m) => ({ default: m.EstimatePublicPage })),
 );
@@ -160,12 +160,9 @@ function LegacySlugRedirect() {
   return <Navigate to={`/minsk/${legacySlug}`} replace />;
 }
 
-// Фолбэк на время догрузки чанка страницы (см. lazy() выше) — общий и для
-// /admin/*, и для всех публичных страниц (Э7, PAGESPEED_PLAN.md). На
-// пререндеренных путях практического значения почти не имеет — реальный
-// контент уже виден в статическом HTML, React просто досаживается сверху,
-// как только чанк догрузится.
-function PageChunkFallback() {
+// Фолбэк на время догрузки чанка админки (см. lazy() выше) — только для
+// /admin/*, публичные страницы импортированы статически и его не видят.
+function AdminChunkFallback() {
   return (
     <div className="flex min-h-svh items-center justify-center">
       <Loader2 className="h-6 w-6 animate-spin text-ink-muted" />
@@ -181,106 +178,35 @@ export default function App() {
       {/* Публичная часть — без AppLayout и без пароля, для клиентов и рекламы.
           Пока нет отдельного лендинга компании (см. SEO_PLAN.md, Э2-4), корень
           временно ведёт на /minsk — city-scoped раздел (гиды по районам),
-          готовый к появлению других городов рядом без переезда уже
-          проиндексированных ссылок под /minsk. Все страницы — lazy() (см.
-          PAGESPEED_PLAN.md, Э7 и комментарий у объявлений выше) — с
-          пререндером (Э0) реальный контент виден в HTML до догрузки чанка,
-          так что это больше не тот "лишний сетевой перелёт", которого
-          раньше здесь избегали. */}
+          готовый к появлению других городов рядом без
+          переезда уже проиндексированных ссылок под /minsk. Импортированы
+          статически (не lazy) — это ровно те страницы, ради которых существует
+          бандл-сплиттинг выше: им нельзя добавлять лишний сетевой перелёт на
+          догрузку чанка. */}
       <Route path="/" element={<Navigate to="/minsk" replace />} />
-      <Route
-        path="/minsk"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <MinskHub />
-          </Suspense>
-        }
-      />
-      <Route
-        path="/minsk/minsk-mir"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <DistrictGuidePage />
-          </Suspense>
-        }
-      />
-      <Route
-        path="/minsk/bcminsk"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <BusinessCentersMinskPage />
-          </Suspense>
-        }
-      />
+      <Route path="/minsk" element={<MinskHub />} />
+      <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />
+      <Route path="/minsk/bcminsk" element={<BusinessCentersMinskPage />} />
       {/* Хаб-страницы по классу/району (Fable-анализ, 2026-09-06) — тот же
           компонент, фильтр читается из useParams(), см. комментарий там же.
           Регистрируются ДО ":slug", чтобы не конфликтовать с ним. */}
-      <Route
-        path="/minsk/bcminsk/class/:classSlug"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <BusinessCentersMinskPage />
-          </Suspense>
-        }
-      />
-      <Route
-        path="/minsk/bcminsk/raion/:districtSlug"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <BusinessCentersMinskPage />
-          </Suspense>
-        }
-      />
+      <Route path="/minsk/bcminsk/class/:classSlug" element={<BusinessCentersMinskPage />} />
+      <Route path="/minsk/bcminsk/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
       {/* Пересечение класс×район (владелец, 2026-09-06: "структура урлов...
           точечные страницы будут хорошо приняты поиском") — тот же
           компонент, оба параметра сразу, регистрируется ПОСЛЕ одноосевых
           хабов (react-router не заботит порядок непересекающихся паттернов,
           но так рядом с ними явно видно, что это третий, более узкий
           вариант того же роута), тоже ДО ":slug". */}
-      <Route
-        path="/minsk/bcminsk/class/:classSlug/raion/:districtSlug"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <BusinessCentersMinskPage />
-          </Suspense>
-        }
-      />
-      <Route
-        path="/minsk/bcminsk/:slug"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <BusinessCenterDetailPage />
-          </Suspense>
-        }
-      />
-      <Route
-        path="/plan/:token"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <PublicBuildingPlan />
-          </Suspense>
-        }
-      />
-      <Route
-        path="/tz/:token"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <BriefPublicPage />
-          </Suspense>
-        }
-      />
-      <Route
-        path="/summary/:token"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <MeetingSummaryPublicPage />
-          </Suspense>
-        }
-      />
+      <Route path="/minsk/bcminsk/class/:classSlug/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
+      <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
+      <Route path="/plan/:token" element={<PublicBuildingPlan />} />
+      <Route path="/tz/:token" element={<BriefPublicPage />} />
+      <Route path="/summary/:token" element={<MeetingSummaryPublicPage />} />
       <Route
         path="/business-upload"
         element={
-          <Suspense fallback={<PageChunkFallback />}>
+          <Suspense fallback={<AdminChunkFallback />}>
             <BusinessUploadPublicPage />
           </Suspense>
         }
@@ -288,19 +214,12 @@ export default function App() {
       <Route
         path="/estimate/:token"
         element={
-          <Suspense fallback={<PageChunkFallback />}>
+          <Suspense fallback={<AdminChunkFallback />}>
             <EstimatePublicPage />
           </Suspense>
         }
       />
-      <Route
-        path="/minsk/:slug"
-        element={
-          <Suspense fallback={<PageChunkFallback />}>
-            <ObjectLandingPage />
-          </Suspense>
-        }
-      />
+      <Route path="/minsk/:slug" element={<ObjectLandingPage />} />
       {/* Старые адреса без /minsk — см. LegacySlugRedirect выше. */}
       <Route path="/rayon-minsk-mir" element={<Navigate to="/minsk/minsk-mir" replace />} />
       <Route path="/:legacySlug" element={<LegacySlugRedirect />} />
@@ -310,7 +229,7 @@ export default function App() {
       <Route
         path="/admin"
         element={
-          <Suspense fallback={<PageChunkFallback />}>
+          <Suspense fallback={<AdminChunkFallback />}>
             <PasswordGate>
               <AppLayout />
             </PasswordGate>
