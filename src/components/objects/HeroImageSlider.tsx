@@ -1,8 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/cn';
 
 const AUTOPLAY_MS = 5000;
+// PAGESPEED_PLAN.md, Э7-4 — пауза между window 'load' и ПЕРВЫМ
+// автопереключением: в окно замера PageSpeed (~3-5 с после load, пока не
+// стихнут сеть/CPU) попадали и смена кадра, и догрузка второго фото —
+// лишний трафик рядом с LCP-картинкой и «визуальное изменение» после
+// LCP, которое тянет вниз Speed Index. Посетителю первые секунды на
+// странице тем более не нужна карусель — он читает заголовок.
+const AUTOPLAY_FIRST_DELAY_MS = 7000;
+// За сколько до переключения догружать следующее фото — достаточно, чтобы
+// смена кадра не стала моментом его первой загрузки (мигание), и без
+// догрузки «на всякий случай» сразу при монтировании.
+const PRELOAD_LEAD_MS = 1500;
 
 // Диагональные скосы у двух противоположных углов (верхний правый и нижний
 // левый) вместо стандартных скруглений — одна и та же форма используется и
@@ -54,19 +65,30 @@ export function HeroImageSlider({
     return () => window.removeEventListener('load', onLoad);
   }, []);
 
+  // Автоплей: первый переход — через AUTOPLAY_FIRST_DELAY_MS после load,
+  // дальше каждые AUTOPLAY_MS. Следующее фото догружается за
+  // PRELOAD_LEAD_MS до переключения (не при монтировании — см. константы
+  // выше). Ручной клик по стрелкам/точкам сбрасывает цикл: и таймер, и
+  // предзагрузка считаются от текущего кадра заново.
+  const firstSwitchDoneRef = useRef(false);
   useEffect(() => {
     if (images.length < 2 || !autoplayArmed) return;
-    const timer = setInterval(() => setIndex((i) => (i + 1) % images.length), AUTOPLAY_MS);
-    return () => clearInterval(timer);
-  }, [images.length, autoplayArmed]);
-
-  // Предзагрузка следующего кадра — переключение `src` не должно само стать
-  // моментом первой загрузки следующей картинки (мигание/задержка).
-  useEffect(() => {
-    if (images.length < 2) return;
-    const next = new Image();
-    next.src = images[(index + 1) % images.length];
-  }, [index, images]);
+    const delay = firstSwitchDoneRef.current ? AUTOPLAY_MS : AUTOPLAY_FIRST_DELAY_MS;
+    const preloadTimer = setTimeout(() => {
+      const next = new Image();
+      next.src = images[(index + 1) % images.length];
+    }, Math.max(0, delay - PRELOAD_LEAD_MS));
+    const switchTimer = setTimeout(() => {
+      firstSwitchDoneRef.current = true;
+      setIndex((i) => (i + 1) % images.length);
+    }, delay);
+    return () => {
+      clearTimeout(preloadTimer);
+      clearTimeout(switchTimer);
+    };
+    // index в зависимостях намеренно: смена кадра (авто или вручную)
+    // перезапускает отсчёт от нового кадра.
+  }, [images, index, autoplayArmed]);
 
   if (images.length === 0) return null;
 
@@ -120,15 +142,24 @@ export function HeroImageSlider({
             >
               <ChevronRight className="h-5 w-5" />
             </button>
-            <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-1.5">
+            {/* Сама точка — 6px, но кликабельная область кнопки 24×24
+                (Accessibility «Touch targets do not have sufficient size or
+                spacing» в PageSpeed): визуально ничего не изменилось, точка
+                лежит внутри прозрачной кнопки. */}
+            <div className="absolute bottom-1 left-1/2 flex -translate-x-1/2">
               {images.map((url, i) => (
                 <button
                   key={url}
                   type="button"
                   onClick={() => setIndex(i)}
                   aria-label={`Показать фото ${i + 1}`}
-                  className={cn('h-1.5 rounded-full transition-all', i === index ? 'w-5 bg-white' : 'w-1.5 bg-white/60')}
-                />
+                  className="flex h-6 min-w-6 items-center justify-center px-[3px]"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn('block h-1.5 rounded-full transition-all', i === index ? 'w-5 bg-white' : 'w-1.5 bg-white/60')}
+                  />
+                </button>
               ))}
             </div>
             <div className="absolute bottom-3 right-3 rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold text-ink shadow-card">

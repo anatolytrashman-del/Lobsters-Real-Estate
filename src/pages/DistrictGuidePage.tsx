@@ -934,7 +934,7 @@ const PROPERTY_TYPE_OFFICE: DistrictPropertyType = {
     <>
       Классические офисные площади под кабинеты, представительства и небольшие команды. В районе особенно не
       хватает готовых компактных офисов с отделкой — этот дефицит закрывает{' '}
-      <Link to="/minsk/one" className="font-semibold text-primary hover:underline">
+      <Link to="/minsk/one" className="font-semibold text-primary-hover hover:underline">
         деловой центр Red One
       </Link>{' '}
       по соседству.
@@ -1428,7 +1428,10 @@ export function DistrictGuidePage() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-8">
+      {/* <main> — единственный main-landmark страницы (PageSpeed
+          Accessibility «Document does not have a main landmark»): шапка с
+          логотипом/меню и hero выше остаются вне него, как и положено. */}
+      <main className="mx-auto max-w-6xl px-4 py-12 sm:px-8">
         <div className="lg:grid lg:grid-cols-[200px_1fr] lg:gap-10">
           <aside ref={navAsideRef} className="hidden lg:block">
             <nav
@@ -1537,8 +1540,13 @@ export function DistrictGuidePage() {
               <h2 className="text-lg font-bold text-ink">Застройщик района</h2>
             </div>
             <div className="flex items-center gap-4">
-              <img src={DEVELOPER_LOGO_URL} alt="Dana Holdings" width={368} height={110} className="h-9 w-auto object-contain" />
-              <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" width={95} height={110} className="h-9 w-auto object-contain" />
+              {/* loading="lazy" на логотипах и картинке аудитории ниже —
+                  все три блока на мобильном ниже первого экрана, а без
+                  lazy браузер запрашивал их сразу из разметки (preload-
+                  сканер), и они вставали в очередь рядом с LCP-картинкой
+                  и шрифтами (PAGESPEED_PLAN.md, Э7-4). */}
+              <img src={DEVELOPER_LOGO_URL} alt="Dana Holdings" width={368} height={110} loading="lazy" className="h-9 w-auto object-contain" />
+              <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" width={95} height={110} loading="lazy" className="h-9 w-auto object-contain" />
             </div>
           </div>
           <p className="text-sm text-ink-muted">
@@ -1595,6 +1603,7 @@ export function DistrictGuidePage() {
               alt={MANAGEMENT_COMPANY.name}
               width={149}
               height={147}
+              loading="lazy"
               className="h-12 w-auto object-contain"
             />
           </div>
@@ -1651,6 +1660,7 @@ export function DistrictGuidePage() {
           <img
             src="/images/district/audience-target-audience.svg"
             alt=""
+            loading="lazy"
             className="hidden h-auto w-36 shrink-0 self-center sm:block"
           />
         </div>
@@ -1749,11 +1759,11 @@ export function DistrictGuidePage() {
           style={glassCardShadow}
         >
           {quarterMapInView ? (
-            <Suspense fallback={<div className="flex h-64 items-center justify-center text-sm text-ink-faint">Загрузка карты…</div>}>
+            <Suspense fallback={<div className="flex h-64 items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
               <DistrictQuarterMap />
             </Suspense>
           ) : (
-            <div className="flex h-64 items-center justify-center text-sm text-ink-faint">Загрузка карты…</div>
+            <div className="flex h-64 items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
           )}
         </div>
 
@@ -1861,9 +1871,9 @@ export function DistrictGuidePage() {
             чистый м², без учёта террас.
           </p>
 
-          {primaryMarketOffers === null && <p className="text-sm text-ink-faint">Загрузка…</p>}
+          {primaryMarketOffers === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
           {primaryMarketOffers !== null && primaryMarketOffers.length === 0 && (
-            <p className="text-sm text-ink-faint">Данные пока не собраны.</p>
+            <p className="text-sm text-ink-muted">Данные пока не собраны.</p>
           )}
 
           {primaryMarketOffers && primaryMarketOffers.length > 0 && (
@@ -1954,9 +1964,9 @@ export function DistrictGuidePage() {
             цена за м² по типу помещения и площади. Обновляется раз в месяц.
           </p>
 
-          {marketOffers === null && <p className="text-sm text-ink-faint">Загрузка…</p>}
+          {marketOffers === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
           {marketOffers !== null && marketOffers.length === 0 && (
-            <p className="text-sm text-ink-faint">Данные пока не собраны.</p>
+            <p className="text-sm text-ink-muted">Данные пока не собраны.</p>
           )}
 
           {marketOffers && marketOffers.length > 0 && (
@@ -2427,11 +2437,11 @@ export function DistrictGuidePage() {
           style={glassCardShadow}
         >
           {districtMapInView ? (
-            <Suspense fallback={<div className="flex h-[420px] items-center justify-center text-sm text-ink-faint">Загрузка карты…</div>}>
+            <Suspense fallback={<div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
               <DistrictMap />
             </Suspense>
           ) : (
-            <div className="flex h-[420px] items-center justify-center text-sm text-ink-faint">Загрузка карты…</div>
+            <div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
           )}
         </div>
 
@@ -2444,13 +2454,17 @@ export function DistrictGuidePage() {
             дизайнерской отделкой, парковкой и онлайн-бронированием без предоплаты. Через дорогу — 5 детских садов
             и постоянный поток родителей утром и вечером, в районе — 3 школы и 4 детских сада (строится 5-й).
           </p>
-          <Link to="/minsk/one" className="w-fit text-sm font-semibold text-primary hover:underline">
+          {/* text-primary-hover вместо text-primary — тот же приём, что у
+              «RED» в шапке этой страницы: базовый красный на стеклянной
+              карточке даёт контраст 4,49:1 (порог 4,5 — PageSpeed
+              Accessibility «insufficient contrast ratio»), тёмный — 5,6:1. */}
+          <Link to="/minsk/one" className="w-fit text-sm font-semibold text-primary-hover hover:underline">
             Смотреть кабинеты в Red One →
           </Link>
         </div>
           </div>
         </div>
-      </div>
+      </main>
       </div>
       {primaryMarketProKey && primaryMarketOffers && (
         <PrimaryMarketProModal

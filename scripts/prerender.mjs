@@ -303,7 +303,21 @@ async function main() {
         await page
           .waitForFunction(() => !document.body.innerText.includes('Загрузка…'), { timeout: 15_000 })
           .catch(() => console.warn(`[prerender] /${path}: «Загрузка…» не исчезла за 15с — снапшот с плейсхолдером`));
+        // scripts/defer-entry-script.mjs подключает главный JS не из <head>,
+        // а инлайн-лоадером после первого кадра — в живом DOM к этому
+        // моменту уже висят вставленные им <script type="module">/<link
+        // rel="modulepreload"> (помечены data-entry-injected). В снапшот они
+        // попасть не должны: иначе на проде модуль подключится напрямую из
+        // разметки, сразу (весь смысл отложенной загрузки пропадёт), а
+        // лоадер добавит его второй раз. Сам лоадер (data-entry-loader) —
+        // обычный инлайн-скрипт в конце body, остаётся как есть.
+        await page.evaluate(() => {
+          document.querySelectorAll('[data-entry-injected]').forEach((el) => el.remove());
+        });
         const html = await page.content();
+        if (!html.includes('data-entry-loader')) {
+          throw new Error('в снапшоте нет лоадера главного JS (data-entry-loader) — defer-entry-script.mjs не отработал?');
+        }
         const dir = join(DIST_DIR, path);
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, 'index.html'), html);

@@ -43,7 +43,15 @@
 @font-face {
   /* Только для веса 900 (font-black) — весь остальной интерфейс
      (font-bold/font-extrabold) по-прежнему рендерится SemiBold,
-     как и раньше. Используется точечно для "RED" в логотипе. */
+     как и раньше. Используется точечно для "RED" в логотипе.
+     PAGESPEED_PLAN.md, Э7-4 — файл субсетирован ТОЛЬКО до латинских
+     заглавных A-Z (4 КБ вместо 24 КБ): font-black во всём проекте
+     встречается лишь у «RED» (grep font-black), а этот файл
+     preload'ится на каждой публичной странице и стоял в очереди перед
+     LCP-картинкой. Если font-black понадобится для кириллицы/строчных —
+     пересобрать субсет из исходного TTF (git: f3604ac^:public/fonts/
+     Montserrat-ExtraBold.ttf), иначе такие символы тихо упадут на
+     SemiBold. */
   font-family: 'Montserrat';
   src: url('/fonts/Montserrat-ExtraBold.woff2') format('woff2');
   font-weight: 900 900;
