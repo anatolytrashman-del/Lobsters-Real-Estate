@@ -85,6 +85,13 @@ export function BusinessCenterDetailPage() {
   const saleRows = useMemo(() => computeOfferRows(offers ?? [], 'sale'), [offers]);
   const rentRows = useMemo(() => computeOfferRows(offers ?? [], 'rent'), [offers]);
 
+  // Рейтинг с карт вынесен из общего списка "Интересные факты" в бейдж рядом
+  // с заголовком (см. комментарий у JSX ниже) — остальные блоки остаются в
+  // общем списке как были.
+  const ratingHighlight = useMemo(() => center?.highlights.find((h) => h.icon === 'rating') ?? null, [center]);
+  const mapRating = useMemo(() => (ratingHighlight ? extractMapRating(ratingHighlight.text) : null), [ratingHighlight]);
+  const visibleHighlights = useMemo(() => center?.highlights.filter((h) => h.icon !== 'rating') ?? [], [center]);
+
   useEffect(() => {
     if (!center) return;
     setBusinessCenterPageMeta(center.slug, center, center.photos[0]);
@@ -177,37 +184,44 @@ export function BusinessCenterDetailPage() {
           <div className="flex flex-col gap-4 p-6 sm:p-8">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <h1 className="text-2xl font-extrabold leading-tight text-ink">{center.name}</h1>
-              {center.status === 'under_construction' && (
-                <div className="flex shrink-0 flex-wrap gap-1.5">
-                  <Badge tone="warning">Строится</Badge>
-                </div>
-              )}
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                {center.status === 'under_construction' && <Badge tone="warning">Строится</Badge>}
+                {/* Рейтинг с Яндекс.Карт/2ГИС — владелец, 2026-09-06 (четвёртый
+                    заход): "справа от заголовка рейтинг с яндекс.карт, а из
+                    интересных фактов инфу про оценку убирай". Раньше рейтинг
+                    был просто одним из блоков "Интересные факты" (свободный
+                    markdown-текст вида "Яндекс.Карты: **5,0** из 5 (204
+                    оценки...)") — структурного поля под число нет, поэтому
+                    парсим ту же строку регуляркой (extractMapRating ниже) —
+                    если формат не узнан, бейдж просто не показывается, ничего
+                    не выдумываем. */}
+                {mapRating && (
+                  <Badge tone="neutral" title={ratingHighlight?.text}>
+                    <Star className="h-3 w-3 shrink-0 fill-current" />
+                    {mapRating.value} · {mapRating.source}
+                  </Badge>
+                )}
+              </div>
             </div>
 
             <FactRow icon={MapPin}>{center.address}</FactRow>
+            {/* Метро и застройщик — отдельными строками, не плитками (владелец,
+                2026-09-06, четвёртый заход: в hero-карточке должны остаться
+                только заголовок/адрес/метро/4 плитки — метро вернулось из
+                плитки обратно в обычную строку, как адрес). Текст метро — как
+                есть в базе; для части БЦ это пока минуты пешком, а не метры
+                (владелец просил именно метры) — там, где реальное расстояние
+                в метрах не найдено веб-поиском, строка честно показывает то,
+                что есть, без выдуманных цифр. */}
+            {center.metro && <FactRow icon={TrainFront}>{center.metro}</FactRow>}
+            {center.developer && <FactRow icon={Building2}>{center.developer}</FactRow>}
 
-            {/* Плитки фактов вместо простого списка строк — владелец,
-                2026-09-06: "переработай этот блок в плиточки, можно разного
-                размера, но чтобы выглядело как концепт... пример бери с
-                минск мира" (см. "Ключевые цифры" в DistrictGuidePage.tsx —
-                тот же визуальный язык: круглая иконка, белая карточка), и
-                следом, увидев результат на "S Union": "класс БЦ тоже
-                плиточкой, паркинг растянуть на 3 карточки, "в пешей
-                доступности" — на конкретное расстояние, текстовый блок
-                описания — убрать вовсе". Класс — бывший цветной Badge у
-                заголовка (был отдельно от плиток) теперь сама "value"
-                плитки — тон по businessClassTone сохранён, просто внутри
-                плитки, не потерян при переезде. Короткие числовые факты
-                (площадь/год/этажи/метро) — в "stat"-режиме FactTile
-                (крупное значение + подпись); метро разбивается на
-                "станция"/"расстояние" по первой запятой в тексте, если
-                запятой нет — вся строка уходит в подпись (сами значения
-                метро отдельно вычищены от расплывчатого "в шаговой/пешей
-                доступности" — см. запись в журнале). Парковка/застройщик —
-                свободный текст произвольной длины, не раскладывается на
-                число+подпись, поэтому "text"-режим (просто текст покрупнее);
-                парковка — на 3 из 4 колонок (span=3), самый длинный факт на
-                практике. */}
+            {/* Ровно 4 плитки — класс/площадь/год/этажность (владелец,
+                2026-09-06, четвёртый заход: "4 карточки - класс, площадь, год
+                сдачи, этажность") — метро/застройщик переехали в обычные
+                строки выше, парковка — в отдельный блок ниже (см.
+                LabeledTextRow "Парковка"). Класс — бывший цветной Badge у
+                заголовка, тон по businessClassTone сохранён внутри плитки. */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {center.businessClass && (
                 <FactTile
@@ -227,22 +241,12 @@ export function BusinessCenterDetailPage() {
                 />
               )}
               {center.floors != null && <FactTile icon={Layers} value={center.floors} label="Этажей" />}
-              {center.metro &&
-                (() => {
-                  const idx = center.metro.indexOf(',');
-                  // Разбивка на "станция"/"расстояние" только для коротких строк
-                  // вида "Станция, ~N м" — более длинные (в скобках уточнение,
-                  // без запятой и т.п., напр. "Могилёвская (прямого перехода
-                  // нет — быстрее на транспорте)") не влезут крупным шрифтом
-                  // в плитку-статистику, поэтому уходят в обычный текстовый режим.
-                  if (idx === -1 || center.metro.length > 28) {
-                    return <FactTile icon={TrainFront} text={center.metro} />;
-                  }
-                  return <FactTile icon={TrainFront} value={center.metro.slice(0, idx)} label={center.metro.slice(idx + 1).trim()} />;
-                })()}
-              {center.developer && <FactTile icon={Building2} text={center.developer} />}
-              {center.parking && <FactTile icon={Car} text={center.parking} span={3} />}
             </div>
+
+            {/* Парковка — отдельный блок, не плитка (владелец, 2026-09-06,
+                четвёртый заход: "паркинг - отдельный блок") — тот же
+                LabeledTextRow, что и в "Условиях для арендаторов" ниже. */}
+            <LabeledTextRow icon={Car} label="Парковка" text={center.parking} />
 
             {center.website && (
               <a
@@ -270,14 +274,14 @@ export function BusinessCenterDetailPage() {
             Порядок блоков на странице (владелец, 2026-09-06): главный блок
             → Интересные факты → Условия для арендаторов → Объявления с
             Kufar и Realt. */}
-        {center.highlights.length > 0 && (
+        {visibleHighlights.length > 0 && (
           <div className={cn('mt-6 flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
             <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
               <Sparkles className="h-5 w-5 shrink-0 text-primary" />
               Интересные факты
             </h2>
 
-            {center.highlights
+            {visibleHighlights
               .filter((s) => s.icon === 'warning')
               .map((s, i) => (
                 <div
@@ -293,7 +297,7 @@ export function BusinessCenterDetailPage() {
               ))}
 
             <div className="flex flex-col divide-y divide-border">
-              {center.highlights
+              {visibleHighlights
                 .filter((s) => s.icon !== 'warning')
                 .map((s, i) => (
                   <LabeledTextRow key={i} icon={HIGHLIGHT_ICONS[s.icon]} label={s.label} text={s.text} />
@@ -458,6 +462,28 @@ const HIGHLIGHT_ICONS: Record<HighlightIconKey, typeof FileText> = {
   warning: AlertTriangle,
   fact: Sparkles,
 };
+
+// Достаёт число+источник из свободного текста блока "рейтинг" в
+// "Интересных фактах" (напр. "- Яндекс.Карты: **4,8** из 5 (836 оценок,
+// 160 отзывов)") — структурного поля под рейтинг нет, весь текст собран
+// веб-поиском в свободной markdown-нотации (см. комментарий у
+// BusinessCenter.highlights в data/businessCenters.ts). Берётся только
+// ПЕРВАЯ строка (у части БЦ рейтинг на два источника, Яндекс.Карты и 2ГИС,
+// каждый на своей строке — для компактного бейджа у заголовка достаточно
+// одного) и только первое найденное "X,X из 5" — для "Порта" (3 отдельные
+// карточки на Яндекс.Картах, по одной на очередь здания) это даёт рейтинг
+// первой очереди, не среднее по всем трём, честный, но частичный
+// компромисс ради компактности бейджа. Формат не узнан — просто не
+// показываем бейдж, не гадаем.
+function extractMapRating(text: string): { value: string; source: string } | null {
+  // ** снимаем перед разбором — иначе "**4,8** из 5" не матчится по числу
+  // сразу за "из 5" (между ними остаются сами звёздочки markdown-жирного).
+  const line = text.split('\n')[0].replace(/\*/g, '');
+  const valueMatch = line.match(/([\d]+[.,]\d+)\s*из\s*5/);
+  if (!valueMatch) return null;
+  const sourceMatch = line.match(/^[-\s]*([^:]+):/);
+  return { value: valueMatch[1], source: sourceMatch ? sourceMatch[1].trim() : 'карты' };
+}
 
 // Сколько категорий показывать сразу — у части БЦ (владелец, 2026-09-06:
 // "ограничь список видимых категорий с кнопкой «показать ещё»") реальная
