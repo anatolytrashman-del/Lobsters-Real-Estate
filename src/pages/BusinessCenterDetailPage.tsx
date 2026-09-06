@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
+  Award,
   Banknote,
   Building2,
   Calendar,
@@ -176,12 +177,11 @@ export function BusinessCenterDetailPage() {
           <div className="flex flex-col gap-4 p-6 sm:p-8">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <h1 className="text-2xl font-extrabold leading-tight text-ink">{center.name}</h1>
-              <div className="flex shrink-0 flex-wrap gap-1.5">
-                {center.status === 'under_construction' && <Badge tone="warning">Строится</Badge>}
-                {center.businessClass && (
-                  <Badge tone={businessClassTone[center.businessClass]}>Класс {center.businessClass}</Badge>
-                )}
-              </div>
+              {center.status === 'under_construction' && (
+                <div className="flex shrink-0 flex-wrap gap-1.5">
+                  <Badge tone="warning">Строится</Badge>
+                </div>
+              )}
             </div>
 
             <FactRow icon={MapPin}>{center.address}</FactRow>
@@ -190,16 +190,32 @@ export function BusinessCenterDetailPage() {
                 2026-09-06: "переработай этот блок в плиточки, можно разного
                 размера, но чтобы выглядело как концепт... пример бери с
                 минск мира" (см. "Ключевые цифры" в DistrictGuidePage.tsx —
-                тот же визуальный язык: круглая иконка, белая карточка).
-                Короткие числовые факты (площадь/год/этажи/метро) — в
-                "stat"-режиме FactTile (крупное значение + подпись); метро
-                разбивается на "станция"/"расстояние" по первой запятой в
-                тексте, если запятой нет — вся строка уходит в подпись.
-                Парковка/застройщик — свободный текст произвольной длины,
-                не раскладывается на число+подпись, поэтому "text"-режим
-                (просто текст покрупнее) и парковка — на всю ширину (wide),
-                как самый длинный факт на практике. */}
+                тот же визуальный язык: круглая иконка, белая карточка), и
+                следом, увидев результат на "S Union": "класс БЦ тоже
+                плиточкой, паркинг растянуть на 3 карточки, "в пешей
+                доступности" — на конкретное расстояние, текстовый блок
+                описания — убрать вовсе". Класс — бывший цветной Badge у
+                заголовка (был отдельно от плиток) теперь сама "value"
+                плитки — тон по businessClassTone сохранён, просто внутри
+                плитки, не потерян при переезде. Короткие числовые факты
+                (площадь/год/этажи/метро) — в "stat"-режиме FactTile
+                (крупное значение + подпись); метро разбивается на
+                "станция"/"расстояние" по первой запятой в тексте, если
+                запятой нет — вся строка уходит в подпись (сами значения
+                метро отдельно вычищены от расплывчатого "в шаговой/пешей
+                доступности" — см. запись в журнале). Парковка/застройщик —
+                свободный текст произвольной длины, не раскладывается на
+                число+подпись, поэтому "text"-режим (просто текст покрупнее);
+                парковка — на 3 из 4 колонок (span=3), самый длинный факт на
+                практике. */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {center.businessClass && (
+                <FactTile
+                  icon={Award}
+                  value={<Badge tone={businessClassTone[center.businessClass]}>Класс {center.businessClass}</Badge>}
+                  label="Деловой класс"
+                />
+              )}
               {center.totalArea != null && (
                 <FactTile icon={Ruler} value={`${center.totalArea.toLocaleString('ru-RU')} м²`} label="Общая площадь" />
               )}
@@ -207,24 +223,26 @@ export function BusinessCenterDetailPage() {
                 <FactTile
                   icon={Calendar}
                   value={`${center.yearBuilt} г.`}
-                  label={center.status === 'under_construction' ? 'Ожидаемая сдача' : 'Сдан в этом году'}
+                  label={center.status === 'under_construction' ? 'Ожидаемая сдача' : 'Год сдачи'}
                 />
               )}
               {center.floors != null && <FactTile icon={Layers} value={center.floors} label="Этажей" />}
               {center.metro &&
                 (() => {
                   const idx = center.metro.indexOf(',');
-                  return idx === -1 ? (
-                    <FactTile icon={TrainFront} value={center.metro} label="Метро" />
-                  ) : (
-                    <FactTile icon={TrainFront} value={center.metro.slice(0, idx)} label={center.metro.slice(idx + 1).trim()} />
-                  );
+                  // Разбивка на "станция"/"расстояние" только для коротких строк
+                  // вида "Станция, ~N м" — более длинные (в скобках уточнение,
+                  // без запятой и т.п., напр. "Могилёвская (прямого перехода
+                  // нет — быстрее на транспорте)") не влезут крупным шрифтом
+                  // в плитку-статистику, поэтому уходят в обычный текстовый режим.
+                  if (idx === -1 || center.metro.length > 28) {
+                    return <FactTile icon={TrainFront} text={center.metro} />;
+                  }
+                  return <FactTile icon={TrainFront} value={center.metro.slice(0, idx)} label={center.metro.slice(idx + 1).trim()} />;
                 })()}
               {center.developer && <FactTile icon={Building2} text={center.developer} />}
-              {center.parking && <FactTile icon={Car} text={center.parking} wide />}
+              {center.parking && <FactTile icon={Car} text={center.parking} span={3} />}
             </div>
-
-            {center.description && <p className="text-sm text-ink-muted">{center.description}</p>}
 
             {center.website && (
               <a
@@ -389,10 +407,6 @@ export function BusinessCenterDetailPage() {
                 </tbody>
               </table>
             </div>
-            <p className="text-xs text-ink-faint">
-              Считается автоматически по объявлениям с Kufar и Realt.by, найденным по адресу здания — данные обновляются
-              ежемесячно, без ручной проверки каждой строки.
-            </p>
           </div>
         )}
 
@@ -475,20 +489,21 @@ function TenantOrganizationsBlock({ organizations }: { organizations: TenantOrga
         <Building2 className="h-5 w-5 shrink-0 text-primary" />
         Организации в здании
       </h2>
+      {/* Владелец, 2026-09-06 (третий заход): "предложи более компактный
+          способ — плитки занимают слишком много места, а полезной инфы
+          немного". Раньше на каждую категорию уходило 2 строки (заголовок
+          категории отдельно + отдельный ряд плашек-названий) — теперь
+          категория и список названий в одной строке ("Категория (N):
+          названия через запятую"), обычным текстом без плашек-фонов —
+          при 150+ категориях у "Паруса" разница в высоте блока в разы. */}
       <div className="flex flex-col divide-y divide-border">
         {visibleGroups.map((group) => (
-          <div key={group.category} className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
-              {group.category} <span className="text-ink-faint">· {group.items.length}</span>
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {group.items.map((name) => (
-                <span key={name} className="rounded-full bg-surface-muted px-3 py-1 text-sm text-ink">
-                  {name}
-                </span>
-              ))}
-            </div>
-          </div>
+          <p key={group.category} className="py-1.5 text-sm leading-relaxed first:pt-0 last:pb-0">
+            <span className="font-semibold text-ink">
+              {group.category} <span className="text-ink-faint">({group.items.length})</span>:
+            </span>{' '}
+            <span className="text-ink-muted">{group.items.join(', ')}</span>
+          </p>
         ))}
       </div>
       {groups.length > VISIBLE_TENANT_CATEGORIES && (
@@ -652,27 +667,27 @@ function OfferDealSection({ title, rows, isFirst }: { title: string; rows: Offer
   return (
     <>
       <tr>
-        <td colSpan={4} className={cn('pb-1 text-xs font-bold uppercase tracking-wide text-ink-faint', isFirst ? 'pt-0' : 'pt-3')}>
+        <td colSpan={4} className={cn('pb-1.5 text-xs font-bold uppercase tracking-wide text-ink-faint', isFirst ? 'pt-0' : 'pt-4')}>
           {title}
         </td>
       </tr>
       {rows.map((row) =>
         row.propertyType === null ? (
           <tr key="empty">
-            <td colSpan={4} className="py-2 text-ink-faint">
+            <td colSpan={4} className="py-3 text-ink-faint">
               Нет активных объявлений
             </td>
           </tr>
         ) : (
           <tr key={row.propertyType}>
-            <td className="py-2 pr-3 font-medium text-ink">{row.propertyType}</td>
-            <td className="py-2 px-2 text-right tabular-nums text-ink-faint">{row.count}</td>
-            <td className="whitespace-nowrap py-2 px-2 text-right tabular-nums text-ink-faint">
+            <td className="py-3 pr-3 font-medium text-ink">{row.propertyType}</td>
+            <td className="py-3 px-2 text-right tabular-nums text-ink-faint">{row.count}</td>
+            <td className="whitespace-nowrap py-3 px-2 text-right tabular-nums text-ink-faint">
               {row.minSize === row.maxSize
                 ? `${row.minSize.toLocaleString('ru-RU')} м²`
                 : `${row.minSize.toLocaleString('ru-RU')}–${row.maxSize.toLocaleString('ru-RU')} м²`}
             </td>
-            <td className="whitespace-nowrap py-2 pl-2 text-right tabular-nums font-semibold text-ink">
+            <td className="whitespace-nowrap py-3 pl-2 text-right tabular-nums font-semibold text-ink">
               {row.minPrice === row.maxPrice
                 ? `${formatUsd(row.minPrice)}/м²`
                 : `${formatUsd(row.minPrice)}–${formatUsd(row.maxPrice)}/м² (медиана ${formatUsd(row.medianPrice)})`}

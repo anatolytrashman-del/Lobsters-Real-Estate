@@ -54,25 +54,34 @@ export function FactRow({ icon: Icon, children }: { icon: typeof Camera; childre
 // - "text" — обычный текст без крупного значения, для факта, который не
 //   раскладывается на "число + подпись" (парковка, застройщик) — те же
 //   карточка/иконка, просто без искусственного разделения на две строки.
-// wide — растягивает плитку на 2 колонки (для более длинного текста).
+// span — растягивает плитку на несколько колонок сетки (владелец,
+// 2026-09-06, второй заход, увидев паркинг на пол-ширины: "растяни на 3
+// карточки" — на сетке grid-cols-2 sm:grid-cols-4 это col-span-2 на мобиле
+// (там и так вся ширина — 2 колонки) и sm:col-span-3 от sm и выше).
+const SPAN_CLASSES: Record<number, string> = {
+  2: 'col-span-2',
+  3: 'col-span-2 sm:col-span-3',
+  4: 'col-span-2 sm:col-span-4',
+};
+
 export function FactTile({
   icon: Icon,
   value,
   label,
   text,
-  wide,
+  span,
 }: {
   icon: typeof Camera;
   value?: ReactNode;
   label?: ReactNode;
   text?: ReactNode;
-  wide?: boolean;
+  span?: 2 | 3 | 4;
 }) {
   return (
     <div
       className={
         'flex flex-col gap-2 rounded-control border border-border/60 bg-white p-4 shadow-card' +
-        (wide ? ' col-span-2' : '')
+        (span ? ` ${SPAN_CLASSES[span]}` : '')
       }
     >
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-muted text-ink">
