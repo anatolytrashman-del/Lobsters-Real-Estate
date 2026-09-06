@@ -34,7 +34,7 @@ function extractNextStepsSection(summary: string): string | null {
 }
 
 // мм:сс — для обратного отсчёта расшифровки, короче полного formatTimestamp
-// из api/transcribe-poll.js (там нужны и часы для длинных встреч в тексте).
+// из api/transcribe.js (там нужны и часы для длинных встреч в тексте).
 function formatCountdown(totalSeconds: number): string {
   const s = Math.max(0, Math.round(totalSeconds));
   const m = Math.floor(s / 60);

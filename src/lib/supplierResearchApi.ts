@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
+import { queueImageCompression } from './tinypngCompress';
 import type {
   SupplierRequest,
   SupplierRequestRow,
@@ -197,6 +198,7 @@ export function uploadSupplierFile(file: File): Promise<DocumentFile> {
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from('object-documents').upload(path, file);
       if (error) throw error;
+      queueImageCompression('object-documents', path);
       const { data } = supabase.storage.from('object-documents').getPublicUrl(path);
       return { url: data.publicUrl, fileName: file.name };
     },

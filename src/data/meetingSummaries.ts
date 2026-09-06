@@ -24,7 +24,7 @@ export interface MeetingSummary {
   // публичной странице (см. lib/markdown.ts).
   content: string;
   // Сырая расшифровка аудиозаписи встречи (speech2text.ru, см.
-  // api/transcribe-start.js + api/transcribe-poll.js + lib/meetingTranscribeApi.ts).
+  // api/transcribe.js + lib/meetingTranscribeApi.ts).
   // Хранится отдельно от content: content — причёсанное саммери для публичной
   // страницы, transcript — исходник, из которого саммери генерируется
   // (и к которому можно вернуться при смене промта). Само аудио НЕ
