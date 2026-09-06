@@ -1,15 +1,36 @@
 import type { ReactNode } from 'react';
 import { Camera, HardHat } from 'lucide-react';
 import type { BusinessCenter } from '../../data/businessCenters';
+import { businessCenterPhotoSrc } from '../../lib/businessCenterDisplay';
 
 // Общие мелкие визуальные блоки БЦ — используются и на хабе
 // (BusinessCentersMinskPage.tsx, компактная карточка), и на отдельной
 // странице конкретного БЦ (BusinessCenterDetailPage.tsx, крупное фото) —
 // вынесены сюда, чтобы не дублировать (тот же принцип, что и у
 // lib/businessCenterDisplay.ts рядом).
-export function PhotoBlock({ center }: { center: BusinessCenter }) {
+// PAGESPEED_PLAN.md, Э9 — variant выбирает WebP-версию фото под место
+// показа (см. businessCenterPhotoSrc): 'card' — карточка каталога, ленивая
+// (143 карточки, грузятся по мере скролла); 'detail' — главное фото
+// страницы БЦ, это её LCP-элемент: eager + fetchpriority="high" (раньше
+// стояло loading="lazy", и PageSpeed прямо ругался "LCP resources should
+// not use loading=lazy", LCP 4,5с). width/height — под соотношение
+// контейнера (16:10 у карточки, 16:9 у страницы), фото всё равно
+// object-cover, значения нужны только чтобы браузер знал пропорцию до
+// загрузки (CLS) — не реальный размер файла.
+export function PhotoBlock({ center, variant }: { center: BusinessCenter; variant: 'card' | 'detail' }) {
   if (center.photos.length > 0) {
-    return <img src={center.photos[0]} alt={center.name} className="h-full w-full object-cover" loading="lazy" />;
+    const detail = variant === 'detail';
+    return (
+      <img
+        src={businessCenterPhotoSrc(center.photos[0], variant)}
+        alt={center.name}
+        className="h-full w-full object-cover"
+        loading={detail ? 'eager' : 'lazy'}
+        fetchPriority={detail ? 'high' : 'auto'}
+        width={detail ? 1200 : 640}
+        height={detail ? 675 : 400}
+      />
+    );
   }
   // Фото ещё нет — владелец добавит сам (см. комментарий в data-файле).
   // Тот же визуальный приём, что у карточки "ещё не построен" в Залогах

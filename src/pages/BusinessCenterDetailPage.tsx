@@ -217,20 +217,22 @@ export function BusinessCenterDetailPage() {
 
   if (centers === null) {
     return (
-      <div className="flex min-h-svh items-center justify-center bg-bg">
-        <p className="text-sm text-ink-faint">Загрузка…</p>
-      </div>
+      <main className="flex min-h-svh items-center justify-center bg-bg">
+        {/* text-ink: прямо на фоне страницы muted даёт 4,48:1 — ниже порога.
+            <main> и здесь — чтобы landmark был в любом состоянии страницы. */}
+        <p className="text-sm text-ink">Загрузка…</p>
+      </main>
     );
   }
 
   if (!center) {
     return (
-      <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-bg px-4 text-center">
-        <p className="text-base text-ink-muted">Такой бизнес-центр не найден.</p>
-        <Link to="/minsk/bcminsk" className="text-sm font-semibold text-primary hover:underline">
+      <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-bg px-4 text-center">
+        <p className="text-base text-ink">Такой бизнес-центр не найден.</p>
+        <Link to="/minsk/bcminsk" className="text-sm font-semibold text-primary-hover hover:underline">
           ← Все бизнес-центры Минска
         </Link>
-      </div>
+      </main>
     );
   }
 
@@ -238,7 +240,7 @@ export function BusinessCenterDetailPage() {
     <div className="min-h-svh bg-bg px-4 py-8 sm:py-14">
       <div className="mx-auto flex max-w-3xl items-center justify-between pb-5">
         <Link to="/minsk" className="text-lg font-extrabold tracking-wide text-ink">
-          <span className="font-black text-primary">RED</span>EVELOPMENT
+          <span className="font-black text-primary-hover">RED</span>EVELOPMENT
         </Link>
         {/* Владелец, 2026-09-06: "крестик плохо подходит, он как будто про
             закрытие, но те, кто придёт на эту страницу из поиска, ещё не
@@ -291,10 +293,11 @@ export function BusinessCenterDetailPage() {
         </Link>
       )}
 
-      <div className="mx-auto max-w-3xl">
+      {/* <main> — единственный main-landmark страницы (Accessibility). */}
+      <main className="mx-auto max-w-3xl">
         <div className={cn('overflow-hidden', glassCardClass)} style={glassCardShadow}>
           <div className="relative aspect-[16/9] w-full overflow-hidden">
-            <PhotoBlock center={center} />
+            <PhotoBlock center={center} variant="detail" />
           </div>
 
           <div className="flex flex-col gap-4 p-6 sm:p-8">
@@ -398,7 +401,7 @@ export function BusinessCenterDetailPage() {
                 href={center.website}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+                className="flex items-center gap-1.5 text-sm font-medium text-primary-hover hover:underline"
               >
                 <Globe className="h-4 w-4 shrink-0" />
                 {center.website.replace(/^https?:\/\//, '')}
@@ -468,7 +471,7 @@ export function BusinessCenterDetailPage() {
 
                       return (
                         <div key={groupKey} className="flex flex-col gap-2">
-                          <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-faint">
+                          <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-muted">
                             <GroupIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
                             {title}
                           </h3>
@@ -487,7 +490,7 @@ export function BusinessCenterDetailPage() {
                                       >
                                         {shortLabel}
                                         {hasAttribution && (
-                                          <span className="mt-0.5 block text-[10px] font-normal normal-case text-ink-faint">
+                                          <span className="mt-0.5 block text-[10px] font-normal normal-case text-ink-muted">
                                             по данным prometr.by
                                           </span>
                                         )}
@@ -527,7 +530,7 @@ export function BusinessCenterDetailPage() {
                       href={group.sourceUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-xs text-ink-faint hover:text-primary hover:underline"
+                      className="text-xs text-ink-muted hover:text-primary-hover hover:underline"
                     >
                       Источник: prometr.by
                     </a>
@@ -642,7 +645,7 @@ export function BusinessCenterDetailPage() {
               <LabeledTextRow icon={Phone} label="Контакты отдела аренды" text={center.rentalInfo.contacts} />
             </div>
 
-            <p className="text-xs text-ink-faint">
+            <p className="text-xs text-ink-muted">
               Собрано автоматически по официальному сайту БЦ и открытым источникам — не куратировано вручную, перед
               подписанием договора уточняйте актуальные условия напрямую у арендодателя.
             </p>
@@ -673,7 +676,7 @@ export function BusinessCenterDetailPage() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[480px] border-collapse text-sm">
                 <thead>
-                  <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                  <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
                     <th scope="col" className="py-2 pr-3 text-left">
                       Тип помещения
                     </th>
@@ -740,7 +743,7 @@ export function BusinessCenterDetailPage() {
               </a>
             )}
           </div>
-          <p className="text-xs text-ink-faint">
+          <p className="text-xs text-ink-muted">
             Данные о здании собраны из открытых источников — не всё относится к каждому конкретному БЦ.
           </p>
         </div>
@@ -773,7 +776,7 @@ export function BusinessCenterDetailPage() {
             )}
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }
@@ -946,7 +949,7 @@ function TenantOrganizationsBlock({ organizations }: { organizations: TenantOrga
         {visibleGroups.map((group) => (
           <p key={group.category} className="py-1.5 text-sm leading-relaxed first:pt-0 last:pb-0">
             <span className="font-semibold text-ink">
-              {group.category} <span className="text-ink-faint">({group.items.length})</span>:
+              {group.category} <span className="text-ink-muted">({group.items.length})</span>:
             </span>{' '}
             <span className="text-ink-muted">{group.items.join(', ')}</span>
           </p>
@@ -956,12 +959,12 @@ function TenantOrganizationsBlock({ organizations }: { organizations: TenantOrga
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="self-start text-sm font-semibold text-primary hover:underline"
+          className="self-start text-sm font-semibold text-primary-hover hover:underline"
         >
           {expanded ? 'Свернуть' : `Показать ещё ${hiddenCount} ${pluralCategories(hiddenCount)}`}
         </button>
       )}
-      <p className="text-xs text-ink-faint">
+      <p className="text-xs text-ink-muted">
         Информация из Яндекс.Карт — полный список организаций мог измениться.
       </p>
     </div>
@@ -1004,9 +1007,9 @@ function LabeledTextRow({
   if (!text) return null;
   return (
     <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
-      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-ink-muted" />
       <div className="min-w-0 flex-1">
-        {label && <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{label}</p>}
+        {label && <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">{label}</p>}
         <div className={cn('text-sm leading-relaxed text-ink-muted', label && 'mt-1')}>{renderRentalText(text)}</div>
       </div>
     </div>
@@ -1027,7 +1030,7 @@ function renderRentalText(text: string): ReactNode {
   const flushBullets = () => {
     if (bulletBuffer.length === 0) return;
     blocks.push(
-      <ul key={blocks.length} className="list-disc space-y-1 pl-4 marker:text-ink-faint">
+      <ul key={blocks.length} className="list-disc space-y-1 pl-4 marker:text-ink-muted">
         {bulletBuffer.map((item, i) => (
           <li key={i}>{renderBold(item)}</li>
         ))}
@@ -1121,22 +1124,22 @@ function OfferDealSection({ title, rows }: { title: string; rows: OfferRow[] }) 
   return (
     <>
       <tr>
-        <td colSpan={4} className="pt-4 pb-1.5 text-xs font-bold uppercase tracking-wide text-ink-faint">
+        <td colSpan={4} className="pt-4 pb-1.5 text-xs font-bold uppercase tracking-wide text-ink-muted">
           {title}
         </td>
       </tr>
       {rows.map((row) =>
         row.propertyType === null ? (
           <tr key="empty">
-            <td colSpan={4} className="py-3 text-ink-faint">
+            <td colSpan={4} className="py-3 text-ink-muted">
               Нет активных объявлений
             </td>
           </tr>
         ) : (
           <tr key={row.propertyType}>
             <td className="py-3 pr-3 font-medium text-ink">{row.propertyType}</td>
-            <td className="py-3 px-2 text-right tabular-nums text-ink-faint">{row.count}</td>
-            <td className="whitespace-nowrap py-3 px-2 text-right tabular-nums text-ink-faint">
+            <td className="py-3 px-2 text-right tabular-nums text-ink-muted">{row.count}</td>
+            <td className="whitespace-nowrap py-3 px-2 text-right tabular-nums text-ink-muted">
               {row.minSize === row.maxSize
                 ? `${row.minSize.toLocaleString('ru-RU')} м²`
                 : `${row.minSize.toLocaleString('ru-RU')}–${row.maxSize.toLocaleString('ru-RU')} м²`}

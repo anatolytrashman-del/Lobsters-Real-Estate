@@ -32,12 +32,12 @@ export function MinskHub() {
       <div className="border-b border-border py-5">
         <div className="mx-auto flex max-w-5xl items-center justify-center px-4 sm:px-8">
           <span className="text-lg font-extrabold tracking-wide text-ink">
-            <span className="font-black text-primary">RED</span>EVELOPMENT
+            <span className="font-black text-primary-hover">RED</span>EVELOPMENT
           </span>
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-5xl flex-col gap-10 px-4 py-12 sm:px-8">
+      <main className="mx-auto flex max-w-5xl flex-col gap-10 px-4 py-12 sm:px-8">
         <div className="flex flex-col gap-2">
           <h1 className="text-2xl font-extrabold text-ink sm:text-3xl">Коммерческая недвижимость в Минске</h1>
           <p className="max-w-2xl text-ink-muted">Гиды по районам для арендаторов и собственников коммерческой недвижимости.</p>
@@ -79,7 +79,7 @@ export function MinskHub() {
             })}
           </div>
         </section>
-      </div>
+      </main>
     </div>
   );
 }

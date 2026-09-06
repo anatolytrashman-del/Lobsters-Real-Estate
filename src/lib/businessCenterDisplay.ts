@@ -70,6 +70,23 @@ export function shortMetro(metro: string): string {
 // Порядок для навигации "следующий/предыдущий БЦ" на отдельной странице —
 // тот же алфавит по короткому имени, что и в боковом меню хаба, чтобы
 // стрелки совпадали с порядком, который пользователь уже видел в списке.
+// PAGESPEED_PLAN.md, Э9 (каталог БЦ) — фото БЦ в базе хранятся путями к
+// закоммиченным JPEG (`/images/business-centers/<slug>.jpg`, 500–1600px,
+// в среднем 150 КиБ, до 330 КиБ), а показываются в карточке каталога
+// шириной ~380px и на странице БЦ ~700px. Рядом с каждым JPEG в репозитории
+// лежат два WebP: `<slug>.webp` (до 1200px, страница БЦ) и `<slug>-card.webp`
+// (до 640px, карточка каталога) — см. журнал плана, как их пересобрать.
+// JPEG остаётся для og:image (соцсети/мессенджеры не все понимают WebP в
+// превью) и как источник. Пути НЕ из этой папки (например, загруженные
+// через админку в Supabase Storage) возвращаются как есть.
+const LOCAL_BC_PHOTO_RE = /^\/images\/business-centers\/([^/]+)\.jpe?g$/i;
+
+export function businessCenterPhotoSrc(path: string, variant: 'card' | 'detail'): string {
+  const m = path.match(LOCAL_BC_PHOTO_RE);
+  if (!m) return path;
+  return `/images/business-centers/${m[1]}${variant === 'card' ? '-card' : ''}.webp`;
+}
+
 export function sortByShortName(centers: BusinessCenter[]): BusinessCenter[] {
   return [...centers].sort((a, b) => shortName(a).localeCompare(shortName(b), 'ru'));
 }
