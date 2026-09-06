@@ -17,6 +17,11 @@ import {
   deleteBusinessCenter,
 } from '../../lib/businessCentersApi';
 import { uploadObjectDocument } from '../../lib/objectsApi';
+import {
+  formatRatingHighlightText,
+  mergeTenantOrganizations,
+  parseBusinessCenterSnapshot,
+} from '../../lib/businessCenterSnapshotParser';
 import { BUSINESS_CENTER_CLASSES } from '../../data/businessCenters';
 import type { BusinessCenter, HighlightIconKey, HighlightSection, RentalInfo, TenantOrganization } from '../../data/businessCenters';
 import type { DocumentFile } from '../../data/contractorDocuments';
@@ -269,6 +274,35 @@ export function BusinessCentersAdminTab() {
             'Попробуйте сохранить страницу компактнее (например, «Сохранить как → Веб-страница, только HTML» вместо полного Web Archive/mhtml).',
         );
       }
+      // Владелец, 2026-09-06: "если в карточку БЦ загружается новый веб-архив,
+      // система будет автоматически запускать обновление по этому БЦ и
+      // менять контент на странице карточки БЦ". Реализовано узко (см.
+      // businessCenterSnapshotParser.ts) — только структурные данные
+      // (организации в здании + рейтинг), только для файлов, добавленных в
+      // ЭТОМ сохранении (form.pendingMapSnapshotFiles, не весь архив
+      // заново на каждый чих формы). Лучшее усилие — сбой разбора одного
+      // файла не должен ронять сохранение самой формы.
+      let autoTenantOrganizations: TenantOrganization[] = [];
+      let autoRating: Awaited<ReturnType<typeof parseBusinessCenterSnapshot>>['rating'] = null;
+      for (const file of form.pendingMapSnapshotFiles) {
+        try {
+          const parsed = await parseBusinessCenterSnapshot(file);
+          autoTenantOrganizations = mergeTenantOrganizations(autoTenantOrganizations, parsed.tenantOrganizations);
+          if (parsed.rating) autoRating = parsed.rating; // последний файл с рейтингом побеждает
+        } catch {
+          // не смогли распознать конкретный файл — пропускаем, это бонус,
+          // не обязательный шаг
+        }
+      }
+
+      let highlightsForSave = buildHighlights(form);
+      if (autoRating) {
+        const text = formatRatingHighlightText(autoRating);
+        const idx = highlightsForSave.findIndex((h) => h.icon === 'rating');
+        if (idx >= 0) highlightsForSave = highlightsForSave.map((h, i) => (i === idx ? { ...h, text } : h));
+        else highlightsForSave = [{ icon: 'rating', label: 'Рейтинг на картах', text }, ...highlightsForSave];
+      }
+
       const payload = {
         slug: form.slug.trim(),
         name: form.name.trim(),
@@ -284,8 +318,8 @@ export function BusinessCentersAdminTab() {
         website: form.website.trim() || null,
         description: form.description.trim() || null,
         rentalInfo: buildRentalInfo(form),
-        highlights: buildHighlights(form),
-        tenantOrganizations: buildTenantOrganizations(form),
+        highlights: highlightsForSave,
+        tenantOrganizations: mergeTenantOrganizations(buildTenantOrganizations(form), autoTenantOrganizations),
         mapSnapshotFiles: [...form.mapSnapshotFiles, ...uploadedSnapshots],
         photos: form.photos
           .split('\n')
