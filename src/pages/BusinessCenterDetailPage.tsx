@@ -111,12 +111,19 @@ export function BusinessCenterDetailPage() {
   const ratingHighlight = useMemo(() => center?.highlights.find((h) => h.icon === 'rating') ?? null, [center]);
   const mapRating = useMemo(() => (ratingHighlight ? extractMapRating(ratingHighlight.text) : null), [ratingHighlight]);
   // Точное расстояние до метро из 2GIS (владелец подключает в параллельной
-  // ветке, 2026-09-06) — по прямой, в метрах, НЕ заменяет свободный текст
-  // `metro` (тот может нести реальный пройденный маршрут из веб-архивов
-  // Яндекс.Карт — более ценная инфа, чем метры по прямой) — показываются
-  // оба факта, если оба заполнены, см. комментарий у BusinessCenter.metro.
+  // ветке, 2026-09-06) — по прямой, в метрах. Когда есть — показывается
+  // ВМЕСТО center.metro (владелец, 2026-09-06: "дублируется метро... оставь
+  // только данные 2GIS"), не вместе с ним — см. JSX ниже.
   const nearestMetro = useMemo(() => nearestMetroStation(center?.nearestMetroStations ?? []), [center]);
   const scheduleLines = useMemo(() => (gis2?.schedule ? formatSchedule(gis2.schedule) : []), [gis2]);
+  // "Доступная среда" — единственная группа из gis2.attributeGroups, которую
+  // владелец попросил оставить (2026-09-06, вместе с часами работы, при
+  // упразднении отдельного блока "Данные 2ГИС") — остальные группы
+  // (аренда помещений и т.п.) больше нигде не показываются.
+  const accessibilityAttributes = useMemo(() => {
+    const group = gis2?.attributeGroups.find((g) => g.name === 'Доступная среда');
+    return group && group.attributes.length > 0 ? group.attributes.join(', ') : null;
+  }, [gis2]);
   const visibleHighlights = useMemo(() => center?.highlights.filter((h) => h.icon !== 'rating') ?? [], [center]);
 
   useEffect(() => {
@@ -300,23 +307,19 @@ export function BusinessCenterDetailPage() {
             </div>
 
             <FactRow icon={MapPin}>{center.address}</FactRow>
-            {/* Метро и застройщик — отдельными строками, не плитками (владелец,
-                2026-09-06, четвёртый заход: в hero-карточке должны остаться
-                только заголовок/адрес/метро/4 плитки — метро вернулось из
-                плитки обратно в обычную строку, как адрес). Текст метро — как
-                есть в базе; для части БЦ это пока минуты пешком, а не метры
-                (владелец просил именно метры) — там, где реальное расстояние
-                в метрах не найдено веб-поиском, строка честно показывает то,
-                что есть, без выдуманных цифр. */}
-            {center.metro && <FactRow icon={TrainFront}>{center.metro}</FactRow>}
-            {/* Точное расстояние из 2GIS — отдельной строкой, не вместо
-                center.metro (см. комментарий у nearestMetro выше): по прямой,
-                не пройденный маршрут, честно подписано, чтобы не путать с
-                минутами пешком из веб-архивов. */}
-            {nearestMetro && (
+            {/* Метро — одна строка, не две (владелец, 2026-09-06: "дублируется
+                метро и расстояние до него, оставь только данные 2GIS и убери
+                (2GIS), просто данные"). Когда есть точный геокод из 2GIS —
+                показываем только его (по прямой, в метрах, без подписи
+                источника в тексте); center.metro остаётся фолбэком для БЦ без
+                такого геокода (там пока только минуты пешком из веб-архивов
+                Яндекс.Карт, честно как есть, без выдуманных метров). */}
+            {nearestMetro ? (
               <FactRow icon={TrainFront}>
-                «{nearestMetro.name}» — {nearestMetro.distanceMeters} м по прямой (2GIS)
+                «{nearestMetro.name}» — {nearestMetro.distanceMeters} м по прямой
               </FactRow>
+            ) : (
+              center.metro && <FactRow icon={TrainFront}>{center.metro}</FactRow>
             )}
             {center.developer && <FactRow icon={Building2}>{center.developer}</FactRow>}
 
@@ -349,6 +352,20 @@ export function BusinessCenterDetailPage() {
                 четвёртый заход: "паркинг - отдельный блок") — тот же
                 LabeledTextRow, что и в "Условиях для арендаторов" ниже. */}
             <LabeledTextRow icon={Car} label="Парковка" text={center.parking} />
+
+            {/* Часы работы и доступная среда из 2GIS — переехали сюда из
+                отдельного блока "Данные 2ГИС" (владелец, 2026-09-06: "блок
+                Данные 2GIS не нужен, добавим эту инфу в главный блок... часы
+                работы и доступная среда оставляем, аренда помещений убираем,
+                подпись про 2ГИС убираем"). Остальные разделы прежнего блока
+                (аренда помещений, парковка(2ГИС), прочие attributeGroups) —
+                намеренно нигде больше не показываются, не только эти два. */}
+            {scheduleLines.length > 0 && (
+              <LabeledTextRow icon={Clock} label="Часы работы" text={scheduleLines.join('\n')} />
+            )}
+            {accessibilityAttributes && (
+              <LabeledTextRow icon={CheckCircle2} label="Доступная среда" text={accessibilityAttributes} />
+            )}
 
             {center.website && (
               <a
@@ -416,66 +433,6 @@ export function BusinessCenterDetailPage() {
                 </div>
               ))}
             </div>
-          </div>
-        )}
-
-        {/* Данные 2ГИС (владелец подключил API в параллельной ветке,
-            2026-09-06: "давай выведем на страницы всю инфу, которую мы
-            спарсили") — расписание, особенности здания (доступная среда,
-            допуслуги) и парковка из отдельной таблицы
-            business_center_2gis_snapshots. Рейтинг 2ГИС — уже показан
-            бейджем у заголовка (см. выше), сюда не дублируем. Рендерится
-            только когда есть хотя бы один непустой раздел — часть БЦ
-            (37 из 143, `match_status='building_only'`) не имеют организации
-            в 2GIS, только геокод здания, для них тут показывать нечего. */}
-        {gis2 && (scheduleLines.length > 0 || gis2.attributeGroups.length > 0 || gis2.parking.length > 0) && (
-          <div className={cn('mt-6 flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
-            <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" />
-              Данные 2ГИС
-            </h2>
-            <div className="flex flex-col divide-y divide-border">
-              {scheduleLines.length > 0 && (
-                <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
-                  <Clock className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Часы работы</p>
-                    <div className="mt-1 flex flex-col gap-0.5 text-sm text-ink-muted">
-                      {scheduleLines.map((line) => (
-                        <span key={line}>{line}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {gis2.parking.length > 0 && (
-                <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
-                  <Car className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Парковка (2ГИС)</p>
-                    <div className="mt-1 flex flex-col gap-0.5 text-sm text-ink-muted">
-                      {gis2.parking.map((p, i) => (
-                        <span key={i}>
-                          {p.name}
-                          {p.isPaid ? ' — платная' : ' — бесплатная'}
-                          {p.capacity != null && `, ${p.capacity} машиномест`}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {gis2.attributeGroups.map((group, i) => (
-                <div key={i} className="flex gap-3 py-3 first:pt-0 last:pb-0">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{group.name}</p>
-                    <p className="mt-1 text-sm text-ink-muted">{group.attributes.join(', ')}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-ink-faint">Собрано автоматически по данным 2ГИС.</p>
           </div>
         )}
 
