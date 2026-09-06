@@ -193,9 +193,22 @@ function parseTenantOrganizationsBulk(text: string): TenantOrganization[] {
     });
 }
 
+function errorMessage(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    return (err as { message: string }).message;
+  }
+  return fallback;
+}
+
 export function BusinessCentersAdminTab() {
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
   const [error, setError] = useState('');
+  // Отдельная от списочной error — та рисуется НАД таблицей, а таблица
+  // скрыта под модалкой, пока форма открыта (см. Modal ниже), поэтому
+  // ошибка сохранения молча пропадала из вида: владелец жал "Сохранить" и
+  // не видел вообще ничего, даже если сохранение реально падало (см. журнал
+  // 2026-09-05 про не загружающиеся .webarchive — этот баг и вскрыл).
+  const [formError, setFormError] = useState('');
   const [editing, setEditing] = useState<BusinessCenter | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -219,11 +232,13 @@ export function BusinessCentersAdminTab() {
   function openEdit(c: BusinessCenter) {
     setEditing(c);
     setForm(centerToForm(c));
+    setFormError('');
   }
 
   function openNew() {
     setEditing('new');
     setForm({ ...EMPTY_FORM, sortOrder: String((centers?.length ?? 0)) });
+    setFormError('');
   }
 
   function closeEdit() {
@@ -234,8 +249,26 @@ export function BusinessCentersAdminTab() {
     e.preventDefault();
     if (!form.name.trim() || !form.slug.trim()) return;
     setSaving(true);
+    setFormError('');
     try {
-      const uploadedSnapshots = await Promise.all(form.pendingMapSnapshotFiles.map(uploadObjectDocument));
+      let uploadedSnapshots: DocumentFile[] = [];
+      try {
+        uploadedSnapshots = await Promise.all(form.pendingMapSnapshotFiles.map(uploadObjectDocument));
+      } catch (err) {
+        // Владелец, 2026-09-05: ".webarchive не загружается, жду и ничего
+        // не происходит" — реальная причина в 9 из 10 случаев это лимит
+        // Supabase Storage на 50 МБ на файл (общий на весь проект, поднять
+        // его без платного тарифа нельзя — проверено напрямую через
+        // Management API, PATCH .../config/storage отвечает "upgrade the
+        // project to a paid plan"). Полный .webarchive страницы Яндекс.Карт
+        // с фото/тайлами легко превышает это — сообщаем причину явно, а не
+        // просто "не удалось сохранить".
+        throw new Error(
+          `Не удалось загрузить файл «${form.pendingMapSnapshotFiles[0]?.name ?? ''}»: ${errorMessage(err, 'ошибка загрузки')}. ` +
+            'Если файл больше 50 МБ — это лимит Supabase Storage на текущем тарифе (поднять нельзя без перехода на платный тариф). ' +
+            'Попробуйте сохранить страницу компактнее (например, «Сохранить как → Веб-страница, только HTML» вместо полного Web Archive/mhtml).',
+        );
+      }
       const payload = {
         slug: form.slug.trim(),
         name: form.name.trim(),
@@ -268,8 +301,12 @@ export function BusinessCentersAdminTab() {
       }
       closeEdit();
       load();
-    } catch {
-      setError('Не удалось сохранить — проверьте поля (slug должен быть уникальным) и попробуйте ещё раз.');
+    } catch (err) {
+      // Реальный текст ошибки (в т.ч. сообщение про лимит файла из блока
+      // выше) — не общая заглушка про slug: та маскировала настоящую
+      // причину. setFormError, не setError — этот текст должен быть виден
+      // ВНУТРИ ещё открытой модалки (см. комментарий у formError выше).
+      setFormError(errorMessage(err, 'Не удалось сохранить — проверьте поля (slug должен быть уникальным) и попробуйте ещё раз.'));
     } finally {
       setSaving(false);
     }
@@ -715,6 +752,8 @@ export function BusinessCentersAdminTab() {
             rows={2}
             placeholder={`/images/business-centers/${form.slug || 'slug'}.jpg`}
           />
+
+          {formError && <p className="text-sm text-danger">{formError}</p>}
 
           <div className="flex items-center justify-end gap-3">
             <Button type="button" variant="ghost" onClick={closeEdit}>
