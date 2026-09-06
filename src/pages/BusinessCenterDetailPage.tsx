@@ -11,6 +11,7 @@ import {
   Car,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   FileText,
   Globe,
   Info,
@@ -316,6 +317,61 @@ export function BusinessCenterDetailPage() {
             )}
           </div>
         </div>
+
+        {/* Технические характеристики — прямой парсинг структурных блоков
+            .bccharacteristics с карточки здания на prometr.by (владелец,
+            2026-09-06: "выведи на страницу вообще все данные, которые ты
+            смог спарсить"). Таблица параметр-значение, показывает только
+            непустые строки; для уже смерженных в нашей базе многокорпусных
+            комплексов (Riviera Plaza, Парк Плаза) — отдельная таблица на
+            каждый корпус со своей подписью. Значения — как у источника, без
+            сглаживания расхождений с нашими собственными полями (см.
+            комментарий у BusinessCenter.technicalParams в
+            data/businessCenters.ts) — отсюда честная атрибуция "по данным
+            prometr.by" у пары строк, которые могут не совпасть с площадью/
+            этажностью, показанными выше в карточке. Пусто у части БЦ — не
+            найдены на prometr.by или адрес не удалось надёжно сопоставить
+            (см. тот же комментарий) — не гадаем, просто не рендерим блок. */}
+        {center.technicalParams.length > 0 && (
+          <div className={cn('mt-6 flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+            <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
+              <ClipboardList className="h-5 w-5 shrink-0 text-primary" />
+              Технические характеристики
+            </h2>
+            <div className="flex flex-col gap-5">
+              {center.technicalParams.map((group, i) => (
+                <div key={i} className="flex flex-col gap-2">
+                  {group.corpusLabel && <p className="text-sm font-bold text-ink">{group.corpusLabel}</p>}
+                  <div className="overflow-hidden rounded-control border border-border">
+                    <table className="w-full border-collapse text-sm">
+                      <tbody>
+                        {group.params.map((p, j) => (
+                          <tr key={j} className="border-b border-border last:border-b-0 odd:bg-surface-muted/40">
+                            <th
+                              scope="row"
+                              className="w-1/2 py-2 pl-3 pr-2 text-left align-top font-medium text-ink-muted sm:w-2/5"
+                            >
+                              {p.label}
+                            </th>
+                            <td className="py-2 pl-2 pr-3 text-ink">{p.value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <a
+                    href={group.sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-ink-faint hover:text-primary hover:underline"
+                  >
+                    Источник: prometr.by
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* "Интересные факты" — произвольный набор блоков, разный у каждого
             БЦ (владелец, 2026-09-06, второй заход: "старайся делать

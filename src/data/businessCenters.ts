@@ -90,6 +90,20 @@ export interface BusinessCenter {
   // ближайший доступный из реальных данных прокси, не выдуманные цифры
   // отзывов на конкретную организацию.
   tenantOrganizations: TenantOrganization[];
+  // Структурные технические характеристики — прямой парсинг блоков
+  // .bccharacteristics с карточки здания на prometr.by (2026-09-06, владелец:
+  // "выведи на страницу вообще все данные, которые ты смог спарсить"). Один
+  // элемент массива = один физический корпус со своей страницей на
+  // prometr.by; у большинства БЦ корпус ровно один (corpusLabel: null), у
+  // уже смерженных в нашей базе многокорпусных комплексов (Riviera Plaza,
+  // Парк Плаза) — несколько, каждый со своей подписью и ссылкой на
+  // первоисточник. Значения — как есть у источника, включая случаи, где они
+  // расходятся с нашими собственными полями (totalArea и т.п., см. журнал
+  // CLAUDE.md от 2026-09-06 — не сглаживаем, честно показываем с атрибуцией
+  // "по данным prometr.by"). Пусто — либо БЦ не найден на prometr.by (Аден,
+  // МФЦ — ещё стройка), либо адрес не удалось надёжно сопоставить (риск
+  // приписать чужие характеристики зданию — оставили пустым, не гадаем).
+  technicalParams: TechnicalParamGroup[];
   photos: string[];
   // 'built' по умолчанию. 'under_construction' — как МФЦ, ещё строится.
   status: 'built' | 'under_construction';
@@ -146,6 +160,18 @@ export interface TenantOrganization {
   category: string;
 }
 
+// См. комментарий у BusinessCenter.technicalParams выше.
+export interface TechnicalParam {
+  label: string;
+  value: string;
+}
+
+export interface TechnicalParamGroup {
+  corpusLabel: string | null;
+  sourceUrl: string;
+  params: TechnicalParam[];
+}
+
 // Форма строки в таблице Supabase (snake_case-колонки) — см. lib/businessCentersApi.ts
 export interface BusinessCenterRow {
   id: string;
@@ -166,6 +192,7 @@ export interface BusinessCenterRow {
   highlights: HighlightSection[] | null;
   map_snapshot_files: DocumentFile[] | null;
   tenant_organizations: TenantOrganization[] | null;
+  technical_params: TechnicalParamGroup[] | null;
   photos: string[] | null;
   status: string | null;
   sort_order: number;

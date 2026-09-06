@@ -321,6 +321,11 @@ export function BusinessCentersAdminTab() {
         highlights: highlightsForSave,
         tenantOrganizations: mergeTenantOrganizations(buildTenantOrganizations(form), autoTenantOrganizations),
         mapSnapshotFiles: [...form.mapSnapshotFiles, ...uploadedSnapshots],
+        // Не редактируется в этой форме (см. комментарий у
+        // BusinessCenter.technicalParams в data/businessCenters.ts — заполняется
+        // отдельным ресерчем, не вручную) — при правке сохраняем как было, у
+        // новой записи начинаем с пустого массива.
+        technicalParams: editing !== 'new' && editing ? editing.technicalParams : [],
         photos: form.photos
           .split('\n')
           .map((s) => s.trim())
