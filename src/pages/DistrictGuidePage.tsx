@@ -195,14 +195,20 @@ const statTiles: { icon: LucideIcon; value: string; label: string }[] = [
 // цвета) — не смог найти логотип с уже прозрачным фоном официально,
 // пришлось вырезать вручную, как и просил владелец.
 // PAGESPEED_PLAN.md, Э4-1 — пересохранён в WebP под фактический размер
-// показа (h-9 ≈ 36px, 2× под Retina — 420×126, было 585×176 PNG).
+// показа. Изначально сделан 2× (retina-эвристика), но живой отчёт PageSpeed
+// (владелец, "если картинки тяжёлые, давай tinypng") показал реальный DPR
+// экрана теста — 1,75, не 2 — и явно назвал "displayed dimensions", по
+// которым и пересчитан точный размер (368×110, было 420×126 при 2×, было
+// 585×176 PNG до Э4-1). TinyPNG не подключали — тут не про более умный
+// алгоритм сжатия (WebP через Pillow уже близко к пределу для такой
+// графики), а про то, что файл был чуть крупнее реально нужного.
 const DEVELOPER_LOGO_URL = '/images/district/dana-holdings-logo.webp';
 // Тот же файл, что и MINSK_MIR_LOGO_URL в ObjectLandingPage.tsx (страница
 // Red One) — владелец попросил показать его рядом с логотипом застройщика
 // и тут же (см. комментарий там про перезаливку с ibb.co в собственное
-// хранилище — сделано заодно с этой правкой). WebP 108×126 (Э4-1, как и у
-// остальных логотипов этой страницы) — ObjectLandingPage.tsx использует тот
-// же путь.
+// хранилище — сделано заодно с этой правкой). WebP 95×110 (см. комментарий
+// у DEVELOPER_LOGO_URL про уточнение размера под реальный DPR 1,75) —
+// ObjectLandingPage.tsx использует тот же путь.
 const MINSK_MIR_LOGO_URL = '/images/district/minsk-mir-logo.webp';
 const DEVELOPER_LINKS = [
   { label: 'minskworld.by', url: 'https://minskworld.by' },
@@ -225,8 +231,9 @@ const DEVELOPER_CONTACTS = {
 // (115) — короткий номер, работает только с мобильных трёх операторов
 // (владелец: "115 (A1, MTC, Life)"), это отражено в подписи, не в самом
 // номере (tel:115 одинаково валиден для всех).
-// PAGESPEED_PLAN.md, Э4-1 — WebP, 170×168 (было 200×198 PNG, отображается
-// h-12 ≈ 48px, 2× под Retina).
+// PAGESPEED_PLAN.md, Э4-1 — WebP, 149×147 (было 200×198 PNG; см. комментарий
+// у DEVELOPER_LOGO_URL — размер уточнён под реальный DPR теста, 1,75, а не
+// плоские 2×).
 const MANAGEMENT_COMPANY_LOGO_URL = '/images/district/happy-planet-logo.webp';
 const MANAGEMENT_COMPANY_DESCRIPTION =
   'Управляющая компания «Happy Planet» отвечает за эксплуатацию и управление недвижимостью в районе «Минск Мир». Организация обслуживает сданные объекты Dana Holdings, а её бэк-офис для работы с собственниками и арендаторами находится в границах района.';
@@ -1530,8 +1537,8 @@ export function DistrictGuidePage() {
               <h2 className="text-lg font-bold text-ink">Застройщик района</h2>
             </div>
             <div className="flex items-center gap-4">
-              <img src={DEVELOPER_LOGO_URL} alt="Dana Holdings" width={420} height={126} className="h-9 w-auto object-contain" />
-              <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" width={108} height={126} className="h-9 w-auto object-contain" />
+              <img src={DEVELOPER_LOGO_URL} alt="Dana Holdings" width={368} height={110} className="h-9 w-auto object-contain" />
+              <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" width={95} height={110} className="h-9 w-auto object-contain" />
             </div>
           </div>
           <p className="text-sm text-ink-muted">
@@ -1586,8 +1593,8 @@ export function DistrictGuidePage() {
             <img
               src={MANAGEMENT_COMPANY_LOGO_URL}
               alt={MANAGEMENT_COMPANY.name}
-              width={170}
-              height={168}
+              width={149}
+              height={147}
               className="h-12 w-auto object-contain"
             />
           </div>
