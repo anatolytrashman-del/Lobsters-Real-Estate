@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   AlertTriangle,
+  ArrowLeft,
   Award,
   Banknote,
   Building2,
@@ -12,6 +13,7 @@ import {
   ChevronRight,
   FileText,
   Globe,
+  Info,
   Landmark,
   Layers,
   Leaf,
@@ -25,7 +27,6 @@ import {
   Sparkles,
   Star,
   TrainFront,
-  X,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from '../lib/glass';
@@ -136,11 +137,23 @@ export function BusinessCenterDetailPage() {
         <Link to="/minsk" className="text-lg font-extrabold tracking-wide text-ink">
           <span className="font-black text-primary">RED</span>EVELOPMENT
         </Link>
+        {/* Владелец, 2026-09-06: "крестик плохо подходит, он как будто про
+            закрытие, но те, кто придёт на эту страницу из поиска, ещё не
+            видел главную страницу" — крестик подразумевает "закрыть уже
+            открытое", а для гостя из поисковика это первая страница сайта
+            вообще, тут нужна навигация "назад к списку", не закрытие.
+            Плюс "должно выглядеть заметнее" — обычная приглушённая текстовая
+            ссылка заменена на pill-кнопку (тот же glassPillClass, что и у
+            стрелок prev/next ниже на странице). */}
         <Link
           to="/minsk/bcminsk"
-          className="flex items-center gap-1.5 text-sm font-semibold text-ink-muted transition-colors hover:text-ink"
+          className={cn(
+            'flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold text-ink transition-colors hover:text-primary',
+            glassPillClass,
+          )}
+          style={glassPillShadow}
         >
-          <X className="h-4 w-4 shrink-0" />
+          <ArrowLeft className="h-4 w-4 shrink-0" />
           Все бизнес-центры
         </Link>
       </div>
@@ -295,11 +308,22 @@ export function BusinessCenterDetailPage() {
               ))}
 
             <div className="flex flex-col divide-y divide-border">
-              {visibleHighlights
-                .filter((s) => s.icon !== 'warning')
-                .map((s, i) => (
-                  <LabeledTextRow key={i} icon={HIGHLIGHT_ICONS[s.icon]} label={s.label} text={s.text} />
-                ))}
+              {(() => {
+                const plainFacts = visibleHighlights.filter((s) => s.icon !== 'warning');
+                // Единственный факт в карточке — свой подписанный заголовок
+                // над ним избыточен: и так ясно из заголовка карточки "Интересные
+                // факты" (владелец, 2026-09-06: "если интересный факт один, то
+                // заголовок лишний").
+                const showLabel = plainFacts.length > 1;
+                return plainFacts.map((s, i) => (
+                  <LabeledTextRow
+                    key={i}
+                    icon={HIGHLIGHT_ICONS[s.icon]}
+                    label={showLabel ? s.label : undefined}
+                    text={s.text}
+                  />
+                ));
+              })()}
             </div>
           </div>
         )}
@@ -445,6 +469,10 @@ export function BusinessCenterDetailPage() {
 // Иконка на раздел "Интересных фактов" по ключу из HighlightSection.icon —
 // 'warning' в общий список не попадает (свой рендер, акцентный блок выше),
 // но остаётся в мапе для полноты типа (Record должен покрывать все ключи).
+// 'fact' — намеренно НЕ Sparkles (владелец, 2026-09-06: "не допускай повтора
+// иконок" — заголовок карточки "Интересные факты" уже использует Sparkles,
+// у самого частого по факту icon-ключа 'fact' была та же иконка — дублировалась
+// на скриншоте с одним фактом "Позиционирование").
 const HIGHLIGHT_ICONS: Record<HighlightIconKey, typeof FileText> = {
   history: Landmark,
   tenants: Building2,
@@ -454,7 +482,7 @@ const HIGHLIGHT_ICONS: Record<HighlightIconKey, typeof FileText> = {
   design: Palette,
   eco: Leaf,
   warning: AlertTriangle,
-  fact: Sparkles,
+  fact: Info,
 };
 
 // Достаёт число+источник из свободного текста блока "рейтинг" в
@@ -566,14 +594,22 @@ function groupTenantOrganizations(orgs: TenantOrganization[]): { category: strin
 
 // сам текст, ничего не рендерит, если по этому разделу нашлось не найдено
 // (text === null) — не показываем пустые подписи.
-function LabeledTextRow({ icon: Icon, label, text }: { icon: typeof FileText; label: string; text: string | null }) {
+function LabeledTextRow({
+  icon: Icon,
+  label,
+  text,
+}: {
+  icon: typeof FileText;
+  label?: string;
+  text: string | null;
+}) {
   if (!text) return null;
   return (
     <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-ink-faint" />
       <div className="min-w-0 flex-1">
-        <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{label}</p>
-        <div className="mt-1 text-sm leading-relaxed text-ink-muted">{renderRentalText(text)}</div>
+        {label && <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{label}</p>}
+        <div className={cn('text-sm leading-relaxed text-ink-muted', label && 'mt-1')}>{renderRentalText(text)}</div>
       </div>
     </div>
   );
