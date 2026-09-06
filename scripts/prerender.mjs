@@ -169,16 +169,41 @@ async function waitForServer(timeoutMs = 20_000) {
 // возможная будущая разработка) используем уже готовый Chromium из
 // PLAYWRIGHT_BROWSERS_PATH напрямую по пути — тот же приём, что скилл `run`
 // советует для случаев с закреплённой версией браузера в окружении.
-async function launchBrowser() {
-  if (process.env.VERCEL) {
-    const sparticuzChromium = (await import('@sparticuz/chromium')).default;
-    return chromium.launch({
-      args: sparticuzChromium.args,
-      executablePath: await sparticuzChromium.executablePath(),
-      headless: true,
-    });
+//
+// `sparticuzChromium.executablePath()` при первом вызове РАСПАКОВЫВАЕТ
+// бинарник Chromium во временный файл — это не идемпотентное чтение
+// готового пути, а запись. Реальный сбой на проде после перехода на "свой
+// браузер на каждый воркер" (PAGESPEED_PLAN.md, Э0-3, второй заход):
+// 4 воркера стартуют параллельно и все разом зовут `executablePath()` —
+// один процесс ещё дописывает файл, другой в этот момент пытается его
+// запустить → `spawn ETXTBSY` ("text file busy"), сборка падает целиком.
+// Фикс — распаковка ровно один раз на всю сборку (кэшируем ПРОМИС, не
+// результат, иначе конкурентные вызовы до его разрешения всё равно
+// затеяли бы вторую параллельную распаковку), дальше все воркеры просто
+// запускают СВОЙ процесс браузера по уже готовому, стабильному пути —
+// параллельный `chromium.launch()` по одному и тому же исполняемому файлу
+// (без записи в этот момент) безопасен, гонка была именно в записи.
+let launchOptionsPromise = null;
+function resolveLaunchOptions() {
+  if (!launchOptionsPromise) {
+    launchOptionsPromise = (async () => {
+      if (process.env.VERCEL) {
+        const sparticuzChromium = (await import('@sparticuz/chromium')).default;
+        return {
+          args: sparticuzChromium.args,
+          executablePath: await sparticuzChromium.executablePath(),
+          headless: true,
+        };
+      }
+      return { executablePath: '/opt/pw-browsers/chromium', headless: true };
+    })();
   }
-  return chromium.launch({ executablePath: '/opt/pw-browsers/chromium', headless: true });
+  return launchOptionsPromise;
+}
+
+async function launchBrowser() {
+  const options = await resolveLaunchOptions();
+  return chromium.launch(options);
 }
 
 async function main() {
