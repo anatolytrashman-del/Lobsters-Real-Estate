@@ -14,6 +14,7 @@ import {
   ChevronRight,
   ClipboardList,
   Clock,
+  ExternalLink,
   FileText,
   Globe,
   Info,
@@ -55,6 +56,23 @@ import { fetchBusinessCenter2gisSnapshot } from '../lib/businessCenter2gisApi';
 // "Закрытие" ведёт не назад в истории браузера, а явно на /minsk/bcminsk —
 // так работает предсказуемо и при заходе по прямой ссылке из поиска, когда
 // в истории браузера страницы хаба вообще нет.
+
+// Общие источники данных для всего каталога БЦ (владелец, 2026-09-06: "давай
+// внизу напишем полный список источников, пусть будут кликабельными") — не
+// привязаны к конкретному БЦ (фото/теххарактеристики — prometr.by, метро/
+// рейтинг/организации — Яндекс.Карты и 2ГИС, объявления — Kufar и Realt,
+// часть резонансных фактов — Onliner), показываются на КАЖДОЙ карточке
+// одинаково; официальный сайт самого здания (если найден) — отдельной
+// ссылкой следом, он специфичен для конкретного БЦ.
+const GENERAL_DATA_SOURCES = [
+  { label: 'prometr.by', href: 'https://prometr.by/' },
+  { label: 'Kufar', href: 'https://www.kufar.by/' },
+  { label: 'Realt.by', href: 'https://realt.by/' },
+  { label: 'Onliner', href: 'https://www.onliner.by/' },
+  { label: 'Яндекс.Карты', href: 'https://yandex.by/maps/' },
+  { label: '2ГИС', href: 'https://2gis.by/' },
+] as const;
+
 export function BusinessCenterDetailPage() {
   const { slug } = useParams<{ slug: string }>();
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
@@ -608,6 +626,40 @@ export function BusinessCenterDetailPage() {
             </div>
           </div>
         )}
+
+        <div className={cn('mt-6 flex flex-col gap-3 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+          <h2 className="text-lg font-bold text-ink">Источники</h2>
+          <div className="flex flex-wrap gap-2">
+            {GENERAL_DATA_SOURCES.map((source) => (
+              <a
+                key={source.href}
+                href={source.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-primary hover:text-primary',
+                )}
+              >
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                {source.label}
+              </a>
+            ))}
+            {center.website && (
+              <a
+                href={center.website}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-primary hover:text-primary"
+              >
+                <Globe className="h-3.5 w-3.5 shrink-0" />
+                Официальный сайт «{shortName(center)}»
+              </a>
+            )}
+          </div>
+          <p className="text-xs text-ink-faint">
+            Данные о здании собраны из открытых источников — не всё относится к каждому конкретному БЦ.
+          </p>
+        </div>
 
         {/* Мобильная навигация "следующий/предыдущий" — фиксированные стрелки
             выше скрыты до lg, здесь тот же переход обычной строкой кнопок. */}
