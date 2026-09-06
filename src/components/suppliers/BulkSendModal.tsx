@@ -8,8 +8,10 @@ import type { SupplierRequest, SupplierOffer } from '../../data/supplierResearch
 import type { SupplierOrder } from '../../data/supplierOrders';
 import { insertSupplierOrder } from '../../lib/supplierOrdersApi';
 import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
+import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
 import { sendSupplierOfferEmail } from '../../lib/supplierOfferEmailsApi';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
+import { ORGANIZATION_CARD_ATTACHMENT } from '../../data/organizationCard';
 import { emailSignature } from './SupplierCorrespondenceTab';
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -135,13 +137,16 @@ export function BulkSendModal({
           files: [],
         });
         onOrderCreated(order);
+        // Владелец, 2026-09-06: карточка организации — только к первому
+        // письму конкретному поставщику (не к каждой новой рассылке ему же).
+        const attachments = [attachment, ...(isFirstOutgoingToOffer(emails, offer.id) ? [ORGANIZATION_CARD_ATTACHMENT] : [])];
         const email = await sendSupplierOfferEmail({
           offerId: offer.id,
           orderId: order.id,
           toAddress: offer.email,
           subject: subject.trim(),
           body,
-          attachments: [attachment],
+          attachments,
         });
         onEmailSent(email);
         setStates((prev) => ({ ...prev, [offer.id]: 'sent' }));
@@ -189,6 +194,11 @@ export function BulkSendModal({
                     <span className="min-w-0 flex-1 truncate text-ink">
                       {o.name}
                       {hadEmails && <span className="text-ink-faint"> · уже переписывались</span>}
+                      {isFirstOutgoingToOffer(emails, o.id) && (
+                        <span className="text-ink-faint" title={`${ORGANIZATION_CARD_ATTACHMENT.fileName} — первое письмо этому поставщику`}>
+                          {' '}· + карточка организации
+                        </span>
+                      )}
                     </span>
                     {state === 'sending' && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ink-muted" />}
                     {state === 'sent' && <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
