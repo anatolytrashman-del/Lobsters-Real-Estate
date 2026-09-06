@@ -166,6 +166,11 @@ export default function App() {
       <Route path="/minsk" element={<MinskHub />} />
       <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />
       <Route path="/minsk/bcminsk" element={<BusinessCentersMinskPage />} />
+      {/* Хаб-страницы по классу/району (Fable-анализ, 2026-09-06) — тот же
+          компонент, фильтр читается из useParams(), см. комментарий там же.
+          Регистрируются ДО ":slug", чтобы не конфликтовать с ним. */}
+      <Route path="/minsk/bcminsk/class/:classSlug" element={<BusinessCentersMinskPage />} />
+      <Route path="/minsk/bcminsk/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
       <Route path="/plan/:token" element={<PublicBuildingPlan />} />
       <Route path="/tz/:token" element={<BriefPublicPage />} />

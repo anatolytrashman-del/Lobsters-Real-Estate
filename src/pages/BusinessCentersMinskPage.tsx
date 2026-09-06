@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { ArrowRight, BadgeCheck, Calendar, Camera, Layers, MapPin, Menu, Ruler, TrainFront, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from '../lib/glass';
@@ -7,8 +7,14 @@ import { Badge } from '../components/ui/Badge';
 import { HeroImageSlider } from '../components/objects/HeroImageSlider';
 import { ObjectMapWidget } from '../components/objects/ObjectMapWidget';
 import { PhotoBlock, FactRow } from '../components/businessCenters/BusinessCenterVisuals';
-import { setArticleJsonLd, setBreadcrumbJsonLd, setGenericPageMeta } from '../lib/pageMeta';
+import { setArticleJsonLd, setBreadcrumbJsonLd, setGenericPageMeta, setNoIndex, clearNoIndex } from '../lib/pageMeta';
 import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
+import {
+  CLASS_SLUG_TO_VALUE,
+  DISTRICT_SLUG_TO_NAME,
+  classHubUrl,
+  districtHubUrl,
+} from '../lib/businessCenterHubs';
 import type { BusinessCenter } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 
@@ -134,14 +140,34 @@ function BusinessCenterCard({ center }: { center: BusinessCenter }) {
   );
 }
 
+// Хаб-страницы по классу/району (Fable-анализ, 2026-09-06 — "нужны страницы
+// вида /minsk/bcminsk/class-a/, /minsk/bcminsk/centralny/... каждая со
+// своим H1... блок ссылок на них — на каталоге и в карточках"). Один и тот
+// же компонент обслуживает три роута — общий каталог `/minsk/bcminsk`,
+// `/minsk/bcminsk/class/:classSlug` и `/minsk/bcminsk/raion/:districtSlug`
+// (см. App.tsx) — фильтр больше не локальный useState, а производный от
+// URL через useParams(): пункты бокового меню стали обычными <Link>, сама
+// навигация и есть применение фильтра (клиентский роутинг, без перезагрузки
+// страницы — так же мгновенно, как раньше onClick+setState, но URL теперь
+// настоящий, индексируемый, с уникальным title/H1/canonical). Сознательное
+// упрощение: класс и район не комбинируются в одном URL (как и в примерах
+// самого документа) — выбор одной оси сбрасывает другую.
 export function BusinessCentersMinskPage() {
+  const { classSlug, districtSlug } = useParams<{ classSlug?: string; districtSlug?: string }>();
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
-  const [classFilter, setClassFilter] = useState<'all' | NonNullable<BusinessCenter['businessClass']>>('all');
-  const [districtFilter, setDistrictFilter] = useState<'all' | string>('all');
   // Боковое меню на мобильном скрыто за плавающей кнопкой (владелец, 2026-09-04:
   // "сделай конструктивно как на странице Минск Мира, чтобы оно с мобилки
   // скрывалось") — тот же паттерн шторки, что и SECTION_NAV в DistrictGuidePage.tsx.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  const classFilter = classSlug ? (CLASS_SLUG_TO_VALUE[classSlug] ?? null) : null;
+  const districtFilter = districtSlug ? (DISTRICT_SLUG_TO_NAME[districtSlug] ?? null) : null;
+  // Невалидный slug в /class/:classSlug или /raion/:districtSlug — не
+  // существующий класс/район, не просто "пусто" (тот же принцип soft-404,
+  // что и у неизвестного :slug на BusinessCenterDetailPage.tsx).
+  const badClassSlug = Boolean(classSlug) && classFilter === null;
+  const badDistrictSlug = Boolean(districtSlug) && districtFilter === null;
+  const notFound = badClassSlug || badDistrictSlug;
 
   useEffect(() => {
     fetchBusinessCenters()
@@ -150,20 +176,48 @@ export function BusinessCentersMinskPage() {
   }, []);
 
   useEffect(() => {
-    setGenericPageMeta({ title: TITLE, description: DESCRIPTION, url: PAGE_URL, image: OG_IMAGE, ogType: 'article' });
+    if (notFound) {
+      setNoIndex();
+      return () => clearNoIndex();
+    }
+    const hubTitle = classFilter
+      ? `Бизнес-центры класса ${classFilter} в Минске`
+      : districtFilter
+        ? `Бизнес-центры Минска: ${districtFilter} район`
+        : TITLE;
+    const hubDescription = classFilter
+      ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
+      : districtFilter
+        ? `Бизнес-центры в ${districtFilter} районе Минска: адреса, деловой класс, площадь, метро.`
+        : DESCRIPTION;
+    const hubUrl = classFilter
+      ? `https://redevelopment.pro${classHubUrl(classFilter)}`
+      : districtFilter
+        ? `https://redevelopment.pro${districtHubUrl(districtFilter) ?? ''}`
+        : PAGE_URL;
+
+    setGenericPageMeta({ title: hubTitle, description: hubDescription, url: hubUrl, image: OG_IMAGE, ogType: 'article' });
     setArticleJsonLd({
-      headline: TITLE,
-      description: DESCRIPTION,
-      url: PAGE_URL,
+      headline: hubTitle,
+      description: hubDescription,
+      url: hubUrl,
       datePublished: '2026-09-04',
       dateModified: DATE_MODIFIED,
       image: OG_IMAGE,
     });
-    setBreadcrumbJsonLd([
-      { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
-      { name: 'Бизнес-центры Минска' },
-    ]);
-  }, []);
+    setBreadcrumbJsonLd(
+      classFilter || districtFilter
+        ? [
+            { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
+            { name: 'Бизнес-центры Минска', url: PAGE_URL },
+            { name: classFilter ? `Класс ${classFilter}` : (districtFilter as string) },
+          ]
+        : [
+            { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
+            { name: 'Бизнес-центры Минска' },
+          ],
+    );
+  }, [classFilter, districtFilter, notFound]);
 
   const availableClasses = useMemo(
     () =>
@@ -197,9 +251,7 @@ export function BusinessCentersMinskPage() {
   const visibleCenters = useMemo(
     () =>
       (centers ?? []).filter(
-        (c) =>
-          (classFilter === 'all' || c.businessClass === classFilter) &&
-          (districtFilter === 'all' || c.district === districtFilter),
+        (c) => (classFilter === null || c.businessClass === classFilter) && (districtFilter === null || c.district === districtFilter),
       ),
     [centers, classFilter, districtFilter],
   );
@@ -212,36 +264,65 @@ export function BusinessCentersMinskPage() {
     [visibleCenters],
   );
 
+  if (notFound) {
+    return (
+      <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-bg px-4 text-center">
+        <p className="text-base text-ink-muted">Такой раздел каталога не найден.</p>
+        <Link to="/minsk/bcminsk" className="text-sm font-semibold text-primary hover:underline">
+          ← Все бизнес-центры Минска
+        </Link>
+      </div>
+    );
+  }
+
+  // Заголовок/подзаголовок hero — на общем каталоге статичные PAGE_H1/
+  // INTRO_TEXT, на хаб-подстранице класса/района — уникальные под конкретный
+  // фильтр (то же значение, что уже посчитано для meta-тегов выше).
+  const heroH1 = classFilter
+    ? `Бизнес-центры класса ${classFilter} в Минске`
+    : districtFilter
+      ? `Бизнес-центры Минска: ${districtFilter} район`
+      : PAGE_H1;
+  const heroIntro = classFilter
+    ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
+    : districtFilter
+      ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtFilter} районе Минска — сравнивайте по классу, площади и расположению.`
+      : INTRO_TEXT;
+
   // Содержимое бокового меню — общий JSX для десктопной sticky-колонки и
   // мобильной шторки (владелец: "боковое меню... как на странице Минск
   // Мира, чтобы оно с мобилки скрывалось"), см. рендер обоих ниже.
   const filterContent = (
     <>
       <span className="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">Район</span>
-      <button
-        type="button"
-        onClick={() => setDistrictFilter('all')}
+      <Link
+        to="/minsk/bcminsk"
+        onClick={() => setMobileNavOpen(false)}
         className={cn(
           'rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
-          districtFilter === 'all' ? 'bg-primary/10 font-bold text-primary' : 'font-medium text-ink',
+          districtFilter === null ? 'bg-primary/10 font-bold text-primary' : 'font-medium text-ink',
         )}
       >
         Все районы
-      </button>
-      {districts.map((d) => (
-        <button
-          key={d}
-          type="button"
-          onClick={() => setDistrictFilter(d)}
-          className={cn(
-            'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
-            districtFilter === d ? 'bg-primary/10 font-bold text-primary' : 'font-medium text-ink',
-          )}
-        >
-          <span>{d}</span>
-          <span className="text-xs text-ink-faint">{districtCounts[d]}</span>
-        </button>
-      ))}
+      </Link>
+      {districts.map((d) => {
+        const url = districtHubUrl(d);
+        if (!url) return null;
+        return (
+          <Link
+            key={d}
+            to={url}
+            onClick={() => setMobileNavOpen(false)}
+            className={cn(
+              'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
+              districtFilter === d ? 'bg-primary/10 font-bold text-primary' : 'font-medium text-ink',
+            )}
+          >
+            <span>{d}</span>
+            <span className="text-xs text-ink-faint">{districtCounts[d]}</span>
+          </Link>
+        );
+      })}
 
       {availableClasses.length > 0 && (
         <>
@@ -262,28 +343,28 @@ export function BusinessCentersMinskPage() {
               gridTemplateColumns: `repeat(${classPillCols}, minmax(0, 1fr))`,
             }}
           >
-            <button
-              type="button"
-              onClick={() => setClassFilter('all')}
+            <Link
+              to="/minsk/bcminsk"
+              onClick={() => setMobileNavOpen(false)}
               className={cn(
-                'rounded-full px-2 py-1 text-xs font-semibold transition-colors',
-                classFilter === 'all' ? 'bg-primary text-white' : 'bg-surface-muted text-ink-muted hover:text-ink',
+                'rounded-full px-2 py-1 text-center text-xs font-semibold transition-colors',
+                classFilter === null ? 'bg-primary text-white' : 'bg-surface-muted text-ink-muted hover:text-ink',
               )}
             >
               Все
-            </button>
+            </Link>
             {availableClasses.map((cls) => (
-              <button
-                type="button"
+              <Link
                 key={cls}
-                onClick={() => setClassFilter(cls)}
+                to={classHubUrl(cls)}
+                onClick={() => setMobileNavOpen(false)}
                 className={cn(
-                  'rounded-full px-2 py-1 text-xs font-semibold transition-colors',
+                  'rounded-full px-2 py-1 text-center text-xs font-semibold transition-colors',
                   classFilter === cls ? 'bg-primary text-white' : 'bg-surface-muted text-ink-muted hover:text-ink',
                 )}
               >
                 {cls}
-              </button>
+              </Link>
             ))}
           </div>
         </>
@@ -385,8 +466,8 @@ export function BusinessCentersMinskPage() {
               style={glassCardShadow}
             >
               <div className="flex flex-col gap-3">
-                <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">{PAGE_H1}</h1>
-                <p className="text-base text-ink-muted">{INTRO_TEXT}</p>
+                <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">{heroH1}</h1>
+                <p className="text-base text-ink-muted">{heroIntro}</p>
                 <span className="flex w-fit items-center gap-1.5 rounded-full border border-success/30 bg-success-bg px-3 py-1 text-xs font-semibold text-success">
                   <BadgeCheck className="h-3.5 w-3.5 shrink-0" />
                   {UPDATED_BADGE_LABEL}

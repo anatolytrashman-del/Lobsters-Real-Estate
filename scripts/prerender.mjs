@@ -44,7 +44,34 @@ const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_
 // контентную страницу вне сущности "объект" (гиды — Э3-1 в SEO_PLAN.md).
 // /minsk/analytics и /minsk/analytics/minsk-mir были в списке — раздел
 // аналитики по районам целиком удалён владельцем 2026-08-25.
-const STATIC_PATHS = ['minsk', 'minsk/minsk-mir', 'minsk/bcminsk'];
+// Хаб-страницы каталога БЦ по классу/району (Fable-анализ, 2026-09-06,
+// src/lib/businessCenterHubs.ts) — slug'и конечного известного множества
+// (4 класса + 9 админ-районов Минска + "Великий камень"), сознательно
+// продублированы здесь как плоский список, а не импортированы из .ts
+// модуля — этот скрипт запускается голым node без TS-загрузчика (см.
+// package.json), импорт .ts напрямую не заработает. Если карта slug'ов в
+// businessCenterHubs.ts когда-нибудь изменится — обновить и здесь.
+const CLASS_HUB_SLUGS = ['a', 'b-plus', 'b', 'c'];
+const DISTRICT_HUB_SLUGS = [
+  'tsentralny',
+  'oktyabrsky',
+  'sovetsky',
+  'frunzensky',
+  'zavodskoy',
+  'pervomaysky',
+  'partizansky',
+  'moskovsky',
+  'leninsky',
+  'velikiy-kamen',
+];
+
+const STATIC_PATHS = [
+  'minsk',
+  'minsk/minsk-mir',
+  'minsk/bcminsk',
+  ...CLASS_HUB_SLUGS.map((s) => `minsk/bcminsk/class/${s}`),
+  ...DISTRICT_HUB_SLUGS.map((s) => `minsk/bcminsk/raion/${s}`),
+];
 
 async function fetchLandingPaths() {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/objects?select=landing_slug&landing_slug=not.is.null`, {
