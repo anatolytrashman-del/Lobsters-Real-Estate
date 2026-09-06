@@ -203,57 +203,49 @@ async function main() {
   // деплой, но полный список пропущенных путей всё равно печатается ниже.
   const criticalPaths = new Set([...landingPaths, ...STATIC_PATHS]);
 
-  // 2026-09-06, "оптимизируй пайплайн" — с ростом каталога (145 карточек БЦ +
-  // хабы класса/района + 32 хаба пересечений класс×район + лендинги
-  // объектов, 190+ страниц) схема "новый браузер на КАЖДУЮ страницу и
-  // КАЖДУЮ попытку" стала заметно давить на время сборки, поэтому браузер
-  // сделали одним на всю сборку с self-healing (см. ensureBrowser ниже) и
-  // пулом из WORKER_COUNT=4 параллельных вкладок.
-  //
-  // 2026-09-06, PAGESPEED_PLAN.md Э0 — на реальном деплое (Build Logs,
-  // владелец прислал) это дало ~94 из ~194 путей потерянными («page.content:
-  // Target page, context or browser has been closed»), включая сам
-  // /minsk/minsk-mir. Причина — `@sparticuz/chromium` на Vercel запускает
-  // Chromium с флагом `--single-process` (виден в Build Logs при релонче):
-  // это ОДИН OS-процесс на весь браузер И все его вкладки разом, без
-  // изоляции рендереров. Крах рендерера ОДНОЙ вкладки убивает процесс
-  // целиком — вместе с ним падают И остальные вкладки, открытые в этот
-  // момент другими воркерами. Чем выше WORKER_COUNT, тем больше вкладок
-  // гарантированно гибнет одновременно при каждом таком крахе — сам пул
-  // параллелизма не ускоряет сборку, а систематически множит потери.
-  // WORKER_COUNT=1 (строго по одной вкладке за раз) — единственный
-  // надёжный вариант при этом флаге: крах роняет максимум одну текущую
-  // страницу, следующая попытка получает свежий браузер (ensureBrowser).
-  // Дороже по времени, но пропавший на проде SEO-контент дороже.
-  const WORKER_COUNT = 1;
+  // История (важно для будущих правок этого файла, три захода подряд):
+  // 1) Исходно — новый браузер на КАЖДУЮ страницу и КАЖДУЮ попытку. Со
+  //    182+ страницами в каталоге (145 карточек БЦ + хабы класса/района +
+  //    32 хаба пересечений класс×район + лендинги объектов) это стало
+  //    заметно давить на время сборки — запуск headless-браузера на
+  //    порядок дороже открытия вкладки в уже запущенном.
+  // 2) 2026-09-06, "оптимизируй пайплайн" — переехали на ОДИН браузер на
+  //    всю сборку + пул из WORKER_COUNT=4 параллельных вкладок
+  //    (`newPage()` в одном и том же браузере). На проде (Build Logs,
+  //    владелец прислал) это дало ~94 из ~194 путей потерянными
+  //    («page.content: Target page, context or browser has been closed»),
+  //    включая сам /minsk/minsk-mir. Причина — `@sparticuz/chromium` на
+  //    Vercel запускает Chromium с флагом `--single-process` (виден в
+  //    логах при релонче): один OS-процесс на весь браузер И все его
+  //    вкладки разом, без изоляции рендереров — крах рендерера ОДНОЙ
+  //    вкладки убивал процесс целиком, вместе с остальными вкладками ТОГО
+  //    ЖЕ браузера, открытыми в этот момент другими воркерами.
+  // 3) Первый фикс (PAGESPEED_PLAN.md, Э0) — WORKER_COUNT=1, строго
+  //    последовательно: убрал потери, но увеличил время пререндера
+  //    примерно в 4 раза — на реальной сборке оказалось неприемлемо долго
+  //    (владелец: билд мешает работе).
+  // 4) Настоящий фикс — причина потерь не в параллелизме самом по себе, а
+  //    в параллелизме ВНУТРИ одного `--single-process`-браузера. У КАЖДОГО
+  //    воркера теперь СВОЙ browser (`workerState.browser`, отдельный OS-
+  //    процесс Chromium, независимый от остальных) — крах одного воркера
+  //    убивает только его собственный браузер. Возвращает настоящий
+  //    параллелизм (WORKER_COUNT снова 4) без цены каскадных потерь.
+  const WORKER_COUNT = 4;
 
   const serverProc = startPreviewServer();
-  let browser = null;
-  // Единственный "полёт" перезапуска браузера на все воркеры разом — при
-  // WORKER_COUNT>1 несколько вкладок могут словить "browser closed" от
-  // ОДНОГО и того же упавшего браузера одновременно (проверено локальным
-  // тестом пула перед деплоем: без этой блокировки 4 воркера гонялись за
-  // релончем разом и запускали браузер 5 раз вместо 1 — не падение сборки,
-  // но чистая трата времени, обратная всему смыслу оптимизации). Пока
-  // relaunchPromise не пуст — все параллельные вызовы просто ждут его
-  // результат, не плодя свои собственные launchBrowser().
-  let relaunchPromise = null;
 
-  async function ensureBrowser() {
-    if (browser && browser.isConnected()) return browser;
-    if (!relaunchPromise) {
-      relaunchPromise = (async () => {
-        try {
-          await browser?.close();
-        } catch {
-          // мог быть уже мёртв — не мешает перезапуску
-        }
-        browser = await launchBrowser();
-        relaunchPromise = null;
-        return browser;
-      })();
+  // browser — про конкретный воркер, не общий на всю сборку (см. комментарий
+  // выше) — поэтому не модульная переменная, а поле объекта состояния,
+  // который создаётся по одному на воркер в цикле `worker()` ниже.
+  async function ensureBrowser(workerState) {
+    if (workerState.browser && workerState.browser.isConnected()) return workerState.browser;
+    try {
+      await workerState.browser?.close();
+    } catch {
+      // мог быть уже мёртв — не мешает перезапуску
     }
-    return relaunchPromise;
+    workerState.browser = await launchBrowser();
+    return workerState.browser;
   }
 
   // Пути, которые не удалось снять снапшотом ни за одну попытку — собираем,
@@ -264,11 +256,11 @@ async function main() {
 
   const RENDER_ATTEMPTS = 3;
 
-  async function renderPath(path) {
+  async function renderPath(path, workerState) {
     for (let attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++) {
       let page;
       try {
-        const activeBrowser = await ensureBrowser();
+        const activeBrowser = await ensureBrowser(workerState);
         page = await activeBrowser.newPage();
         // ?prerender=1 — сигнал для инлайн-скрипта Яндекс.Метрики в
         // index.html не считать этот заход реальным визитом (см.
@@ -319,11 +311,11 @@ async function main() {
         // застать то же нестабильное состояние.
         if (isBrowserDeath) {
           try {
-            await browser?.close();
+            await workerState.browser?.close();
           } catch {
             // уже мёртв — и так сойдёт
           }
-          browser = null;
+          workerState.browser = null;
           if (attempt < RENDER_ATTEMPTS) await new Promise((r) => setTimeout(r, 500 * attempt));
         }
       } finally {
@@ -340,22 +332,28 @@ async function main() {
 
   try {
     await waitForServer();
-    await ensureBrowser();
     let cursor = 0;
     async function worker() {
-      while (cursor < paths.length) {
-        const path = paths[cursor++];
-        await renderPath(path);
+      // Своё состояние (свой браузер) на каждый вызов worker() — не общее
+      // с остальными воркерами, см. комментарий у WORKER_COUNT выше.
+      const workerState = { browser: null };
+      try {
+        await ensureBrowser(workerState);
+        while (cursor < paths.length) {
+          const path = paths[cursor++];
+          await renderPath(path, workerState);
+        }
+      } finally {
+        try {
+          await workerState.browser?.close();
+        } catch {
+          // не мешаем финалу сборки из-за неудачного close()
+        }
       }
     }
     await Promise.all(Array.from({ length: WORKER_COUNT }, worker));
   } finally {
     serverProc.kill();
-    try {
-      await browser?.close();
-    } catch {
-      // не мешаем финалу сборки из-за неудачного close()
-    }
   }
 
   // Э0-2 (PAGESPEED_PLAN.md) — раньше пропуск ЛЮБОГО пути (включая
