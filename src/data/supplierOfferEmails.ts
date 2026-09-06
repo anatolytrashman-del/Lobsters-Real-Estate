@@ -63,6 +63,17 @@ export interface SupplierOfferEmail {
   createdAt: string;
 }
 
+// Владелец, 2026-09-06: "карточку организации... только к первому письму" —
+// "первое" здесь про поставщика (offerId) целиком, не про конкретный тред:
+// у одного поставщика может быть несколько заявок/тредов (см. orderId выше,
+// "1 заявка на поставку — одна ветка"), но карточку с реквизитами нужно
+// отправить один раз за всё время знакомства, не на каждую новую заявку.
+// emails — весь список писем ЭТОГО поставщика по всем его тредам разом (тот
+// же проп, что уже передаётся в EmailThread/BulkSendModal).
+export function isFirstOutgoingToOffer(emails: SupplierOfferEmail[], offerId: string): boolean {
+  return !emails.some((e) => e.offerId === offerId && e.direction === 'out');
+}
+
 export interface SupplierOfferEmailRow {
   id: string;
   offer_id: string;
