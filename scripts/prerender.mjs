@@ -172,17 +172,17 @@ async function waitForServer(timeoutMs = 20_000) {
 //
 // `sparticuzChromium.executablePath()` при первом вызове РАСПАКОВЫВАЕТ
 // бинарник Chromium во временный файл — это не идемпотентное чтение
-// готового пути, а запись. Реальный сбой на проде после перехода на "свой
-// браузер на каждый воркер" (PAGESPEED_PLAN.md, Э0-3, второй заход):
-// 4 воркера стартуют параллельно и все разом зовут `executablePath()` —
-// один процесс ещё дописывает файл, другой в этот момент пытается его
-// запустить → `spawn ETXTBSY` ("text file busy"), сборка падает целиком.
-// Фикс — распаковка ровно один раз на всю сборку (кэшируем ПРОМИС, не
-// результат, иначе конкурентные вызовы до его разрешения всё равно
-// затеяли бы вторую параллельную распаковку), дальше все воркеры просто
-// запускают СВОЙ процесс браузера по уже готовому, стабильному пути —
-// параллельный `chromium.launch()` по одному и тому же исполняемому файлу
-// (без записи в этот момент) безопасен, гонка была именно в записи.
+// готового пути, а запись. Реальный сбой на проде (PAGESPEED_PLAN.md,
+// Э0-3): несколько воркеров стартуют параллельно и все разом зовут
+// `executablePath()` — один процесс ещё дописывает файл, другой в этот
+// момент пытается его запустить → `spawn ETXTBSY` ("text file busy"),
+// сборка падает целиком. Фикс — распаковка ровно один раз на всю сборку
+// (кэшируем ПРОМИС, не результат, иначе конкурентные вызовы до его
+// разрешения всё равно затеяли бы вторую параллельную распаковку);
+// `launchBrowser()` теперь зовётся на КАЖДЫЙ рендер (см. историю у
+// WORKER_COUNT ниже — переиспользование браузера между страницами в этой
+// сборке не работает), так что без этого кэша распаковка гонялась бы не
+// 4 раза, а сотни.
 let launchOptionsPromise = null;
 function resolveLaunchOptions() {
   if (!launchOptionsPromise) {
@@ -228,7 +228,7 @@ async function main() {
   // деплой, но полный список пропущенных путей всё равно печатается ниже.
   const criticalPaths = new Set([...landingPaths, ...STATIC_PATHS]);
 
-  // История (важно для будущих правок этого файла, три захода подряд):
+  // История (важно для будущих правок этого файла, четыре захода подряд):
   // 1) Исходно — новый браузер на КАЖДУЮ страницу и КАЖДУЮ попытку. Со
   //    182+ страницами в каталоге (145 карточек БЦ + хабы класса/района +
   //    32 хаба пересечений класс×район + лендинги объектов) это стало
@@ -245,33 +245,27 @@ async function main() {
   //    вкладки разом, без изоляции рендереров — крах рендерера ОДНОЙ
   //    вкладки убивал процесс целиком, вместе с остальными вкладками ТОГО
   //    ЖЕ браузера, открытыми в этот момент другими воркерами.
-  // 3) Первый фикс (PAGESPEED_PLAN.md, Э0) — WORKER_COUNT=1, строго
-  //    последовательно: убрал потери, но увеличил время пререндера
-  //    примерно в 4 раза — на реальной сборке оказалось неприемлемо долго
-  //    (владелец: билд мешает работе).
-  // 4) Настоящий фикс — причина потерь не в параллелизме самом по себе, а
-  //    в параллелизме ВНУТРИ одного `--single-process`-браузера. У КАЖДОГО
-  //    воркера теперь СВОЙ browser (`workerState.browser`, отдельный OS-
-  //    процесс Chromium, независимый от остальных) — крах одного воркера
-  //    убивает только его собственный браузер. Возвращает настоящий
-  //    параллелизм (WORKER_COUNT снова 4) без цены каскадных потерь.
+  // 3) Первый фикс — WORKER_COUNT=1, строго последовательно: убрал потери,
+  //    но увеличил время пререндера примерно в 4 раза — неприемлемо долго.
+  // 4) Второй фикс — свой процесс браузера на каждый воркер (переиспользуем
+  //    его между страницами ОДНОГО воркера). Ловил `spawn ETXTBSY` при
+  //    параллельной распаковке (см. ниже, resolveLaunchOptions), но и
+  //    после фикса ETXTBSY на реальном деплое (Build Logs) вскрылось: у
+  //    ЭТОЙ СБОРКИ `--single-process`-браузер надёжно переживает ровно
+  //    ОДНУ страницу — на второй же `newPage()` того же процесса стабильно
+  //    падает с "Target page, context or browser has been closed", и
+  //    приходится закрывать/перезапускать процесс заново на каждой
+  //    странице всё равно, просто ценой одной гарантированно провальной
+  //    попытки перед этим (лишний relaunch + backoff на КАЖДУЮ страницу).
+  // 5) Настоящий фикс — раз переиспользование браузера между страницами в
+  //    этой сборке в принципе не работает, не пытаемся: свежий браузер
+  //    (свой OS-процесс) на КАЖДЫЙ рендер, без попытки его переживать между
+  //    страницами — это и есть исходная схема (п.1), просто с сохранённым
+  //    параллелизмом (WORKER_COUNT воркеров, каждый в своём цикле). Не
+  //    красивее, зато без единой лишней проваленной попытки на страницу.
   const WORKER_COUNT = 4;
 
   const serverProc = startPreviewServer();
-
-  // browser — про конкретный воркер, не общий на всю сборку (см. комментарий
-  // выше) — поэтому не модульная переменная, а поле объекта состояния,
-  // который создаётся по одному на воркер в цикле `worker()` ниже.
-  async function ensureBrowser(workerState) {
-    if (workerState.browser && workerState.browser.isConnected()) return workerState.browser;
-    try {
-      await workerState.browser?.close();
-    } catch {
-      // мог быть уже мёртв — не мешает перезапуску
-    }
-    workerState.browser = await launchBrowser();
-    return workerState.browser;
-  }
 
   // Пути, которые не удалось снять снапшотом ни за одну попытку — собираем,
   // чтобы в конце сборки явно провалиться, если среди них есть что-то
@@ -281,12 +275,13 @@ async function main() {
 
   const RENDER_ATTEMPTS = 3;
 
-  async function renderPath(path, workerState) {
+  async function renderPath(path) {
     for (let attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++) {
+      let browser;
       let page;
       try {
-        const activeBrowser = await ensureBrowser(workerState);
-        page = await activeBrowser.newPage();
+        browser = await launchBrowser();
+        page = await browser.newPage();
         // ?prerender=1 — сигнал для инлайн-скрипта Яндекс.Метрики в
         // index.html не считать этот заход реальным визитом (см.
         // комментарий там же). В сохранённый HTML параметр не попадает —
@@ -316,8 +311,6 @@ async function main() {
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const isBrowserDeath =
-          message.includes('closed') || message.includes('crashed') || message.includes('disconnected');
         if (attempt === RENDER_ATTEMPTS) {
           // Одна проблемная страница не должна ронять сборку остальных —
           // без снапшота роут просто останется на клиентском рендере, как
@@ -327,21 +320,7 @@ async function main() {
           failedPaths.push(path);
         } else {
           console.warn(`[prerender] /${path}: попытка ${attempt} не удалась (${message}), повтор`);
-        }
-        // Ошибка похожа на "браузер умер" — форсируем переоткрытие на
-        // следующей попытке, а не оставляем висеть мёртвый объект, который
-        // ensureBrowser() иначе продолжил бы считать живым. Небольшая пауза
-        // перед повтором — браузеру/ОС нужно время, чтобы реально освободить
-        // ресурсы упавшего процесса, иначе следующий launch() рискует
-        // застать то же нестабильное состояние.
-        if (isBrowserDeath) {
-          try {
-            await workerState.browser?.close();
-          } catch {
-            // уже мёртв — и так сойдёт
-          }
-          workerState.browser = null;
-          if (attempt < RENDER_ATTEMPTS) await new Promise((r) => setTimeout(r, 500 * attempt));
+          await new Promise((r) => setTimeout(r, 300 * attempt));
         }
       } finally {
         if (page) {
@@ -349,6 +328,13 @@ async function main() {
             await page.close();
           } catch {
             // страница могла умереть вместе с браузером — не роняем сборку
+          }
+        }
+        if (browser) {
+          try {
+            await browser.close();
+          } catch {
+            // мог быть уже мёртв — не мешает финалу
           }
         }
       }
@@ -359,21 +345,9 @@ async function main() {
     await waitForServer();
     let cursor = 0;
     async function worker() {
-      // Своё состояние (свой браузер) на каждый вызов worker() — не общее
-      // с остальными воркерами, см. комментарий у WORKER_COUNT выше.
-      const workerState = { browser: null };
-      try {
-        await ensureBrowser(workerState);
-        while (cursor < paths.length) {
-          const path = paths[cursor++];
-          await renderPath(path, workerState);
-        }
-      } finally {
-        try {
-          await workerState.browser?.close();
-        } catch {
-          // не мешаем финалу сборки из-за неудачного close()
-        }
+      while (cursor < paths.length) {
+        const path = paths[cursor++];
+        await renderPath(path);
       }
     }
     await Promise.all(Array.from({ length: WORKER_COUNT }, worker));
