@@ -32,7 +32,7 @@ import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from
 import { Badge } from '../components/ui/Badge';
 import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
 import { setBreadcrumbJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
-import { businessClassTone, shortName, sortByShortName } from '../lib/businessCenterDisplay';
+import { shortName, sortByShortName } from '../lib/businessCenterDisplay';
 import type { BusinessCenter, HighlightIconKey, TenantOrganization } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 import type { BusinessCenterOffer } from '../data/businessCenterOffers';
@@ -220,15 +220,13 @@ export function BusinessCenterDetailPage() {
                 2026-09-06, четвёртый заход: "4 карточки - класс, площадь, год
                 сдачи, этажность") — метро/застройщик переехали в обычные
                 строки выше, парковка — в отдельный блок ниже (см.
-                LabeledTextRow "Парковка"). Класс — бывший цветной Badge у
-                заголовка, тон по businessClassTone сохранён внутри плитки. */}
+                LabeledTextRow "Парковка"). Класс — обычный текст, как у
+                остальных плиток (владелец, 2026-09-06, пятый заход: "дизайн
+                Класса отличается от других заголовков, сделай одинаково" —
+                раньше был цветной Badge-пилюля вместо текста). */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {center.businessClass && (
-                <FactTile
-                  icon={Award}
-                  value={<Badge tone={businessClassTone[center.businessClass]}>Класс {center.businessClass}</Badge>}
-                  label="Деловой класс"
-                />
+                <FactTile icon={Award} value={`Класс ${center.businessClass}`} label="Деловой класс" />
               )}
               {center.totalArea != null && (
                 <FactTile icon={Ruler} value={`${center.totalArea.toLocaleString('ru-RU')} м²`} label="Общая площадь" />
@@ -303,10 +301,6 @@ export function BusinessCenterDetailPage() {
                   <LabeledTextRow key={i} icon={HIGHLIGHT_ICONS[s.icon]} label={s.label} text={s.text} />
                 ))}
             </div>
-
-            <p className="text-xs text-ink-faint">
-              Собрано веб-поиском по открытым источникам (новости, реестры, карты) — не куратировано вручную.
-            </p>
           </div>
         )}
 
@@ -406,7 +400,7 @@ export function BusinessCenterDetailPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  <OfferDealSection title="Продажа" rows={saleRows} isFirst />
+                  <OfferDealSection title="Продажа" rows={saleRows} />
                   <OfferDealSection title="Аренда" rows={rentRows} />
                 </tbody>
               </table>
@@ -542,7 +536,7 @@ function TenantOrganizationsBlock({ organizations }: { organizations: TenantOrga
         </button>
       )}
       <p className="text-xs text-ink-faint">
-        Собрано по карте Яндекс.Карт — полный список организаций мог измениться, уточняйте у арендодателя.
+        Информация из Яндекс.Карт — полный список организаций мог измениться.
       </p>
     </div>
   );
@@ -689,11 +683,11 @@ function formatUsd(n: number): string {
 // Заголовок сделки (Продажа/Аренда) — не отдельная колонка (чтобы не
 // повторять текст на каждой строке разбивки), а строка-разделитель на всю
 // ширину таблицы, за ней сразу строки по типу помещения.
-function OfferDealSection({ title, rows, isFirst }: { title: string; rows: OfferRow[]; isFirst?: boolean }) {
+function OfferDealSection({ title, rows }: { title: string; rows: OfferRow[] }) {
   return (
     <>
       <tr>
-        <td colSpan={4} className={cn('pb-1.5 text-xs font-bold uppercase tracking-wide text-ink-faint', isFirst ? 'pt-0' : 'pt-4')}>
+        <td colSpan={4} className="pt-4 pb-1.5 text-xs font-bold uppercase tracking-wide text-ink-faint">
           {title}
         </td>
       </tr>
