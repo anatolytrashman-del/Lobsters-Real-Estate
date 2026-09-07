@@ -1422,6 +1422,11 @@ export function DistrictGuidePage() {
                 <Link to="/minsk/one" className="transition-colors hover:text-ink">
                   Деловой центр Red One
                 </Link>
+                {/* Аудит поиска 2026-09-07: гайд ссылался на Red One, но не на
+                    каталог БЦ — каталог был «островом» без входящих ссылок. */}
+                <Link to="/minsk/bcminsk" className="transition-colors hover:text-ink">
+                  Бизнес-центры Минска
+                </Link>
               </nav>
             </div>
           </div>

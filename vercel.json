@@ -24,6 +24,12 @@
     }
   ],
   "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "www.redevelopment.pro" }],
+      "destination": "https://redevelopment.pro/$1",
+      "permanent": true
+    },
     { "source": "/", "destination": "/minsk", "permanent": false },
     { "source": "/one", "destination": "/minsk/one", "permanent": true },
     { "source": "/redstorage", "destination": "/minsk/redstorage", "permanent": true },
