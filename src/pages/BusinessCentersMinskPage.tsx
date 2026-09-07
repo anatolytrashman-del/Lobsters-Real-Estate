@@ -7,6 +7,7 @@ import {
   Building2,
   Calendar,
   Camera,
+  Check,
   HardHat,
   Layers,
   MapPin,
@@ -29,7 +30,7 @@ import {
   setNoIndex,
   clearNoIndex,
 } from '../lib/pageMeta';
-import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
+import { businessClassTone, nearestStationName, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
 import {
   CLASS_SLUG_TO_VALUE,
   DISTRICT_SLUG_TO_NAME,
@@ -205,6 +206,27 @@ export function BusinessCentersMinskPage() {
   // "сделай конструктивно как на странице Минск Мира, чтобы оно с мобилки
   // скрывалось") — тот же паттерн шторки, что и SECTION_NAV в DistrictGuidePage.tsx.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Метро — не отдельный роут/хаб, а обычный клиентский чек-бокс-фильтр
+  // поверх текущего класса/района/микрорайона (владелец, 2026-09-07:
+  // "выбрать одну или несколько станций метро"). Множественный выбор и SEO-
+  // хабы по пересечениям параметров сознательно не заводили и раньше (см.
+  // "Идея на будущее" в CLAUDE.md — дерево урлов по классу×району×метро не
+  // делаем), поэтому здесь — локальный стейт, без индексируемого URL.
+  const [metroFilter, setMetroFilter] = useState<Set<string>>(new Set());
+  const toggleMetroStation = (name: string) => {
+    setMetroFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+  // Сброс при переходе на другой хаб класса/района/микрорайона — иначе
+  // выбранная станция могла бы просто не встречаться в новом наборе (не
+  // ошибка, но результат "0 объектов" без объяснения выглядел бы как баг).
+  useEffect(() => {
+    setMetroFilter(new Set());
+  }, [classSlug, districtSlug, microdistrictSlug]);
 
   const classFilter = classSlug ? (CLASS_SLUG_TO_VALUE[classSlug] ?? null) : null;
   const districtFilter = districtSlug ? (DISTRICT_SLUG_TO_NAME[districtSlug] ?? null) : null;
@@ -359,7 +381,10 @@ export function BusinessCentersMinskPage() {
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
   }, [centers]);
 
-  const visibleCenters = useMemo(
+  // До фильтра по метро — это и есть база для счётчиков станций ниже (сколько
+  // БЦ с каждой станцией реально видно на текущем хабе класса/района/
+  // микрорайона), и промежуточный список, к которому применяется metroFilter.
+  const centersByRouteFilters = useMemo(
     () =>
       (centers ?? []).filter(
         (c) =>
@@ -368,6 +393,31 @@ export function BusinessCentersMinskPage() {
           (microdistrictFilter === null || c.microdistrict === microdistrictFilter),
       ),
     [centers, classFilter, districtFilter, microdistrictFilter],
+  );
+
+  // Станции метро — только те, у кого есть структурные данные 2GIS
+  // (nearestMetroStations, см. комментарий в data/businessCenters.ts — не у
+  // всех БЦ есть геокод), считается по ближайшей станции каждого БЦ
+  // (nearestStationName), сортировка по числу БЦ, не по алфавиту — тот же
+  // принцип, что и у микрорайонов (открытый список, не устоявшийся набор).
+  const metroStations = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of centersByRouteFilters) {
+      const station = nearestStationName(c);
+      if (station) counts[station] = (counts[station] ?? 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
+  }, [centersByRouteFilters]);
+
+  const visibleCenters = useMemo(
+    () =>
+      metroFilter.size === 0
+        ? centersByRouteFilters
+        : centersByRouteFilters.filter((c) => {
+            const station = nearestStationName(c);
+            return station !== null && metroFilter.has(station);
+          }),
+    [centersByRouteFilters, metroFilter],
   );
 
   // Боковой список — те же фильтры, что и у самой сетки карточек ниже: список
@@ -638,6 +688,59 @@ export function BusinessCentersMinskPage() {
               </Link>
             ))}
           </div>
+        </>
+      )}
+
+      {metroStations.length > 0 && (
+        <>
+          <div className="my-2 border-t border-border" />
+
+          <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Метро</span>
+            {metroFilter.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setMetroFilter(new Set())}
+                className="text-xs font-semibold text-primary-hover hover:underline"
+              >
+                Сбросить
+              </button>
+            )}
+          </div>
+          {/* Не роут, а обычный чек-бокс-фильтр поверх текущего хаба (владелец:
+              "выбрать одну или несколько станций метро") — множественный
+              выбор, поэтому не Link/URL, как остальные оси, а тумблер по
+              Set в локальном стейте. Список — только станции, реально
+              встречающиеся среди уже отфильтрованных по классу/району/
+              микрорайону БЦ (centersByRouteFilters), не все станции метро
+              Минска. */}
+          {metroStations.map(([name, count]) => {
+            const active = metroFilter.has(name);
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => toggleMetroStation(name)}
+                className={cn(
+                  'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
+                  active ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
+                )}
+              >
+                <span className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                      active ? 'border-primary bg-primary text-white' : 'border-border-strong bg-white',
+                    )}
+                  >
+                    {active && <Check className="h-3 w-3 shrink-0" strokeWidth={3} />}
+                  </span>
+                  {name}
+                </span>
+                <span className="text-xs text-ink-muted">{count}</span>
+              </button>
+            );
+          })}
         </>
       )}
 

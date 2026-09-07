@@ -90,3 +90,15 @@ export function businessCenterPhotoSrc(path: string, variant: 'card' | 'detail')
 export function sortByShortName(centers: BusinessCenter[]): BusinessCenter[] {
   return [...centers].sort((a, b) => shortName(a).localeCompare(shortName(b), 'ru'));
 }
+
+// Ближайшая станция метро по структурным данным 2GIS (BusinessCenter.
+// nearestMetroStations) — для фильтра "Метро" на каталоге
+// (BusinessCentersMinskPage.tsx). У одного БЦ бывает до 3 станций в массиве,
+// 2-я и 3-я нередко в 1+ км (см. комментарий у nearestMetroStations в
+// data/businessCenters.ts) — берём только ближайшую по distanceMeters,
+// иначе выбор дальней станции ложно захватывал бы БЦ, которые до неё на
+// самом деле не близко.
+export function nearestStationName(center: BusinessCenter): string | null {
+  if (center.nearestMetroStations.length === 0) return null;
+  return [...center.nearestMetroStations].sort((a, b) => a.distanceMeters - b.distanceMeters)[0].name;
+}
