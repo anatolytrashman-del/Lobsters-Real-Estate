@@ -15,6 +15,7 @@ import { MinskHub } from './pages/MinskHub';
 import { MarketAnalyticsHub } from './pages/MarketAnalyticsHub';
 import { OfficeAnalyticsPage } from './pages/OfficeAnalyticsPage';
 import { RetailAnalyticsPage } from './pages/RetailAnalyticsPage';
+import { WarehouseAnalyticsPage } from './pages/WarehouseAnalyticsPage';
 import { AnalyticsMethodologyPage } from './pages/AnalyticsMethodologyPage';
 import { BriefPublicPage } from './pages/BriefPublicPage';
 import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
@@ -200,6 +201,8 @@ export default function App() {
       <Route path="/minsk/analytics/ofisy/prodazha" element={<OfficeAnalyticsPage deal="sale" />} />
       <Route path="/minsk/analytics/torgovye/arenda" element={<RetailAnalyticsPage deal="rent" />} />
       <Route path="/minsk/analytics/torgovye/prodazha" element={<RetailAnalyticsPage deal="sale" />} />
+      <Route path="/minsk/analytics/sklady/arenda" element={<WarehouseAnalyticsPage deal="rent" />} />
+      <Route path="/minsk/analytics/sklady/prodazha" element={<WarehouseAnalyticsPage deal="sale" />} />
       <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />
       <Route path="/minsk/minsk-mir/:topic" element={<MinskMirTopicPage />} />
       <Route path="/minsk/bcminsk" element={<BusinessCentersMinskPage />} />

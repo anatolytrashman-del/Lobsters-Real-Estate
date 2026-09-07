@@ -17,7 +17,14 @@
 //   (building_type — не у всех строк заполнен, см. её же комментарий про
 //   разницу Kufar/Realt). Дедупликация Kufar↔Realt тут ЕСТЬ, но уже сделана
 //   в самом sync-скрипте на этапе сбора, не здесь.
-// Остальные сегменты плана (склады/офисы вне БЦ/первичка/ГАБ/машиноместа) не
+// - 'sklady' (склады, city-wide) — из citywide_offers (см.
+//   sync-citywide-warehouse-offers.mjs), срезы city/district ТОЛЬКО — без
+//   building_type: у складов оно почти всегда пусто (358 из 474 на первом
+//   реальном прогоне) и, когда заполнено, малоинформативно для складов
+//   конкретно (то же общее поле commercial_building, что и у розницы, не
+//   специализированное под складской класс/направление — тех данных у
+//   источников нет вовсе, см. комментарий в самом sync-скрипте).
+// Остальные сегменты плана (офисы вне БЦ/первичка/ГАБ/машиноместа) не
 // собираются — для них нет ни скрапа, ни таблицы (ANALYTICSPLAN.md §3.1 п.2).
 //
 // Перед агрегацией внутри каждого среза — фильтр price_per_sqm>0 и обрезка
@@ -137,33 +144,42 @@ async function main() {
     ]),
   );
 
-  // --- Сегмент 'torgovye' ---
+  // --- Сегменты из citywide_offers ('torgovye', 'sklady') ---
   // PostgREST по умолчанию отдаёт не больше 1000 строк за запрос —
   // citywide_offers уже больше (проверено вживую: без пагинации
-  // "Загружено 1000" при реальных 1817), поэтому листаем .range() до конца.
-  const retailOffers = [];
-  {
+  // "Загружено 1000" при реальных 1817 для 'torgovye'), поэтому листаем
+  // .range() до конца.
+  async function fetchCitywideOffers(segment) {
+    const rows = [];
     const PAGE = 1000;
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await supabase
         .from('citywide_offers')
         .select('deal_type,price_per_sqm,district,building_type')
-        .eq('segment', 'torgovye')
+        .eq('segment', segment)
         .range(from, from + PAGE - 1);
       if (error) throw error;
-      retailOffers.push(...data);
+      rows.push(...data);
       if (data.length < PAGE) break;
     }
+    return rows;
   }
 
+  const retailOffers = await fetchCitywideOffers('torgovye');
   console.log(`Загружено ${retailOffers.length} объявлений торговых помещений (citywide_offers).`);
-  if (retailOffers && retailOffers.length > 0) {
+  if (retailOffers.length > 0) {
     snapshots.push(
       ...buildSnapshotsForSegment(retailOffers, 'torgovye', period, [
         { sliceType: 'district', field: 'district' },
         { sliceType: 'building_type', field: 'building_type' },
       ]),
     );
+  }
+
+  const warehouseOffers = await fetchCitywideOffers('sklady');
+  console.log(`Загружено ${warehouseOffers.length} объявлений складов (citywide_offers).`);
+  if (warehouseOffers.length > 0) {
+    snapshots.push(...buildSnapshotsForSegment(warehouseOffers, 'sklady', period, [{ sliceType: 'district', field: 'district' }]));
   }
 
   console.log(`Посчитано ${snapshots.length} срезов за ${period}.`);
