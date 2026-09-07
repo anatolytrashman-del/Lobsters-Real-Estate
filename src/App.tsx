@@ -192,6 +192,8 @@ export default function App() {
       {/* Хаб-страницы по классу/району (Fable-анализ, 2026-09-06) — тот же
           компонент, фильтр читается из useParams(), см. комментарий там же.
           Регистрируются ДО ":slug", чтобы не конфликтовать с ним. */}
+      {/* Ось «строящиеся» (аудит поиска 2026-09-07) — тот же компонент с пропом. */}
+      <Route path="/minsk/bcminsk/stroyashchiesya" element={<BusinessCentersMinskPage underConstruction />} />
       <Route path="/minsk/bcminsk/class/:classSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
       {/* Пересечение класс×район (владелец, 2026-09-06: "структура урлов...

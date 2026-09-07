@@ -323,6 +323,10 @@ const TOPICS: Record<MinskMirTopicSlug, TopicContent> = {
             <Link to={CATALOG_URL} className="font-semibold text-primary-hover hover:underline">
               каталоге бизнес-центров Минска
             </Link>
+            , а МФЦ вместе с другими стройками города — на странице{' '}
+            <Link to={`${CATALOG_URL}/stroyashchiesya`} className="font-semibold text-primary-hover hover:underline">
+              строящихся бизнес-центров
+            </Link>
             .
           </>
         ),

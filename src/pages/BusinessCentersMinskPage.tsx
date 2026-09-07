@@ -58,6 +58,7 @@ const TITLE = 'Бизнес-центры Минска — список, адре
 const DESCRIPTION =
   'Справочник бизнес-центров Минска: адреса, деловой класс, площадь, год постройки, застройщик и управляющая компания.';
 const PAGE_URL = 'https://redevelopment.pro/minsk/bcminsk';
+const UNDER_CONSTRUCTION_HUB_URL = 'https://redevelopment.pro/minsk/bcminsk/stroyashchiesya';
 const OG_IMAGE = 'https://redevelopment.pro/og-image.png';
 
 // Заголовок и подзаголовок hero — первая версия составлена Gemini (через
@@ -194,7 +195,19 @@ function BusinessCenterCard({ center }: { center: BusinessCenter }) {
 // настоящий, индексируемый, с уникальным title/H1/canonical). Сознательное
 // упрощение: класс и район не комбинируются в одном URL (как и в примерах
 // самого документа) — выбор одной оси сбрасывает другую.
-export function BusinessCentersMinskPage() {
+// underConstruction — ось «Строящиеся бизнес-центры» (/minsk/bcminsk/
+// stroyashchiesya, аудит поиска 2026-09-07: срез «строящиеся БЦ 2026–2027»).
+// Не комбинируется с классом/районом (та же логика, что у микрорайона):
+// объектов в стройке единицы, пересечения дали бы пустые страницы.
+function pluralBusinessCenters(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'бизнес-центр';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'бизнес-центра';
+  return 'бизнес-центров';
+}
+
+export function BusinessCentersMinskPage({ underConstruction = false }: { underConstruction?: boolean } = {}) {
   const { classSlug, districtSlug, microdistrictSlug } = useParams<{
     classSlug?: string;
     districtSlug?: string;
@@ -241,8 +254,9 @@ export function BusinessCentersMinskPage() {
       setNoIndex();
       return () => clearNoIndex();
     }
-    const hubTitle =
-      classFilter && districtFilter
+    const hubTitle = underConstruction
+      ? 'Строящиеся бизнес-центры Минска — что сдадут в 2026–2027 годах'
+      : classFilter && districtFilter
         ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
         : classFilter
           ? `Бизнес-центры класса ${classFilter} в Минске`
@@ -251,8 +265,9 @@ export function BusinessCentersMinskPage() {
             : microdistrictFilter
               ? `Бизнес-центры ${microdistrictFilter}`
               : TITLE;
-    const hubDescription =
-      classFilter && districtFilter
+    const hubDescription = underConstruction
+      ? 'Бизнес-центры Минска, которые сейчас строятся: класс, площадь, район, застройщик и сроки сдачи — МФЦ в Минск Мире, «Газпром», «Сигма», «Шантер Хилл».'
+      : classFilter && districtFilter
         ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска: адреса, площадь, этажность, метро.`
         : classFilter
           ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
@@ -261,8 +276,9 @@ export function BusinessCentersMinskPage() {
             : microdistrictFilter
               ? `Бизнес-центры в микрорайоне ${microdistrictFilter} (Минск): адреса, деловой класс, площадь, метро.`
               : DESCRIPTION;
-    const hubUrl =
-      classFilter && districtFilter
+    const hubUrl = underConstruction
+      ? UNDER_CONSTRUCTION_HUB_URL
+      : classFilter && districtFilter
         ? `https://redevelopment.pro${classDistrictHubUrl(classFilter, districtFilter) ?? ''}`
         : classFilter
           ? `https://redevelopment.pro${classHubUrl(classFilter)}`
@@ -289,18 +305,24 @@ export function BusinessCentersMinskPage() {
             { name: `Класс ${classFilter}`, url: `https://redevelopment.pro${classHubUrl(classFilter)}` },
             { name: `${districtFilter} район` },
           ]
-        : classFilter || districtFilter || microdistrictFilter
+        : classFilter || districtFilter || microdistrictFilter || underConstruction
           ? [
               { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
               { name: 'Бизнес-центры Минска', url: PAGE_URL },
-              { name: classFilter ? `Класс ${classFilter}` : ((districtFilter ?? microdistrictFilter) as string) },
+              {
+                name: underConstruction
+                  ? 'Строящиеся'
+                  : classFilter
+                    ? `Класс ${classFilter}`
+                    : ((districtFilter ?? microdistrictFilter) as string),
+              },
             ]
           : [
               { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
               { name: 'Бизнес-центры Минска' },
             ],
     );
-  }, [classFilter, districtFilter, microdistrictFilter, notFound]);
+  }, [classFilter, districtFilter, microdistrictFilter, underConstruction, notFound]);
 
   // Districts/классы для сайдбара — считаются НЕ от всего `centers`, а от
   // среза по ДРУГОЙ активной оси (владелец, 2026-09-06: "структура урлов
@@ -365,9 +387,10 @@ export function BusinessCentersMinskPage() {
         (c) =>
           (classFilter === null || c.businessClass === classFilter) &&
           (districtFilter === null || c.district === districtFilter) &&
-          (microdistrictFilter === null || c.microdistrict === microdistrictFilter),
+          (microdistrictFilter === null || c.microdistrict === microdistrictFilter) &&
+          (!underConstruction || c.status === 'under_construction'),
       ),
-    [centers, classFilter, districtFilter, microdistrictFilter],
+    [centers, classFilter, districtFilter, microdistrictFilter, underConstruction],
   );
 
   // Боковой список — те же фильтры, что и у самой сетки карточек ниже: список
@@ -408,8 +431,9 @@ export function BusinessCentersMinskPage() {
   // хаб-странице класса/района FAQ отвечает про этот класс/район, не про
   // весь город. "Самый большой" — определённый максимум по `totalArea`
   // среди visibleCenters, не выдумка.
-  const scopeLabel =
-    classFilter && districtFilter
+  const scopeLabel = underConstruction
+    ? 'из строящихся в Минске'
+    : classFilter && districtFilter
       ? `класса ${classFilter} в ${districtPrepositional(districtFilter)} районе`
       : classFilter
         ? `класса ${classFilter}`
@@ -455,7 +479,7 @@ export function BusinessCentersMinskPage() {
     [districtCounts],
   );
 
-  const showCatalogSeoText = !classFilter && !districtFilter && !microdistrictFilter && centers !== null && centers.length > 0;
+  const showCatalogSeoText = !classFilter && !districtFilter && !microdistrictFilter && !underConstruction && centers !== null && centers.length > 0;
 
   const faqItems = useMemo(() => {
     const items: { question: string; answer: string }[] = [];
@@ -471,7 +495,15 @@ export function BusinessCentersMinskPage() {
         answer: `По площади в каталоге лидирует ${shortName(biggest)} — ${biggest.totalArea?.toLocaleString('ru-RU')} м².`,
       });
     }
-    items.push({
+    // На хабе «Строящиеся» вопрос «какие строятся» — тавтология (весь список
+    // и есть ответ), вместо него — про сроки/доступность офисов.
+    if (underConstruction) {
+      items.push({
+        question: 'Можно ли уже купить или арендовать офис в строящемся бизнес-центре?',
+        answer:
+          'Пока здание не введено в эксплуатацию — нет: договоры аренды и продажи заключаются после сдачи. Готовые офисы сейчас — в общем каталоге бизнес-центров Минска, небольшие кабинеты в собственность — в деловом центре Red One.',
+      });
+    } else items.push({
       question: `Какие бизнес-центры ${scopeLabel} сейчас строятся?`,
       answer:
         underConstructionNames.length > 0
@@ -484,7 +516,7 @@ export function BusinessCentersMinskPage() {
         'Класс A — самый высокий уровень: качественная инженерия (климат-контроль, резервное питание), развитая инфраструктура, вместительная парковка и расположение в деловых зонах. Класс B+ и B — хорошее качество отделки и инженерии, но менее престижное расположение или меньшая парковка. Класс C — более простая отделка и инженерные системы, обычно ниже ставки аренды.',
     });
     return items;
-  }, [marketStats.total, scopeLabel, biggest, underConstructionNames]);
+  }, [marketStats.total, scopeLabel, biggest, underConstructionNames, underConstruction]);
 
   useEffect(() => {
     if (notFound) return;
@@ -505,8 +537,9 @@ export function BusinessCentersMinskPage() {
   // Заголовок/подзаголовок hero — на общем каталоге статичные PAGE_H1/
   // INTRO_TEXT, на хаб-подстранице класса/района — уникальные под конкретный
   // фильтр (то же значение, что уже посчитано для meta-тегов выше).
-  const heroH1 =
-    classFilter && districtFilter
+  const heroH1 = underConstruction
+    ? 'Строящиеся бизнес-центры Минска'
+    : classFilter && districtFilter
       ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
       : classFilter
         ? `Бизнес-центры класса ${classFilter} в Минске`
@@ -515,15 +548,19 @@ export function BusinessCentersMinskPage() {
           : microdistrictFilter
             ? `Бизнес-центры ${microdistrictFilter}`
             : PAGE_H1;
-  const heroIntro =
-    classFilter && districtFilter
-      ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска — адреса, площадь, этажность, метро.`
+  // «4 бизнес-центра», «24 бизнес-центра», «5 бизнес-центров» — склонение по
+  // числу; пока список не загружен — просто «бизнес-центры» без числа.
+  const bcCountLabel = centers ? `${visibleCenters.length} ${pluralBusinessCenters(visibleCenters.length)}` : 'бизнес-центры';
+  const heroIntro = underConstruction
+    ? `${bcCountLabel} Минска, которые сейчас строятся, — класс, площадь, район и срок сдачи по данным застройщиков. Офисы в них пока нельзя ни арендовать, ни купить; готовые варианты — в общем каталоге.`
+    : classFilter && districtFilter
+      ? `${bcCountLabel} делового класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска — адреса, площадь, этажность, метро.`
       : classFilter
-        ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
+        ? `${bcCountLabel} делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
         : districtFilter
-          ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtPrepositional(districtFilter)} районе Минска — сравнивайте по классу, площади и расположению.`
+          ? `${bcCountLabel} в ${districtPrepositional(districtFilter)} районе Минска — сравнивайте по классу, площади и расположению.`
           : microdistrictFilter
-            ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в микрорайоне ${microdistrictFilter} (Минск) — адреса, деловой класс, площадь, метро.`
+            ? `${bcCountLabel} в микрорайоне ${microdistrictFilter} (Минск) — адреса, деловой класс, площадь, метро.`
           : INTRO_TEXT;
 
   // Содержимое бокового меню — общий JSX для десктопной sticky-колонки и
@@ -640,6 +677,23 @@ export function BusinessCentersMinskPage() {
           </div>
         </>
       )}
+
+      <div className="my-2 border-t border-border" />
+
+      <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">Статус</span>
+      <Link
+        to={underConstruction ? '/minsk/bcminsk' : '/minsk/bcminsk/stroyashchiesya'}
+        onClick={() => setMobileNavOpen(false)}
+        className={cn(
+          'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 transition-colors hover:text-primary',
+          underConstruction ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
+        )}
+      >
+        <span>Строящиеся</span>
+        {centers && (
+          <span className="text-xs text-ink-muted">{centers.filter((c) => c.status === 'under_construction').length}</span>
+        )}
+      </Link>
 
       <div className="my-2 border-t border-border" />
 

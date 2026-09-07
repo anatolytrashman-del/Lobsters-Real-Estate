@@ -75,6 +75,7 @@ const STATIC_PATHS = [
   'minsk/minsk-mir',
   ...MINSK_MIR_TOPIC_SLUGS.map((s) => `minsk/minsk-mir/${s}`),
   'minsk/bcminsk',
+  'minsk/bcminsk/stroyashchiesya',
   ...CLASS_HUB_SLUGS.map((s) => `minsk/bcminsk/class/${s}`),
   ...DISTRICT_HUB_SLUGS.map((s) => `minsk/bcminsk/raion/${s}`),
 ];
