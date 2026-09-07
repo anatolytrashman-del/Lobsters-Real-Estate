@@ -697,7 +697,33 @@ export function BusinessCentersMinskPage() {
               </div>
             </div>
 
-            {centers !== null && marketStats.total > 0 && (
+            {/* Пока данные не пришли — та же карточка с невидимыми плитками
+                той же формы (PAGESPEED_PLAN.md, Э9): страница приходит
+                пререндер-снапшотом с готовой сводкой, React после
+                монтирования на ~полсекунды остаётся без данных, и без
+                заглушки блок исчезал целиком — карта и всё ниже прыгали
+                вверх, потом обратно. На десктопе карта в первом экране →
+                CLS 0,104 (третий пункт Agentic Browsing в PageSpeed), на
+                мобильном она ниже сгиба → 0. Число плиток — как у реальной
+                сводки: 4 общих (+4 по классам вне хаба класса). */}
+            {centers === null ? (
+              <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow} aria-hidden="true">
+                <h2 className="text-lg font-bold text-ink">Рынок в цифрах</h2>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {[
+                    'Всего бизнес-центров',
+                    'Суммарная площадь (по 000 из 000)',
+                    'Строится',
+                    'В шаговой доступности от метро',
+                    ...(classFilter ? [] : ['Класса A', 'Класса B+', 'Класса B', 'Класса C']),
+                  ].map((label) => (
+                    <div key={label} className="invisible">
+                      <FactTile icon={Building2} value="0" label={label} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : marketStats.total > 0 && (
               <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
                 <h2 className="text-lg font-bold text-ink">Рынок в цифрах</h2>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
