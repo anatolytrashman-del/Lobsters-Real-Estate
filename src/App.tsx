@@ -207,6 +207,8 @@ export default function App() {
           2026-09-07) — отдельная, не пересекающаяся с классом/районом ось,
           не комбинируется с ними (см. комментарий у MICRODISTRICT_SLUGS). */}
       <Route path="/minsk/bcminsk/microrayon/:microdistrictSlug" element={<BusinessCentersMinskPage />} />
+      {/* Хаб по станции метро (аудит 2026-09-07) — независимая ось, см. METRO_STATION_SLUGS. */}
+      <Route path="/minsk/bcminsk/metro/:metroSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
       <Route path="/plan/:token" element={<PublicBuildingPlan />} />
       <Route path="/tz/:token" element={<BriefPublicPage />} />

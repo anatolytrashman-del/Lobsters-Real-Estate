@@ -1,4 +1,5 @@
-// Дополняет dist/sitemap.xml карточками бизнес-центров (/minsk/bcminsk/<slug>).
+// Дополняет dist/sitemap.xml карточками бизнес-центров (/minsk/bcminsk/<slug>)
+// и хабами по станциям метро (/minsk/bcminsk/metro/<slug>, только непустые).
 //
 // Аудит поиска 2026-09-07: в sitemap были только каталог и хаб-страницы
 // фильтров, ни одной карточки БЦ — Google знал 5 URL сайта, Яндекс 2, ни
@@ -32,6 +33,66 @@ async function fetchBusinessCenterSlugs() {
   return rows.map((r) => r.slug).filter((slug) => typeof slug === 'string' && /^[a-z0-9-]+$/.test(slug));
 }
 
+
+// Хабы по станциям метро (аудит поиска 2026-09-07) — та же карта slug'ов и
+// тот же радиус 1500 м, что в src/lib/businessCenterHubs.ts
+// (METRO_STATION_SLUGS / METRO_HUB_MAX_DISTANCE_M — продублировано, скрипт
+// без TS-загрузчика). Хаб — только для станций с ≥1 БЦ в радиусе.
+const METRO_HUB_MAX_DISTANCE_M = 1500;
+const METRO_HUB_SLUG_BY_STATION = {
+  Молодёжная: 'molodezhnaya',
+  Фрунзенская: 'frunzenskaya',
+  'Площадь Франтишка Богушевича': 'ploshchad-bogushevicha',
+  'Академия наук': 'akademiya-nauk',
+  Пушкинская: 'pushkinskaya',
+  'Институт культуры': 'institut-kultury',
+  Вокзальная: 'vokzalnaya',
+  'Юбилейная площадь': 'yubileynaya-ploshchad',
+  'Площадь Победы': 'ploshchad-pobedy',
+  Купаловская: 'kupalovskaya',
+  'Ковальская Слобода': 'kovalskaya-sloboda',
+  Московская: 'moskovskaya',
+  'Площадь Якуба Коласа': 'ploshchad-yakuba-kolasa',
+  Михалово: 'mihalovo',
+  'Площадь Ленина': 'ploshchad-lenina',
+  Грушевка: 'grushevka',
+  Восток: 'vostok',
+  Петровщина: 'petrovshchina',
+  Немига: 'nemiga',
+  Аэродромная: 'aerodromnaya',
+  Уручье: 'uruchye',
+  Октябрьская: 'oktyabrskaya',
+  'Борисовский тракт': 'borisovskiy-trakt',
+  'Каменная горка': 'kamennaya-gorka',
+  'Парк Челюскинцев': 'park-chelyuskintsev',
+  Спортивная: 'sportivnaya',
+  Кунцевщина: 'kuntsevshchina',
+  Первомайская: 'pervomayskaya',
+  'Тракторный завод': 'traktornyy-zavod',
+  Партизанская: 'partizanskaya',
+  Пролетарская: 'proletarskaya',
+  Малиновка: 'malinovka',
+  Автозаводская: 'avtozavodskaya',
+  Могилёвская: 'mogilevskaya',
+};
+
+async function fetchMetroHubStations() {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null`,
+    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } },
+  );
+  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе nearest_metro_stations`);
+  const rows = await res.json();
+  const slugs = new Set();
+  for (const r of rows) {
+    for (const s of Array.isArray(r.nearest_metro_stations) ? r.nearest_metro_stations : []) {
+      const slug = METRO_HUB_SLUG_BY_STATION[s?.name];
+      if (slug && typeof s.distanceMeters === 'number' && s.distanceMeters <= METRO_HUB_MAX_DISTANCE_M) slugs.add(slug);
+    }
+  }
+  return [...slugs];
+}
+
 function escapeXml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -47,8 +108,16 @@ async function main() {
   const xml = readFileSync(SITEMAP_PATH, 'utf8');
   const existing = new Set([...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]));
   const today = new Date().toISOString().slice(0, 10);
-  const entries = slugs
-    .map((slug) => `${SITE}/minsk/bcminsk/${slug}`)
+  let metroSlugs = [];
+  try {
+    metroSlugs = await fetchMetroHubStations();
+  } catch (err) {
+    console.warn(`[generate-sitemap] хабы метро не добавлены: ${err instanceof Error ? err.message : err}`);
+  }
+  const entries = [
+    ...metroSlugs.map((slug) => `${SITE}/minsk/bcminsk/metro/${slug}`),
+    ...slugs.map((slug) => `${SITE}/minsk/bcminsk/${slug}`),
+  ]
     .filter((url) => !existing.has(url))
     .map(
       (url) =>
@@ -62,7 +131,7 @@ async function main() {
   if (closing === -1) throw new Error('dist/sitemap.xml: не найден закрывающий </urlset>');
   const out = `${xml.slice(0, closing)}${entries.join('\n')}\n</urlset>\n`;
   writeFileSync(SITEMAP_PATH, out);
-  console.log(`[generate-sitemap] добавлено карточек БЦ: ${entries.length} (всего <loc>: ${existing.size + entries.length})`);
+  console.log(`[generate-sitemap] добавлено URL (хабы метро + карточки БЦ): ${entries.length} (всего <loc>: ${existing.size + entries.length})`);
 }
 
 main().catch((err) => {

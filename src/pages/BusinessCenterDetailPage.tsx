@@ -47,6 +47,7 @@ import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/Bus
 import { setBreadcrumbJsonLd, setFaqJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
 import { shortName, sortByShortName } from '../lib/businessCenterDisplay';
 import { nearestMetroStation } from '../lib/metroStations';
+import { metroHubDistance, metroHubUrl } from '../lib/businessCenterHubs';
 import type { BusinessCenter, HighlightIconKey, TechnicalParam, TenantOrganization } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 import type { BusinessCenterOffer } from '../data/businessCenterOffers';
@@ -346,6 +347,16 @@ export function BusinessCenterDetailPage() {
             {nearestMetro ? (
               <FactRow icon={TrainFront}>
                 «{nearestMetro.name}» — {nearestMetro.distanceMeters} м по прямой
+                {/* Ссылка на хаб станции (аудит 2026-09-07) — только если БЦ
+                    реально попадает в радиус хаба, иначе вела бы на список без него. */}
+                {metroHubDistance(center, nearestMetro.name) !== null && metroHubUrl(nearestMetro.name) && (
+                  <>
+                    {' · '}
+                    <Link to={metroHubUrl(nearestMetro.name) as string} className="font-semibold text-primary-hover hover:underline">
+                      все БЦ у этой станции
+                    </Link>
+                  </>
+                )}
               </FactRow>
             ) : (
               center.metro && <FactRow icon={TrainFront}>{center.metro}</FactRow>
