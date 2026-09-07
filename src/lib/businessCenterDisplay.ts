@@ -29,6 +29,23 @@ export function mapRatingFromHighlights(
   return { value: parseFloat(label.replace(',', '.')), label, source: sourceMatch ? sourceMatch[1].trim() : 'карты' };
 }
 
+// Улица из адреса — чисто синтаксический разбор (не хранится отдельным
+// полем в базе): всё до сегмента, начинающегося с цифры (номер дома),
+// после удаления города/области/района — та же логика, что и в
+// shortAddress. Используется и для группировки хабов по улицам (аудит
+// поиска 2026-09-07), и для ссылки «все БЦ на этой улице» на карточке БЦ.
+// На адресах без номера дома в принципе (напр. "просп. Мира, район «Минск
+// Мир»" у МФЦ — участок ещё не имеет отдельного дома) — берёт всё, кроме
+// последнего сегмента, тот же принцип, что и у shortAddress.
+export function streetOfAddress(fullAddress: string): string {
+  const short = shortAddress(fullAddress);
+  const parts = short.split(',').map((p) => p.trim());
+  const houseIndex = parts.findIndex((p) => /^\d/.test(p));
+  if (houseIndex > 0) return parts.slice(0, houseIndex).join(', ');
+  if (houseIndex === 0) return short;
+  return parts.length > 1 ? parts.slice(0, -1).join(', ') : short;
+}
+
 export const businessClassTone: Record<NonNullable<BusinessCenter['businessClass']>, 'primary' | 'success' | 'neutral'> = {
   A: 'neutral',
   'B+': 'success',

@@ -93,6 +93,13 @@ const LANDINGS: LandingEntry[] = [
     url: 'https://redevelopment.pro/minsk/bcminsk/metro/molodezhnaya',
     status: 'in-progress',
   },
+  {
+    title: 'Хаб «Бизнес-центры по улице»',
+    description:
+      'Пример: /minsk/bcminsk/ulitsa/pr-t-pobediteley — 8 БЦ на проспекте Победителей, самая насыщенная улица каталога. Ещё 22 такие страницы (только улицы с 2+ БЦ — на 69 улицах с одним БЦ хаб не заводился, был бы дублем карточки здания). Доработать: проверить формулировки, при желании — свои тексты под самые крупные улицы (Победителей/Независимости/Дзержинского).',
+    url: 'https://redevelopment.pro/minsk/bcminsk/ulitsa/pr-t-pobediteley',
+    status: 'in-progress',
+  },
 ];
 
 export function Landings() {

@@ -169,6 +169,69 @@ const METRO_HUB_SLUG_BY_STATION = {
   Могилёвская: 'mogilevskaya',
 };
 
+// Хабы по улицам (аудит поиска 2026-09-07) — та же карта slug'ов, что в
+// src/lib/businessCenterHubs.ts (STREET_SLUGS — продублировано, скрипт без
+// TS-загрузчика), тот же streetOfAddress (businessCenterDisplay.ts,
+// продублирован как streetOfAddressJs — чистая синтаксическая функция от
+// адреса, не тянет БД). Хаб — только для улиц с 2+ БЦ (STREET_HUB_SLUG_BY_NAME
+// содержит только уже подтверждённые slug'и таких улиц).
+const STREET_HUB_SLUG_BY_NAME = {
+  'пр-т Победителей': 'pr-t-pobediteley',
+  'пр-т Независимости': 'pr-t-nezavisimosti',
+  'пр-т Дзержинского': 'pr-t-dzerzhinskogo',
+  'ул. Притыцкого': 'ul-pritytskogo',
+  'ул. Сурганова': 'ul-surganova',
+  'ул. Платонова': 'ul-platonova',
+  'ул. Клары Цеткин': 'ul-klary-tsetkin',
+  'пер. Козлова': 'per-kozlova',
+  'пр-т Партизанский': 'pr-t-partizanskiy',
+  'Логойский тракт': 'logoyskiy-trakt',
+  'ул. Хоружей': 'ul-horuzhey',
+  'ул. Филимонова': 'ul-filimonova',
+  'ул. Немига': 'ul-nemiga',
+  'ул. Мележа': 'ul-melezha',
+  'ул. Толбухина': 'ul-tolbuhina',
+  'ул. Железнодорожная': 'ul-zheleznodorozhnaya',
+  'ул. Интернациональная': 'ul-internatsionalnaya',
+  'ул. Лобанка': 'ul-lobanka',
+  'ул. Ольшевского': 'ul-olshevskogo',
+  'ул. Свердлова': 'ul-sverdlova',
+  'ул. Скрыганова': 'ul-skryganova',
+  'ул. Тимирязева': 'ul-timiryazeva',
+  'ул. Скорины': 'ul-skoriny',
+};
+
+function shortAddressJs(a) {
+  return a
+    .replace(/^г\.\s*Минск,\s*/i, '')
+    .replace(/^Минская\s+область,\s*/i, '')
+    .replace(/^[А-ЯЁ][а-яё]+\s+район,\s*/, '')
+    .trim();
+}
+
+function streetOfAddressJs(fullAddress) {
+  const short = shortAddressJs(fullAddress);
+  const parts = short.split(',').map((p) => p.trim());
+  const houseIndex = parts.findIndex((p) => /^\d/.test(p));
+  if (houseIndex > 0) return parts.slice(0, houseIndex).join(', ');
+  if (houseIndex === 0) return short;
+  return parts.length > 1 ? parts.slice(0, -1).join(', ') : short;
+}
+
+async function fetchStreetHubPaths() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=address`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_centers.address`);
+  const rows = await res.json();
+  const slugs = new Set();
+  for (const r of rows) {
+    const slug = STREET_HUB_SLUG_BY_NAME[streetOfAddressJs(r.address)];
+    if (slug) slugs.add(`minsk/bcminsk/ulitsa/${slug}`);
+  }
+  return [...slugs];
+}
+
 async function fetchMetroHubStations() {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null`,
@@ -328,6 +391,7 @@ async function main() {
     ...(await fetchClassDistrictComboPaths()),
     ...(await fetchMicrodistrictHubPaths()),
     ...(await fetchMetroHubPaths()),
+    ...(await fetchStreetHubPaths()),
     ...STATIC_PATHS,
   ];
   if (paths.length === 0) {

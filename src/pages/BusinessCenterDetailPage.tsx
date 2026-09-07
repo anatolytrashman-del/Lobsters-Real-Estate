@@ -45,9 +45,9 @@ import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from
 import { Badge } from '../components/ui/Badge';
 import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
 import { setBreadcrumbJsonLd, setFaqJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
-import { shortName, sortByShortName, mapRatingFromHighlights } from '../lib/businessCenterDisplay';
+import { shortName, sortByShortName, mapRatingFromHighlights, streetOfAddress } from '../lib/businessCenterDisplay';
 import { nearestMetroStation } from '../lib/metroStations';
-import { metroHubDistance, metroHubUrl } from '../lib/businessCenterHubs';
+import { metroHubDistance, metroHubUrl, streetHubUrl } from '../lib/businessCenterHubs';
 import type { BusinessCenter, HighlightIconKey, TechnicalParam, TenantOrganization } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 import type { BusinessCenterOffer } from '../data/businessCenterOffers';
@@ -336,7 +336,19 @@ export function BusinessCenterDetailPage() {
               </div>
             </div>
 
-            <FactRow icon={MapPin}>{center.address}</FactRow>
+            <FactRow icon={MapPin}>
+              {center.address}
+              {/* Ссылка на хаб улицы (аудит 2026-09-07) — только если у этой
+                  улицы реально есть хаб (2+ БЦ, см. STREET_SLUGS). */}
+              {streetHubUrl(streetOfAddress(center.address)) && (
+                <>
+                  {' · '}
+                  <Link to={streetHubUrl(streetOfAddress(center.address)) as string} className="font-semibold text-primary-hover hover:underline">
+                    все БЦ на этой улице
+                  </Link>
+                </>
+              )}
+            </FactRow>
             {/* Метро — одна строка, не две (владелец, 2026-09-06: "дублируется
                 метро и расстояние до него, оставь только данные 2GIS и убери
                 (2GIS), просто данные"). Когда есть точный геокод из 2GIS —

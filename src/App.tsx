@@ -212,6 +212,8 @@ export default function App() {
       <Route path="/minsk/bcminsk/microrayon/:microdistrictSlug" element={<BusinessCentersMinskPage />} />
       {/* Хаб по станции метро (аудит 2026-09-07) — независимая ось, см. METRO_STATION_SLUGS. */}
       <Route path="/minsk/bcminsk/metro/:metroSlug" element={<BusinessCentersMinskPage />} />
+      {/* Хаб по улице (аудит 2026-09-07) — независимая ось, см. STREET_SLUGS. */}
+      <Route path="/minsk/bcminsk/ulitsa/:streetSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
       <Route path="/plan/:token" element={<PublicBuildingPlan />} />
       <Route path="/tz/:token" element={<BriefPublicPage />} />
