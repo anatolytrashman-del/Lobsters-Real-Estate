@@ -1,4 +1,6 @@
 import type { DocumentFile } from './contractorDocuments';
+import { ORGANIZATION_CARD_ATTACHMENT } from './organizationCard';
+import { IP_CARD_ATTACHMENT } from './ipCard';
 
 // Результат распознавания счёта/КП во вложении письма (Claude Haiku 4.5,
 // см. api/_invoiceRecognition.js) — и от автоматического срабатывания на
@@ -72,6 +74,23 @@ export interface SupplierOfferEmail {
 // же проп, что уже передаётся в EmailThread/BulkSendModal).
 export function isFirstOutgoingToOffer(emails: SupplierOfferEmail[], offerId: string): boolean {
   return !emails.some((e) => e.offerId === offerId && e.direction === 'out');
+}
+
+// Владелец, 2026-09-07: "Добавь карточку ИП ко всем письмам поставщиков из
+// России" — в отличие от карточки организации (ЛАВЕ-ДРАЙВ, ООО, реквизиты
+// для расчётов с белорусскими поставщиками, прикладывается один раз — см.
+// isFirstOutgoingToOffer выше), карточка ИП (ИП Трэшмен Анатолий, российский
+// расчётный счёт) уходит российским поставщикам на КАЖДОЕ письмо — так
+// прямо попросил владелец, не тот же принцип "один раз на контрагента".
+// У разных стран — разное юрлицо в реквизитах, поэтому для России карточка
+// организации вообще не прикладывается, вместо неё всегда карточка ИП.
+export function companyCardAttachment(
+  country: string,
+  emails: SupplierOfferEmail[],
+  offerId: string,
+): { fileName: string; contentType: string; contentBase64: string } | null {
+  if (country === 'Россия') return IP_CARD_ATTACHMENT;
+  return isFirstOutgoingToOffer(emails, offerId) ? ORGANIZATION_CARD_ATTACHMENT : null;
 }
 
 export interface SupplierOfferEmailRow {

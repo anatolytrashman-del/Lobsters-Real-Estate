@@ -8,10 +8,9 @@ import type { SupplierRequest, SupplierOffer } from '../../data/supplierResearch
 import type { SupplierOrder } from '../../data/supplierOrders';
 import { insertSupplierOrder } from '../../lib/supplierOrdersApi';
 import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
-import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
+import { companyCardAttachment } from '../../data/supplierOfferEmails';
 import { sendSupplierOfferEmail } from '../../lib/supplierOfferEmailsApi';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
-import { ORGANIZATION_CARD_ATTACHMENT } from '../../data/organizationCard';
 import { emailSignature } from './SupplierCorrespondenceTab';
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -139,7 +138,10 @@ export function BulkSendModal({
         onOrderCreated(order);
         // Владелец, 2026-09-06: карточка организации — только к первому
         // письму конкретному поставщику (не к каждой новой рассылке ему же).
-        const attachments = [attachment, ...(isFirstOutgoingToOffer(emails, offer.id) ? [ORGANIZATION_CARD_ATTACHMENT] : [])];
+        // 2026-09-07: для российских поставщиков — карточка ИП, к каждому
+        // письму (см. companyCardAttachment в data/supplierOfferEmails.ts).
+        const companyCard = companyCardAttachment(offer.country, emails, offer.id);
+        const attachments = [attachment, ...(companyCard ? [companyCard] : [])];
         const email = await sendSupplierOfferEmail({
           offerId: offer.id,
           orderId: order.id,
@@ -194,11 +196,15 @@ export function BulkSendModal({
                     <span className="min-w-0 flex-1 truncate text-ink">
                       {o.name}
                       {hadEmails && <span className="text-ink-faint"> · уже переписывались</span>}
-                      {isFirstOutgoingToOffer(emails, o.id) && (
-                        <span className="text-ink-faint" title={`${ORGANIZATION_CARD_ATTACHMENT.fileName} — первое письмо этому поставщику`}>
-                          {' '}· + карточка организации
-                        </span>
-                      )}
+                      {(() => {
+                        const companyCard = companyCardAttachment(o.country, emails, o.id);
+                        if (!companyCard) return null;
+                        return (
+                          <span className="text-ink-faint" title={`${companyCard.fileName}${o.country === 'Россия' ? '' : ' — первое письмо этому поставщику'}`}>
+                            {' '}· + {o.country === 'Россия' ? 'карточка ИП' : 'карточка организации'}
+                          </span>
+                        );
+                      })()}
                     </span>
                     {state === 'sending' && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ink-muted" />}
                     {state === 'sent' && <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}

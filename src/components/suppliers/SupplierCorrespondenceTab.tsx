@@ -14,9 +14,8 @@ import { updateSupplierOffer } from '../../lib/supplierResearchApi';
 import type { SupplierOrder } from '../../data/supplierOrders';
 import { insertSupplierOrder, updateSupplierOrder } from '../../lib/supplierOrdersApi';
 import type { SupplierOfferEmail, EmailExtractionItem } from '../../data/supplierOfferEmails';
-import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
+import { companyCardAttachment } from '../../data/supplierOfferEmails';
 import { sendSupplierOfferEmail, setSupplierOfferEmailExtractionStatus } from '../../lib/supplierOfferEmailsApi';
-import { ORGANIZATION_CARD_ATTACHMENT } from '../../data/organizationCard';
 import type { EmailTemplate } from '../../data/emailTemplates';
 import { renderEmailTemplate } from '../../lib/emailTemplates';
 import { TemplateFormModal, TemplateManagerModal } from './EmailTemplates';
@@ -385,12 +384,15 @@ export function EmailThread({
   const [ledgerModalOpen, setLedgerModalOpen] = useState(false);
   const [pendingLedger, setPendingLedger] = useState<LedgerAttachment | null>(null);
   // Владелец, 2026-09-06: "по умолчанию прикреплять карточку организации...
-  // но только к первому письму" — isFirstOutgoingToOffer смотрит на ВСЕ
-  // письма поставщика (emails, не threadEmails — карточка нужна один раз на
-  // контрагента, не на тред), skipOrgCard даёт снять галочку на конкретное
-  // письмо, если вдруг не нужно (по аналогии с pendingLedger — можно убрать).
+  // но только к первому письму" (2026-09-07, для России — карточку ИП, на
+  // КАЖДОЕ письмо, см. companyCardAttachment в data/supplierOfferEmails.ts) —
+  // считает по ВСЕМ письмам поставщика (emails, не threadEmails — карточка
+  // организации нужна один раз на контрагента, не на тред), skipOrgCard даёт
+  // снять галочку на конкретное письмо, если вдруг не нужно (по аналогии с
+  // pendingLedger — можно убрать).
   const [skipOrgCard, setSkipOrgCard] = useState(false);
-  const attachOrgCard = isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard;
+  const companyCard = companyCardAttachment(offer.country, emails, offer.id);
+  const attachOrgCard = companyCard !== null && !skipOrgCard;
   // Какие письма развёрнуты (показана свёрнутая цитата целиком) — по id,
   // сбрасывается сам собой при смене offer (новый emails-список).
   const [expandedQuoteIds, setExpandedQuoteIds] = useState<Set<string>>(new Set());
@@ -556,7 +558,7 @@ export function EmailThread({
     setSending(true);
     setSendError(null);
     try {
-      const attachments = [...(pendingLedger ? [pendingLedger] : []), ...(attachOrgCard ? [ORGANIZATION_CARD_ATTACHMENT] : [])];
+      const attachments = [...(pendingLedger ? [pendingLedger] : []), ...(attachOrgCard && companyCard ? [companyCard] : [])];
       const email = await sendSupplierOfferEmail({
         offerId: offer.id,
         orderId: order?.id ?? null,
@@ -836,20 +838,23 @@ export function EmailThread({
           )}
 
           {/* Владелец, 2026-09-06: "пусть это будет видно в интерфейсе, что
-              она прикреплена" — карточка организации прикладывается
-              автоматически к первому письму поставщику (isFirstOutgoingToOffer
-              выше), чип показывает это до отправки и даёт снять галочку на
-              конкретное письмо. Ко второму и последующим письмам того же
-              поставщика чип просто не появляется — attachOrgCard уже false. */}
-          {isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard && (
+              она прикреплена" — карточка организации/ИП прикладывается
+              автоматически (companyCardAttachment выше — организации к
+              первому письму, ИП для России к каждому), чип показывает это до
+              отправки и даёт снять галочку на конкретное письмо. Когда
+              companyCard уже null (не первое письмо небелорусскому/нероссийскому
+              поставщику), чип просто не появляется. */}
+          {companyCard && !skipOrgCard && (
             <div className="flex w-fit items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-1.5 text-sm text-ink">
               <Paperclip className="h-4 w-4 shrink-0 text-ink-faint" />
-              {ORGANIZATION_CARD_ATTACHMENT.fileName}
-              <span className="text-xs text-ink-faint">(первое письмо — прикрепится автоматически)</span>
+              {companyCard.fileName}
+              <span className="text-xs text-ink-faint">
+                {offer.country === 'Россия' ? '(прикрепится ко всем письмам)' : '(первое письмо — прикрепится автоматически)'}
+              </span>
               <button
                 type="button"
                 onClick={() => setSkipOrgCard(true)}
-                aria-label="Не прикреплять карточку организации к этому письму"
+                aria-label="Не прикреплять карточку к этому письму"
                 className="flex h-5 w-5 items-center justify-center rounded-full text-ink-faint hover:text-danger"
               >
                 <X className="h-3.5 w-3.5" />
