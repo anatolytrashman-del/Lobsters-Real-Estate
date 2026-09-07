@@ -49,8 +49,28 @@ const MODEL = 'claude-haiku-4-5-20251001';
 // единого ответа клиенту.
 const MAX_SEARCHES = 10;
 
-const SYSTEM_PROMPT = `Ты помогаешь найти реальных поставщиков строительных материалов в Беларуси
-(преимущественно Минск) через веб-поиск для девелоперской компании.
+// 2026-09-07: раньше страна поиска была жёстко зашита текстом прямо в
+// системный промт ("в Беларуси, преимущественно Минск") И финальной строкой
+// buildUserQuery ("Найди поставщиков... в Минске/Беларуси") — независимо от
+// того, что реально выбрано на странице (вкладка страны "Беларусь"/"Россия"
+// у конкретного запроса) или написано в "Дополнительные пожелания" (например,
+// город "Москва"). Из-за этого выбор "Россия" + "Москва" в пожеланиях всё
+// равно уходил в поиск белорусских поставщиков — сама модель получала два
+// противоречащих требования и слушалась жёстко прописанного. Теперь страна —
+// параметр запроса (см. Suppliers.tsx, ToggleGroup в модалке "Найти в сети"),
+// подставляется в промт вместо того, чтобы быть вкопанной константой.
+const COUNTRY_SEARCH_HINTS = {
+  Беларусь: 'в Беларуси (если в пожеланиях не указан конкретный город — ищи прежде всего в Минске)',
+  Россия: 'в России (если в пожеланиях не указан конкретный город — ищи прежде всего в Москве и других крупных городах)',
+};
+const DEFAULT_COUNTRY = 'Беларусь';
+
+function buildSystemPrompt(country) {
+  const hint = COUNTRY_SEARCH_HINTS[country] || COUNTRY_SEARCH_HINTS[DEFAULT_COUNTRY];
+  return `Ты помогаешь найти реальных поставщиков строительных материалов ${hint}
+через веб-поиск для девелоперской компании. Если в "Дополнительные пожелания"
+указан другой город, регион или страна — ищи именно там, это имеет приоритет
+над регионом по умолчанию.
 Ищи ОСНОВАТЕЛЬНО — используй инструмент web_search до ${MAX_SEARCHES} раз,
 разными запросами (конкретные позиции по отдельности, синонимы, категории,
 разные каталоги/маркетплейсы/агрегаторы), чтобы найти МАКСИМУМ реальных
@@ -66,13 +86,15 @@ const SYSTEM_PROMPT = `Ты помогаешь найти реальных по�
 
 "note" — одна короткая фраза по-русски: что продают/чем подходят под запрос.
 Если ничего подходящего не нашёл — верни пустой массив [].`;
+}
 
-function buildUserQuery(itemsText, sectionTitle, extra) {
+function buildUserQuery(itemsText, sectionTitle, extra, country) {
   const parts = [];
   if (sectionTitle) parts.push(`Раздел: ${sectionTitle}.`);
   parts.push(`Материалы: ${itemsText}.`);
   if (extra) parts.push(`Дополнительные пожелания: ${extra}.`);
-  parts.push('Найди поставщиков этих материалов в Минске/Беларуси.');
+  const hint = COUNTRY_SEARCH_HINTS[country] || COUNTRY_SEARCH_HINTS[DEFAULT_COUNTRY];
+  parts.push(`Найди поставщиков этих материалов ${hint}, если пожелания не указывают иное.`);
   return parts.join(' ');
 }
 
@@ -126,11 +148,12 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { itemsText, sectionTitle, extra } = req.body ?? {};
+  const { itemsText, sectionTitle, extra, country } = req.body ?? {};
   if (typeof itemsText !== 'string' || !itemsText.trim()) {
     res.status(400).json({ error: 'Список материалов пуст' });
     return;
   }
+  const resolvedCountry = typeof country === 'string' && COUNTRY_SEARCH_HINTS[country] ? country : DEFAULT_COUNTRY;
 
   try {
     const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
@@ -147,7 +170,7 @@ export default async function handler(req, res) {
         // места и на сами tool_use-блоки поисков, и на развёрнутый ответ.
         max_tokens: 6000,
         tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES, allowed_callers: ['direct'] }],
-        system: SYSTEM_PROMPT,
+        system: buildSystemPrompt(resolvedCountry),
         messages: [
           {
             role: 'user',
@@ -155,6 +178,7 @@ export default async function handler(req, res) {
               itemsText.trim(),
               typeof sectionTitle === 'string' ? sectionTitle.trim() : '',
               typeof extra === 'string' ? extra.trim() : '',
+              resolvedCountry,
             ),
           },
         ],

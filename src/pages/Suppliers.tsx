@@ -199,7 +199,7 @@ function RequestCard({
   onDeleteRequest: (r: SupplierRequest) => void;
   onAddOffer: (requestId: string) => void;
   onOpenDetail: (o: SupplierOffer) => void;
-  onWebSearch: (r: SupplierRequest) => void;
+  onWebSearch: (r: SupplierRequest, country: string) => void;
   searching: boolean;
 }) {
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
@@ -230,7 +230,7 @@ function RequestCard({
             variant="secondary"
             disabled={searching}
             icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            onClick={() => onWebSearch(request)}
+            onClick={() => onWebSearch(request, country)}
           >
             {searching ? 'Ищем в сети...' : 'Найти в сети'}
           </Button>
@@ -779,7 +779,14 @@ export function Suppliers() {
   // webSearchModal — какой запрос показывать в модалке результатов и сами
   // результаты/ошибка.
   const [webQueryModal, setWebQueryModal] = useState<SupplierRequest | null>(null);
-  const [webQueryForm, setWebQueryForm] = useState({ itemsText: '', extra: '' });
+  // country — страна поиска (карточка запроса передаёт свою текущую
+  // вкладку страны, см. RequestCard/ToggleGroup выше), но реальный баг
+  // (2026-09-07): она никогда не доходила до самого поиска — сервер был
+  // жёстко зашит на "Беларусь (Минск)" независимо от неё и от того, что
+  // написано в "Дополнительные пожелания" (например, город "Москва").
+  // Теперь страна редактируема прямо в этой форме (вдруг нужно
+  // переключить перед конкретным поиском) и уходит на сервер как есть.
+  const [webQueryForm, setWebQueryForm] = useState({ itemsText: '', extra: '', country: SUPPLIER_COUNTRIES[0] as string });
   const [webSearchingId, setWebSearchingId] = useState<string | null>(null);
   const [webSearchModal, setWebSearchModal] = useState<{
     request: SupplierRequest;
@@ -1161,8 +1168,8 @@ export function Suppliers() {
     setOfferModalOpen(true);
   }
 
-  function openWebQueryModal(request: SupplierRequest) {
-    setWebQueryForm({ itemsText: formatRequestItemsText(request.items, request.title), extra: '' });
+  function openWebQueryModal(request: SupplierRequest, country: string) {
+    setWebQueryForm({ itemsText: formatRequestItemsText(request.items, request.title), extra: '', country });
     setWebQueryModal(request);
   }
 
@@ -1179,7 +1186,12 @@ export function Suppliers() {
     setWebSearchAddingIndices(new Set());
     setWebSearchAddError(null);
     try {
-      const results = await searchSuppliersOnline(webQueryForm.itemsText.trim(), request.sectionTitle || request.title, webQueryForm.extra.trim());
+      const results = await searchSuppliersOnline(
+        webQueryForm.itemsText.trim(),
+        request.sectionTitle || request.title,
+        webQueryForm.extra.trim(),
+        webQueryForm.country,
+      );
       setWebSearchModal({ request, results, error: null });
     } catch (err) {
       setWebSearchModal({ request, results: [], error: errorMessage(err, 'Не удалось выполнить веб-поиск') });
@@ -1950,6 +1962,14 @@ export function Suppliers() {
 
       <Modal open={!!webQueryModal} onClose={() => setWebQueryModal(null)} title={`Найти в сети: ${webQueryModal?.title ?? ''}`}>
         <form onSubmit={submitWebQuery} className="flex flex-col gap-4">
+          <div>
+            <div className="mb-1.5 text-sm font-medium text-ink">Страна поиска</div>
+            <ToggleGroup
+              options={[...SUPPLIER_COUNTRIES]}
+              value={webQueryForm.country}
+              onChange={(country) => setWebQueryForm((f) => ({ ...f, country }))}
+            />
+          </div>
           <Textarea
             label="Что ищем"
             rows={3}
