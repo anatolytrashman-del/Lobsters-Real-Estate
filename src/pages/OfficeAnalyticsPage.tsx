@@ -14,8 +14,8 @@ import {
   setOrganizationJsonLd,
 } from '../lib/pageMeta';
 import { classHubUrl, districtHubUrl } from '../lib/businessCenterHubs';
-import { fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
-import { MIN_RELIABLE_N, type MarketSnapshot } from '../data/marketSnapshots';
+import { fetchExternalMetrics, fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
+import { MIN_RELIABLE_N, SOURCE_LABELS, type ExternalMetric, type MarketSnapshot } from '../data/marketSnapshots';
 
 const MONTH_NAMES = [
   'январь',
@@ -62,6 +62,20 @@ function formatMoney(n: number, deal: 'rent' | 'sale'): string {
   return `$${rounded.toLocaleString('ru-RU')}${deal === 'rent' ? '/м²/мес' : '/м²'}`;
 }
 
+const UNIT_SUFFIX: Record<string, string> = {
+  byn_per_sqm: ' BYN/м²',
+  eur_per_sqm: ' EUR/м²',
+  usd_per_sqm: '$/м²',
+  percent: '%',
+  thousand_sqm: ' тыс. м²',
+};
+
+function formatExternalValue(m: ExternalMetric): string {
+  const rounded = Math.round(m.value * 10) / 10;
+  const formatted = rounded.toLocaleString('ru-RU');
+  return m.unit === 'usd_per_sqm' ? `$${formatted}` : `${formatted}${UNIT_SUFFIX[m.unit] ?? ` ${m.unit}`}`;
+}
+
 const CLASS_ORDER = ['A', 'B+', 'B', 'C'];
 
 interface OfficeAnalyticsPageProps {
@@ -71,6 +85,7 @@ interface OfficeAnalyticsPageProps {
 export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
   const [snapshots, setSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [error, setError] = useState(false);
+  const [externalMetrics, setExternalMetrics] = useState<ExternalMetric[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +95,14 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
       })
       .catch(() => {
         if (!cancelled) setError(true);
+      });
+    fetchExternalMetrics('ofisy_bc')
+      .then((rows) => {
+        if (!cancelled) setExternalMetrics(rows);
+      })
+      .catch(() => {
+        /* внешние бенчмарки — необязательный дополнительный блок, страница
+           остаётся полезной и без него, поэтому ошибку не показываем */
       });
     return () => {
       cancelled = true;
@@ -99,6 +122,18 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
     () => (snapshots ?? []).filter((s) => s.sliceType === 'district').sort((a, b) => b.n - a.n),
     [snapshots],
   );
+
+  const tvoyaStolitsaByClass = useMemo(
+    () =>
+      externalMetrics.filter(
+        (m) => m.source === 'tvoya-stolitsa' && m.deal === deal && m.metric.startsWith('median_price_per_sqm'),
+      ),
+    [externalMetrics, deal],
+  );
+  const marketWide = useMemo(() => externalMetrics.filter((m) => m.deal === null), [externalMetrics]);
+  const vacancyOverall = marketWide.find((m) => m.metric === 'vacancy_rate' && m.sliceKey === null);
+  const totalStock = marketWide.find((m) => m.metric === 'total_stock');
+  const newSupply = marketWide.find((m) => m.metric === 'new_supply');
 
   const title =
     deal === 'rent' ? 'Ставки аренды офисов в бизнес-центрах Минска' : 'Цены на офисы в бизнес-центрах Минска';
@@ -235,12 +270,14 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                     <th className="px-3 py-2">Класс</th>
                     <th className="px-3 py-2">Медиана</th>
                     <th className="px-3 py-2">Объявлений</th>
+                    {tvoyaStolitsaByClass.length > 0 && <th className="px-3 py-2">По данным Твоей столицы</th>}
                     <th className="px-3 py-2" />
                   </tr>
                 </thead>
                 <tbody>
                   {byClass.map((row) => {
                     const reliable = row.n >= MIN_RELIABLE_N && row.median != null;
+                    const external = tvoyaStolitsaByClass.filter((m) => m.sliceKey === row.sliceKey);
                     return (
                       <tr key={row.sliceKey} className="border-t border-border">
                         <td className="px-3 py-2 font-medium text-ink">Класс {row.sliceKey}</td>
@@ -254,6 +291,13 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                           )}
                         </td>
                         <td className="px-3 py-2 text-ink-muted">{row.n}</td>
+                        {tvoyaStolitsaByClass.length > 0 && (
+                          <td className="px-3 py-2 text-ink-muted">
+                            {external.length > 0
+                              ? external.map((m) => formatExternalValue(m)).join(' / ')
+                              : '—'}
+                          </td>
+                        )}
                         <td className="px-3 py-2 text-right">
                           <Link
                             to={classHubUrl(row.sliceKey as 'A' | 'B+' | 'B' | 'C')}
@@ -268,6 +312,13 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                 </tbody>
               </table>
             </div>
+            {tvoyaStolitsaByClass.length > 0 && (
+              <p className="text-xs text-ink-faint">
+                Наша колонка — медиана по объявлениям Kufar/Realt в долларах США. Колонка «Твоя столица» — в
+                собственной валюте источника ({deal === 'rent' ? 'BYN / EUR за м²/мес' : 'USD за м²'}), напрямую с
+                нашей медианой не пересчитывается — курсы и методика разные, это ориентир, а не точное сравнение.
+              </p>
+            )}
           </section>
         )}
 
@@ -320,6 +371,52 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
           </section>
         )}
 
+        {(vacancyOverall || totalStock || newSupply) && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-lg font-bold text-ink">Рынок в целом</h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {vacancyOverall && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Вакантность офисов ({vacancyOverall.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(vacancyOverall)}</span>
+                </div>
+              )}
+              {totalStock && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Всего офисных площадей ({totalStock.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(totalStock)}</span>
+                </div>
+              )}
+              {newSupply && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Введено новых площадей ({newSupply.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(newSupply)}</span>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-ink-faint">
+              По данным {SOURCE_LABELS.colliers ?? 'Colliers International'}
+              {vacancyOverall?.url && (
+                <>
+                  {' '}
+                  (
+                  <a href={vacancyOverall.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
+                    отчёт
+                  </a>
+                  )
+                </>
+              )}
+              , весь рынок офисов Минска, не только бизнес-центры из нашего каталога.
+            </p>
+          </section>
+        )}
+
         <section className={cn('flex flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           <h2 className="text-lg font-bold text-ink">Что это за цифры</h2>
           <p className="text-sm leading-relaxed text-ink-muted">
@@ -345,7 +442,8 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
             <Link to="/minsk/analytics/metodika" className="text-primary-hover hover:underline">
               отдельной странице
             </Link>
-            . Источники: Kufar (re.kufar.by), Realt.by.
+            . Источники: Kufar (re.kufar.by), Realt.by
+            {externalMetrics.length > 0 && ', Твоя столица (t-s.by), Colliers International'}.
           </p>
         </section>
 

@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { withRetry } from './withRetry';
-import type { MarketSnapshot, MarketSnapshotRow } from '../data/marketSnapshots';
+import type { ExternalMetric, ExternalMetricRow, MarketSnapshot, MarketSnapshotRow } from '../data/marketSnapshots';
 
 function fromRow(row: MarketSnapshotRow): MarketSnapshot {
   return {
@@ -40,5 +40,30 @@ export async function fetchLatestMarketSnapshots(segment: string): Promise<Marke
       .eq('period', period);
     if (error) throw error;
     return (data as MarketSnapshotRow[]).map(fromRow);
+  });
+}
+
+function fromExternalRow(row: ExternalMetricRow): ExternalMetric {
+  return {
+    id: row.id,
+    source: row.source,
+    segment: row.segment,
+    deal: row.deal as ExternalMetric['deal'],
+    sliceKey: row.slice_key,
+    metric: row.metric,
+    value: row.value,
+    unit: row.unit,
+    period: row.period,
+    url: row.url,
+    note: row.note,
+    fetchedAt: row.fetched_at,
+  };
+}
+
+export async function fetchExternalMetrics(segment: string): Promise<ExternalMetric[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase.from('external_metrics').select('*').eq('segment', segment);
+    if (error) throw error;
+    return (data as ExternalMetricRow[]).map(fromExternalRow);
   });
 }

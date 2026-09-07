@@ -35,3 +35,42 @@ export interface MarketSnapshotRow {
 // Порог из ANALYTICSPLAN.md §3.2: срез с меньшим n не считается надёжным
 // (показываем как "недостаточно данных", а не как обычную цифру).
 export const MIN_RELIABLE_N = 15;
+
+// Внешние источники (ANALYTICSPLAN.md §2) — public.external_metrics, ручной
+// ввод (сейчас — через ProxyAPI/web_fetch, каждое число дважды перепроверено
+// перед записью, см. журнал CLAUDE.md за 2026-09-07). Не связаны с нашими
+// собственными данными, показываются рядом для сравнения.
+export interface ExternalMetric {
+  id: number;
+  source: string;
+  segment: string;
+  deal: 'rent' | 'sale' | null;
+  sliceKey: string | null;
+  metric: string;
+  value: number;
+  unit: string;
+  period: string;
+  url: string | null;
+  note: string | null;
+  fetchedAt: string;
+}
+
+export interface ExternalMetricRow {
+  id: number;
+  source: string;
+  segment: string;
+  deal: string | null;
+  slice_key: string | null;
+  metric: string;
+  value: number;
+  unit: string;
+  period: string;
+  url: string | null;
+  note: string | null;
+  fetched_at: string;
+}
+
+export const SOURCE_LABELS: Record<string, string> = {
+  'tvoya-stolitsa': 'Твоя столица',
+  colliers: 'Colliers International',
+};
