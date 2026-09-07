@@ -65,10 +65,17 @@ const DISTRICT_HUB_SLUGS = [
   'velikiy-kamen',
 ];
 
+// Посадочные под подсказки Google по Минск Миру — тот же список, что
+// MINSK_MIR_TOPIC_SLUGS в src/data/minskMirTopics.ts (продублирован plain-
+// массивом по той же причине, что и хабы каталога ниже).
+const MINSK_MIR_TOPIC_SLUGS = ['biznes-centr', 'kovorking', 'kupit-ofis', 'arenda-ofisa', 'kommercheskie-pomeshcheniya'];
+
 const STATIC_PATHS = [
   'minsk',
   'minsk/minsk-mir',
+  ...MINSK_MIR_TOPIC_SLUGS.map((s) => `minsk/minsk-mir/${s}`),
   'minsk/bcminsk',
+  'minsk/bcminsk/stroyashchiesya',
   ...CLASS_HUB_SLUGS.map((s) => `minsk/bcminsk/class/${s}`),
   ...DISTRICT_HUB_SLUGS.map((s) => `minsk/bcminsk/raion/${s}`),
 ];
@@ -117,6 +124,70 @@ const MICRODISTRICT_HUB_SLUG_BY_NAME = {
   Слепянка: 'slepyanka',
   'Михалово-2': 'mihalovo-2',
 };
+
+
+// Хабы по станциям метро (аудит поиска 2026-09-07) — та же карта slug'ов и
+// тот же радиус 1500 м, что в src/lib/businessCenterHubs.ts
+// (METRO_STATION_SLUGS / METRO_HUB_MAX_DISTANCE_M — продублировано, скрипт
+// без TS-загрузчика). Хаб — только для станций с ≥1 БЦ в радиусе.
+const METRO_HUB_MAX_DISTANCE_M = 1500;
+const METRO_HUB_SLUG_BY_STATION = {
+  Молодёжная: 'molodezhnaya',
+  Фрунзенская: 'frunzenskaya',
+  'Площадь Франтишка Богушевича': 'ploshchad-bogushevicha',
+  'Академия наук': 'akademiya-nauk',
+  Пушкинская: 'pushkinskaya',
+  'Институт культуры': 'institut-kultury',
+  Вокзальная: 'vokzalnaya',
+  'Юбилейная площадь': 'yubileynaya-ploshchad',
+  'Площадь Победы': 'ploshchad-pobedy',
+  Купаловская: 'kupalovskaya',
+  'Ковальская Слобода': 'kovalskaya-sloboda',
+  Московская: 'moskovskaya',
+  'Площадь Якуба Коласа': 'ploshchad-yakuba-kolasa',
+  Михалово: 'mihalovo',
+  'Площадь Ленина': 'ploshchad-lenina',
+  Грушевка: 'grushevka',
+  Восток: 'vostok',
+  Петровщина: 'petrovshchina',
+  Немига: 'nemiga',
+  Аэродромная: 'aerodromnaya',
+  Уручье: 'uruchye',
+  Октябрьская: 'oktyabrskaya',
+  'Борисовский тракт': 'borisovskiy-trakt',
+  'Каменная горка': 'kamennaya-gorka',
+  'Парк Челюскинцев': 'park-chelyuskintsev',
+  Спортивная: 'sportivnaya',
+  Кунцевщина: 'kuntsevshchina',
+  Первомайская: 'pervomayskaya',
+  'Тракторный завод': 'traktornyy-zavod',
+  Партизанская: 'partizanskaya',
+  Пролетарская: 'proletarskaya',
+  Малиновка: 'malinovka',
+  Автозаводская: 'avtozavodskaya',
+  Могилёвская: 'mogilevskaya',
+};
+
+async function fetchMetroHubStations() {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null`,
+    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } },
+  );
+  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе nearest_metro_stations`);
+  const rows = await res.json();
+  const slugs = new Set();
+  for (const r of rows) {
+    for (const s of Array.isArray(r.nearest_metro_stations) ? r.nearest_metro_stations : []) {
+      const slug = METRO_HUB_SLUG_BY_STATION[s?.name];
+      if (slug && typeof s.distanceMeters === 'number' && s.distanceMeters <= METRO_HUB_MAX_DISTANCE_M) slugs.add(slug);
+    }
+  }
+  return [...slugs];
+}
+
+async function fetchMetroHubPaths() {
+  return (await fetchMetroHubStations()).map((slug) => `minsk/bcminsk/metro/${slug}`);
+}
 
 async function fetchMicrodistrictHubPaths() {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=microdistrict&microdistrict=not.is.null`, {
@@ -255,6 +326,7 @@ async function main() {
     ...(await fetchBusinessCenterPaths()),
     ...(await fetchClassDistrictComboPaths()),
     ...(await fetchMicrodistrictHubPaths()),
+    ...(await fetchMetroHubPaths()),
     ...STATIC_PATHS,
   ];
   if (paths.length === 0) {

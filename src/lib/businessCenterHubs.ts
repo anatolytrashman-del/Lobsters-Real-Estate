@@ -120,3 +120,68 @@ export function microdistrictHubUrl(microdistrict: string): string | null {
   const slug = MICRODISTRICT_SLUGS[microdistrict];
   return slug ? `/minsk/bcminsk/microrayon/${slug}` : null;
 }
+
+// Хабы по станциям метро (аудит поиска 2026-09-07, «новые срезы: по станциям
+// метро») — /minsk/bcminsk/metro/:metroSlug. Источник — структурные
+// расстояния 2GIS (`BusinessCenter.nearestMetroStations`), не свободный
+// текст `metro`: БЦ попадает на страницу станции, если она в пределах
+// METRO_HUB_MAX_DISTANCE_M по прямой (≈15–20 минут пешком) — один БЦ может
+// быть на страницах двух соседних станций, это честно («у метро X» и «у
+// метро Y» одновременно). 38 БЦ без структурных данных (у них в `metro`
+// «более 3 остановок на транспорте» или пусто) ни на один хаб не попадают.
+// Слаги — транслитерация вручную, конечный список станций Минского метро,
+// встречающихся в данных; хаб генерируется только для станций с ≥1 БЦ
+// (см. prerender.mjs / generate-sitemap.mjs — динамический список).
+export const METRO_HUB_MAX_DISTANCE_M = 1500;
+
+export const METRO_STATION_SLUGS: Record<string, string> = {
+  Молодёжная: 'molodezhnaya',
+  Фрунзенская: 'frunzenskaya',
+  'Площадь Франтишка Богушевича': 'ploshchad-bogushevicha',
+  'Академия наук': 'akademiya-nauk',
+  Пушкинская: 'pushkinskaya',
+  'Институт культуры': 'institut-kultury',
+  Вокзальная: 'vokzalnaya',
+  'Юбилейная площадь': 'yubileynaya-ploshchad',
+  'Площадь Победы': 'ploshchad-pobedy',
+  Купаловская: 'kupalovskaya',
+  'Ковальская Слобода': 'kovalskaya-sloboda',
+  Московская: 'moskovskaya',
+  'Площадь Якуба Коласа': 'ploshchad-yakuba-kolasa',
+  Михалово: 'mihalovo',
+  'Площадь Ленина': 'ploshchad-lenina',
+  Грушевка: 'grushevka',
+  Восток: 'vostok',
+  Петровщина: 'petrovshchina',
+  Немига: 'nemiga',
+  Аэродромная: 'aerodromnaya',
+  Уручье: 'uruchye',
+  Октябрьская: 'oktyabrskaya',
+  'Борисовский тракт': 'borisovskiy-trakt',
+  'Каменная горка': 'kamennaya-gorka',
+  'Парк Челюскинцев': 'park-chelyuskintsev',
+  Спортивная: 'sportivnaya',
+  Кунцевщина: 'kuntsevshchina',
+  Первомайская: 'pervomayskaya',
+  'Тракторный завод': 'traktornyy-zavod',
+  Партизанская: 'partizanskaya',
+  Пролетарская: 'proletarskaya',
+  Малиновка: 'malinovka',
+  Автозаводская: 'avtozavodskaya',
+  Могилёвская: 'mogilevskaya',
+};
+
+export const METRO_SLUG_TO_STATION: Record<string, string> = Object.fromEntries(
+  Object.entries(METRO_STATION_SLUGS).map(([name, slug]) => [slug, name]),
+);
+
+export function metroHubUrl(station: string): string | null {
+  const slug = METRO_STATION_SLUGS[station];
+  return slug ? `/minsk/bcminsk/metro/${slug}` : null;
+}
+
+// Расстояние по прямой от БЦ до станции, если станция в радиусе хаба; иначе null.
+export function metroHubDistance(center: Pick<BusinessCenter, 'nearestMetroStations'>, station: string): number | null {
+  const match = center.nearestMetroStations.find((s) => s.name === station && s.distanceMeters <= METRO_HUB_MAX_DISTANCE_M);
+  return match ? match.distanceMeters : null;
+}

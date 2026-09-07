@@ -30,7 +30,7 @@ import {
   setNoIndex,
   clearNoIndex,
 } from '../lib/pageMeta';
-import { businessClassTone, nearestStationName, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
+import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
 import {
   CLASS_SLUG_TO_VALUE,
   DISTRICT_SLUG_TO_NAME,
@@ -40,6 +40,9 @@ import {
   districtHubUrl,
   districtPrepositional,
   microdistrictHubUrl,
+  METRO_SLUG_TO_STATION,
+  metroHubUrl,
+  metroHubDistance,
 } from '../lib/businessCenterHubs';
 import type { BusinessCenter } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
@@ -59,6 +62,7 @@ const TITLE = 'Бизнес-центры Минска — список, адре
 const DESCRIPTION =
   'Справочник бизнес-центров Минска: адреса, деловой класс, площадь, год постройки, застройщик и управляющая компания.';
 const PAGE_URL = 'https://redevelopment.pro/minsk/bcminsk';
+const UNDER_CONSTRUCTION_HUB_URL = 'https://redevelopment.pro/minsk/bcminsk/stroyashchiesya';
 const OG_IMAGE = 'https://redevelopment.pro/og-image.png';
 
 // Заголовок и подзаголовок hero — первая версия составлена Gemini (через
@@ -134,7 +138,10 @@ const OUT_OF_TOWN_DISTRICT = 'Великий камень';
 // целиком — "прячь в подробно", видно только на отдельной странице БЦ.
 // Кнопка-пилюля "Подробнее →" — из прошлого захода (владелец: "неочевидно,
 // что на них надо нажимать"), не убиралась.
-function BusinessCenterCard({ center }: { center: BusinessCenter }) {
+function BusinessCenterCard({ center, metroStation }: { center: BusinessCenter; metroStation?: string | null }) {
+  // На хабе станции — точное расстояние 2GIS до неё вместо свободного текста
+  // `metro` (там может быть другая, более близкая станция).
+  const metroDistance = metroStation ? metroHubDistance(center, metroStation) : null;
   return (
     // PAGESPEED_PLAN.md, Э9 — content-visibility:auto: 143 карточек, каждая
     // со «стеклом» (backdrop-blur) и 5 инлайн-SVG — без этого браузер
@@ -169,7 +176,13 @@ function BusinessCenterCard({ center }: { center: BusinessCenter }) {
           {center.totalArea != null && <FactRow icon={Ruler}>Площадь: {center.totalArea.toLocaleString('ru-RU')} м²</FactRow>}
           {center.yearBuilt != null && <FactRow icon={Calendar}>Срок сдачи: {center.yearBuilt} г.</FactRow>}
           {center.floors != null && <FactRow icon={Layers}>Этажность: {center.floors}</FactRow>}
-          {center.metro && <FactRow icon={TrainFront}>Метро: {shortMetro(center.metro)}</FactRow>}
+          {metroDistance !== null && metroStation ? (
+            <FactRow icon={TrainFront}>
+              До «{metroStation}»: {metroDistance} м по прямой
+            </FactRow>
+          ) : (
+            center.metro && <FactRow icon={TrainFront}>Метро: {shortMetro(center.metro)}</FactRow>
+          )}
         </div>
 
         <div className="mt-auto flex justify-end pt-1">
@@ -195,38 +208,51 @@ function BusinessCenterCard({ center }: { center: BusinessCenter }) {
 // настоящий, индексируемый, с уникальным title/H1/canonical). Сознательное
 // упрощение: класс и район не комбинируются в одном URL (как и в примерах
 // самого документа) — выбор одной оси сбрасывает другую.
-export function BusinessCentersMinskPage() {
-  const { classSlug, districtSlug, microdistrictSlug } = useParams<{
+// underConstruction — ось «Строящиеся бизнес-центры» (/minsk/bcminsk/
+// stroyashchiesya, аудит поиска 2026-09-07: срез «строящиеся БЦ 2026–2027»).
+// Не комбинируется с классом/районом (та же логика, что у микрорайона):
+// объектов в стройке единицы, пересечения дали бы пустые страницы.
+function pluralBusinessCenters(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'бизнес-центр';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'бизнес-центра';
+  return 'бизнес-центров';
+}
+
+export function BusinessCentersMinskPage({ underConstruction = false }: { underConstruction?: boolean } = {}) {
+  const { classSlug, districtSlug, microdistrictSlug, metroSlug } = useParams<{
     classSlug?: string;
     districtSlug?: string;
     microdistrictSlug?: string;
+    metroSlug?: string;
   }>();
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
   // Боковое меню на мобильном скрыто за плавающей кнопкой (владелец, 2026-09-04:
   // "сделай конструктивно как на странице Минск Мира, чтобы оно с мобилки
   // скрывалось") — тот же паттерн шторки, что и SECTION_NAV в DistrictGuidePage.tsx.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  // Метро — не отдельный роут/хаб, а обычный клиентский чек-бокс-фильтр
-  // поверх текущего класса/района/микрорайона (владелец, 2026-09-07:
-  // "выбрать одну или несколько станций метро"). Множественный выбор и SEO-
-  // хабы по пересечениям параметров сознательно не заводили и раньше (см.
-  // "Идея на будущее" в CLAUDE.md — дерево урлов по классу×району×метро не
-  // делаем), поэтому здесь — локальный стейт, без индексируемого URL.
-  const [metroFilter, setMetroFilter] = useState<Set<string>>(new Set());
+  const [metroListExpanded, setMetroListExpanded] = useState(false);
+  // Множественный выбор станций метро (владелец, 2026-09-07: "выбрать одну
+  // или несколько станций метро") — поверх уже существующего одноосевого
+  // хаба станции (metroSlug/metroHubUrl, аудит поиска 2026-09-07, см. ниже):
+  // тот хаб остаётся отдельным индексируемым URL на ОДНУ станцию (клик по
+  // названию станции — обычная навигация на её страницу, как и было), а
+  // этот Set — чисто клиентский слой для чек-боксов рядом с названием,
+  // сужающий список без смены URL. Комбинаторный URL на несколько станций
+  // сразу не заводили (та же причина, что и у класса×района×метро — риск
+  // тонкого контента на редких сочетаниях, никто не просил). Затравка —
+  // текущая станция из роута, если она есть; сбрасывается/пересеивается при
+  // смене любой другой оси (см. useEffect ниже).
+  const [metroSelection, setMetroSelection] = useState<Set<string>>(new Set());
   const toggleMetroStation = (name: string) => {
-    setMetroFilter((prev) => {
+    setMetroSelection((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
       else next.add(name);
       return next;
     });
   };
-  // Сброс при переходе на другой хаб класса/района/микрорайона — иначе
-  // выбранная станция могла бы просто не встречаться в новом наборе (не
-  // ошибка, но результат "0 объектов" без объяснения выглядел бы как баг).
-  useEffect(() => {
-    setMetroFilter(new Set());
-  }, [classSlug, districtSlug, microdistrictSlug]);
 
   const classFilter = classSlug ? (CLASS_SLUG_TO_VALUE[classSlug] ?? null) : null;
   const districtFilter = districtSlug ? (DISTRICT_SLUG_TO_NAME[districtSlug] ?? null) : null;
@@ -240,6 +266,20 @@ export function BusinessCentersMinskPage() {
   const badClassSlug = Boolean(classSlug) && classFilter === null;
   const badDistrictSlug = Boolean(districtSlug) && districtFilter === null;
   const badMicrodistrictSlug = Boolean(microdistrictSlug) && microdistrictFilter === null;
+  // Метро — ещё одна независимая ось (аудит 2026-09-07), см. METRO_STATION_SLUGS.
+  const metroFilter = metroSlug ? (METRO_SLUG_TO_STATION[metroSlug] ?? null) : null;
+  const badMetroSlug = Boolean(metroSlug) && metroFilter === null;
+  // Станция есть в списке, но ни одного БЦ в радиусе — тот же soft-404, что
+  // и у пустого пересечения класс×район.
+  const metroEmpty =
+    metroFilter !== null && centers !== null && !centers.some((c) => metroHubDistance(c, metroFilter) !== null);
+  // metroSelection — затравка станцией из роута при заходе на её хаб, сброс
+  // до пустого при уходе на другую ось (класс/район/микрорайон/стройка) или
+  // на общий каталог — иначе выбор с предыдущего хаба тихо продолжал бы
+  // сужать список там, где его уже не видно в сайдбаре.
+  useEffect(() => {
+    setMetroSelection(metroFilter ? new Set([metroFilter]) : new Set());
+  }, [classSlug, districtSlug, microdistrictSlug, metroSlug, underConstruction]);
   // Пересечение класс×район без единого БЦ (владелец, 2026-09-06: "делай
   // структуру урлов [дерево пересечений]") — тот же soft-404, что и у
   // невалидного slug: сам план (`BCMINSK_SEO_PLAN.md`) явно предупреждал не
@@ -250,7 +290,7 @@ export function BusinessCentersMinskPage() {
     districtFilter !== null &&
     centers !== null &&
     !centers.some((c) => c.businessClass === classFilter && c.district === districtFilter);
-  const notFound = badClassSlug || badDistrictSlug || badMicrodistrictSlug || comboEmpty;
+  const notFound = badClassSlug || badDistrictSlug || badMicrodistrictSlug || badMetroSlug || metroEmpty || comboEmpty;
 
   useEffect(() => {
     fetchBusinessCenters()
@@ -263,8 +303,11 @@ export function BusinessCentersMinskPage() {
       setNoIndex();
       return () => clearNoIndex();
     }
-    const hubTitle =
-      classFilter && districtFilter
+    const hubTitle = underConstruction
+      ? 'Строящиеся бизнес-центры Минска — что сдадут в 2026–2027 годах'
+      : metroFilter
+        ? `Бизнес-центры у метро «${metroFilter}» — офисы в пешей доступности`
+        : classFilter && districtFilter
         ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
         : classFilter
           ? `Бизнес-центры класса ${classFilter} в Минске`
@@ -273,8 +316,11 @@ export function BusinessCentersMinskPage() {
             : microdistrictFilter
               ? `Бизнес-центры ${microdistrictFilter}`
               : TITLE;
-    const hubDescription =
-      classFilter && districtFilter
+    const hubDescription = underConstruction
+      ? 'Бизнес-центры Минска, которые сейчас строятся: класс, площадь, район, застройщик и сроки сдачи — МФЦ в Минск Мире, «Газпром», «Сигма», «Шантер Хилл».'
+      : metroFilter
+        ? `Бизнес-центры рядом со станцией метро «${metroFilter}» (Минск): расстояние до станции по прямой, класс, площадь, этажность, объявления об аренде и продаже офисов.`
+        : classFilter && districtFilter
         ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска: адреса, площадь, этажность, метро.`
         : classFilter
           ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
@@ -283,8 +329,11 @@ export function BusinessCentersMinskPage() {
             : microdistrictFilter
               ? `Бизнес-центры в микрорайоне ${microdistrictFilter} (Минск): адреса, деловой класс, площадь, метро.`
               : DESCRIPTION;
-    const hubUrl =
-      classFilter && districtFilter
+    const hubUrl = underConstruction
+      ? UNDER_CONSTRUCTION_HUB_URL
+      : metroFilter
+        ? `https://redevelopment.pro${metroHubUrl(metroFilter) ?? ''}`
+        : classFilter && districtFilter
         ? `https://redevelopment.pro${classDistrictHubUrl(classFilter, districtFilter) ?? ''}`
         : classFilter
           ? `https://redevelopment.pro${classHubUrl(classFilter)}`
@@ -311,18 +360,26 @@ export function BusinessCentersMinskPage() {
             { name: `Класс ${classFilter}`, url: `https://redevelopment.pro${classHubUrl(classFilter)}` },
             { name: `${districtFilter} район` },
           ]
-        : classFilter || districtFilter || microdistrictFilter
+        : classFilter || districtFilter || microdistrictFilter || underConstruction || metroFilter
           ? [
               { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
               { name: 'Бизнес-центры Минска', url: PAGE_URL },
-              { name: classFilter ? `Класс ${classFilter}` : ((districtFilter ?? microdistrictFilter) as string) },
+              {
+                name: underConstruction
+                  ? 'Строящиеся'
+                  : metroFilter
+                    ? `Метро «${metroFilter}»`
+                    : classFilter
+                    ? `Класс ${classFilter}`
+                    : ((districtFilter ?? microdistrictFilter) as string),
+              },
             ]
           : [
               { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
               { name: 'Бизнес-центры Минска' },
             ],
     );
-  }, [classFilter, districtFilter, microdistrictFilter, notFound]);
+  }, [classFilter, districtFilter, microdistrictFilter, underConstruction, metroFilter, notFound]);
 
   // Districts/классы для сайдбара — считаются НЕ от всего `centers`, а от
   // среза по ДРУГОЙ активной оси (владелец, 2026-09-06: "структура урлов
@@ -381,44 +438,68 @@ export function BusinessCentersMinskPage() {
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
   }, [centers]);
 
-  // До фильтра по метро — это и есть база для счётчиков станций ниже (сколько
-  // БЦ с каждой станцией реально видно на текущем хабе класса/района/
-  // микрорайона), и промежуточный список, к которому применяется metroFilter.
-  const centersByRouteFilters = useMemo(
+  // metroSelection — затравлена станцией из роута (см. useEffect выше), плюс
+  // любые станции, добавленные чек-боксами в сайдбаре: БЦ виден, если он в
+  // радиусе METRO_HUB_MAX_DISTANCE_M хотя бы от ОДНОЙ выбранной станции (та
+  // же метрика, что и у одноосевого хаба metroSlug — членство в фильтре
+  // всегда совпадает с тем, что показал бы отдельный хаб этой станции).
+  const visibleCenters = useMemo(
     () =>
       (centers ?? []).filter(
         (c) =>
           (classFilter === null || c.businessClass === classFilter) &&
           (districtFilter === null || c.district === districtFilter) &&
-          (microdistrictFilter === null || c.microdistrict === microdistrictFilter),
+          (microdistrictFilter === null || c.microdistrict === microdistrictFilter) &&
+          (!underConstruction || c.status === 'under_construction') &&
+          (metroSelection.size === 0 || Array.from(metroSelection).some((st) => metroHubDistance(c, st) !== null)),
       ),
-    [centers, classFilter, districtFilter, microdistrictFilter],
+    [centers, classFilter, districtFilter, microdistrictFilter, underConstruction, metroSelection],
   );
-
-  // Станции метро — только те, у кого есть структурные данные 2GIS
-  // (nearestMetroStations, см. комментарий в data/businessCenters.ts — не у
-  // всех БЦ есть геокод), считается по ближайшей станции каждого БЦ
-  // (nearestStationName), сортировка по числу БЦ, не по алфавиту — тот же
-  // принцип, что и у микрорайонов (открытый список, не устоявшийся набор).
+  // На хабе одной станции (metroFilter — из роута) — по возрастанию расстояния
+  // до неё; при множественном выборе без роута — по возрастанию расстояния до
+  // БЛИЖАЙШЕЙ из выбранных станций; иначе — общий sort_order каталога.
+  const orderedCenters = useMemo(() => {
+    if (metroFilter) {
+      return [...visibleCenters].sort(
+        (a, b) => (metroHubDistance(a, metroFilter) ?? Infinity) - (metroHubDistance(b, metroFilter) ?? Infinity),
+      );
+    }
+    if (metroSelection.size > 0) {
+      const nearestOfSelected = (c: BusinessCenter) =>
+        Math.min(...Array.from(metroSelection).map((st) => metroHubDistance(c, st) ?? Infinity));
+      return [...visibleCenters].sort((a, b) => nearestOfSelected(a) - nearestOfSelected(b));
+    }
+    return visibleCenters;
+  }, [visibleCenters, metroFilter, metroSelection]);
+  // Станции для сайдбара — только те, где в радиусе хаба есть хотя бы 1 БЦ,
+  // по убыванию числа БЦ (открытый список, как микрорайоны) — независимо от
+  // класса/района/микрорайона (та же логика, что и у самого метро: не
+  // комбинируется с другими осями, доступна отовсюду).
   const metroStations = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const c of centersByRouteFilters) {
-      const station = nearestStationName(c);
-      if (station) counts[station] = (counts[station] ?? 0) + 1;
+    for (const c of centers ?? []) {
+      for (const st of c.nearestMetroStations) {
+        if (metroHubDistance(c, st.name) !== null && metroHubUrl(st.name)) counts[st.name] = (counts[st.name] ?? 0) + 1;
+      }
     }
     return Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
-  }, [centersByRouteFilters]);
-
-  const visibleCenters = useMemo(
-    () =>
-      metroFilter.size === 0
-        ? centersByRouteFilters
-        : centersByRouteFilters.filter((c) => {
-            const station = nearestStationName(c);
-            return station !== null && metroFilter.has(station);
-          }),
-    [centersByRouteFilters, metroFilter],
-  );
+  }, [centers]);
+  // Список для рендера в сайдбаре: свёрнутый (топ-8) + текущая станция
+  // роута, если она не по счёту в топ-8 — иначе при заходе на хаб редкой
+  // станции (например «Уручье», 5 БЦ) в свёрнутом виде сайдбар показал бы
+  // "Сбросить", но саму станцию — только после клика "Ещё N станций",
+  // непонятно, что именно выбрано.
+  const visibleMetroStations = useMemo(() => {
+    const base = metroListExpanded ? metroStations : metroStations.slice(0, 8);
+    if (metroFilter && !base.some(([name]) => name === metroFilter)) {
+      const current = metroStations.find(([name]) => name === metroFilter);
+      if (current) return [current, ...base];
+    }
+    return base;
+  }, [metroStations, metroListExpanded, metroFilter]);
+  // «4 бизнес-центра», «24 бизнес-центра», «5 бизнес-центров» — склонение по
+  // числу; пока список не загружен — просто «бизнес-центры» без числа.
+  const bcCountLabel = centers ? `${visibleCenters.length} ${pluralBusinessCenters(visibleCenters.length)}` : 'бизнес-центры';
 
   // Боковой список — те же фильтры, что и у самой сетки карточек ниже: список
   // всегда отражает то, что реально видно на странице, ссылки не ведут "в
@@ -458,8 +539,11 @@ export function BusinessCentersMinskPage() {
   // хаб-странице класса/района FAQ отвечает про этот класс/район, не про
   // весь город. "Самый большой" — определённый максимум по `totalArea`
   // среди visibleCenters, не выдумка.
-  const scopeLabel =
-    classFilter && districtFilter
+  const scopeLabel = underConstruction
+    ? 'из строящихся в Минске'
+    : metroFilter
+      ? `у метро «${metroFilter}»`
+      : classFilter && districtFilter
       ? `класса ${classFilter} в ${districtPrepositional(districtFilter)} районе`
       : classFilter
         ? `класса ${classFilter}`
@@ -505,7 +589,7 @@ export function BusinessCentersMinskPage() {
     [districtCounts],
   );
 
-  const showCatalogSeoText = !classFilter && !districtFilter && !microdistrictFilter && centers !== null && centers.length > 0;
+  const showCatalogSeoText = !classFilter && !districtFilter && !microdistrictFilter && !underConstruction && !metroFilter && centers !== null && centers.length > 0;
 
   const faqItems = useMemo(() => {
     const items: { question: string; answer: string }[] = [];
@@ -515,13 +599,29 @@ export function BusinessCentersMinskPage() {
         answer: `В каталоге redevelopment.pro сейчас ${marketStats.total} бизнес-центров ${scopeLabel === 'в Минске' ? 'Минска' : scopeLabel}.`,
       });
     }
+    if (metroFilter && orderedCenters.length > 0) {
+      const nearest = orderedCenters[0];
+      const d = metroHubDistance(nearest, metroFilter);
+      items.push({
+        question: `Какой бизнес-центр ближе всего к метро «${metroFilter}»?`,
+        answer: `${shortName(nearest)} — ${d} м по прямой от станции «${metroFilter}» (по данным 2GIS). Всего в радиусе 1,5 км от станции в каталоге — ${bcCountLabel}.`,
+      });
+    }
     if (biggest) {
       items.push({
         question: `Какой самый большой бизнес-центр ${scopeLabel}?`,
         answer: `По площади в каталоге лидирует ${shortName(biggest)} — ${biggest.totalArea?.toLocaleString('ru-RU')} м².`,
       });
     }
-    items.push({
+    // На хабе «Строящиеся» вопрос «какие строятся» — тавтология (весь список
+    // и есть ответ), вместо него — про сроки/доступность офисов.
+    if (underConstruction) {
+      items.push({
+        question: 'Можно ли уже купить или арендовать офис в строящемся бизнес-центре?',
+        answer:
+          'Пока здание не введено в эксплуатацию — нет: договоры аренды и продажи заключаются после сдачи. Готовые офисы сейчас — в общем каталоге бизнес-центров Минска, небольшие кабинеты в собственность — в деловом центре Red One.',
+      });
+    } else items.push({
       question: `Какие бизнес-центры ${scopeLabel} сейчас строятся?`,
       answer:
         underConstructionNames.length > 0
@@ -534,7 +634,7 @@ export function BusinessCentersMinskPage() {
         'Класс A — самый высокий уровень: качественная инженерия (климат-контроль, резервное питание), развитая инфраструктура, вместительная парковка и расположение в деловых зонах. Класс B+ и B — хорошее качество отделки и инженерии, но менее престижное расположение или меньшая парковка. Класс C — более простая отделка и инженерные системы, обычно ниже ставки аренды.',
     });
     return items;
-  }, [marketStats.total, scopeLabel, biggest, underConstructionNames]);
+  }, [marketStats.total, scopeLabel, biggest, underConstructionNames, underConstruction, metroFilter, orderedCenters, bcCountLabel]);
 
   useEffect(() => {
     if (notFound) return;
@@ -555,8 +655,11 @@ export function BusinessCentersMinskPage() {
   // Заголовок/подзаголовок hero — на общем каталоге статичные PAGE_H1/
   // INTRO_TEXT, на хаб-подстранице класса/района — уникальные под конкретный
   // фильтр (то же значение, что уже посчитано для meta-тегов выше).
-  const heroH1 =
-    classFilter && districtFilter
+  const heroH1 = underConstruction
+    ? 'Строящиеся бизнес-центры Минска'
+    : metroFilter
+      ? `Бизнес-центры у метро «${metroFilter}»`
+      : classFilter && districtFilter
       ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
       : classFilter
         ? `Бизнес-центры класса ${classFilter} в Минске`
@@ -565,15 +668,18 @@ export function BusinessCentersMinskPage() {
           : microdistrictFilter
             ? `Бизнес-центры ${microdistrictFilter}`
             : PAGE_H1;
-  const heroIntro =
-    classFilter && districtFilter
-      ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска — адреса, площадь, этажность, метро.`
+  const heroIntro = underConstruction
+    ? `${bcCountLabel} Минска, которые сейчас строятся, — класс, площадь, район и срок сдачи по данным застройщиков. Офисы в них пока нельзя ни арендовать, ни купить; готовые варианты — в общем каталоге.`
+    : metroFilter
+      ? `${bcCountLabel} не дальше 1,5 км по прямой от станции «${metroFilter}» — расстояние по данным 2GIS, ближайшие первыми. Класс, площадь, этажность и объявления об аренде и продаже — в карточках.`
+    : classFilter && districtFilter
+      ? `${bcCountLabel} делового класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска — адреса, площадь, этажность, метро.`
       : classFilter
-        ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
+        ? `${bcCountLabel} делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
         : districtFilter
-          ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtPrepositional(districtFilter)} районе Минска — сравнивайте по классу, площади и расположению.`
+          ? `${bcCountLabel} в ${districtPrepositional(districtFilter)} районе Минска — сравнивайте по классу, площади и расположению.`
           : microdistrictFilter
-            ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в микрорайоне ${microdistrictFilter} (Минск) — адреса, деловой класс, площадь, метро.`
+            ? `${bcCountLabel} в микрорайоне ${microdistrictFilter} (Минск) — адреса, деловой класс, площадь, метро.`
           : INTRO_TEXT;
 
   // Содержимое бокового меню — общий JSX для десктопной sticky-колонки и
@@ -697,52 +803,108 @@ export function BusinessCentersMinskPage() {
 
           <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-1">
             <span className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Метро</span>
-            {metroFilter.size > 0 && (
-              <button
-                type="button"
-                onClick={() => setMetroFilter(new Set())}
-                className="text-xs font-semibold text-primary-hover hover:underline"
-              >
-                Сбросить
-              </button>
-            )}
+            {/* "Сбросить" на роуте одной станции обязан увести с её URL —
+                иначе заголовок/description страницы продолжали бы говорить
+                про станцию X, пока список уже показывал бы все БЦ (metroSelection
+                опустела бы, а H1 остался бы прежним). Вне роута (обычный
+                каталог, только чек-боксы) — просто очистка состояния, без
+                навигации: остальные оси (класс/район/микрорайон) трогать
+                не нужно. */}
+            {metroSelection.size > 0 &&
+              (metroFilter ? (
+                <Link
+                  to="/minsk/bcminsk"
+                  onClick={() => setMobileNavOpen(false)}
+                  className="text-xs font-semibold text-primary-hover hover:underline"
+                >
+                  Сбросить
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setMetroSelection(new Set())}
+                  className="text-xs font-semibold text-primary-hover hover:underline"
+                >
+                  Сбросить
+                </button>
+              ))}
           </div>
-          {/* Не роут, а обычный чек-бокс-фильтр поверх текущего хаба (владелец:
-              "выбрать одну или несколько станций метро") — множественный
-              выбор, поэтому не Link/URL, как остальные оси, а тумблер по
-              Set в локальном стейте. Список — только станции, реально
-              встречающиеся среди уже отфильтрованных по классу/району/
-              микрорайону БЦ (centersByRouteFilters), не все станции метро
-              Минска. */}
-          {metroStations.map(([name, count]) => {
-            const active = metroFilter.has(name);
+          {/* Независимая ось (аудит поиска 2026-09-07 + владелец, 2026-09-07:
+              "выбрать одну или несколько станций метро") — станции с ≥1 БЦ в
+              радиусе METRO_HUB_MAX_DISTANCE_M, по убыванию числа БЦ. Список
+              длинный — свёрнут до первых 8, остальные по клику. Название —
+              обычная ссылка на отдельный SEO-хаб этой станции (та же
+              одноосевая навигация, что и у района/класса, `metroFilter ===
+              name` подсвечивает активный роут); чек-бокс слева — отдельный
+              клиентский тумблер в `metroSelection`, не меняет URL — им можно
+              добавить ЕЩЁ станции к уже открытому хабу (или на общем
+              каталоге без роута вовсе), не теряя саму страницу станции. */}
+          {visibleMetroStations.map(([name, count]) => {
+            const url = metroHubUrl(name);
+            const checked = metroSelection.has(name);
             return (
-              <button
-                key={name}
-                type="button"
-                onClick={() => toggleMetroStation(name)}
-                className={cn(
-                  'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
-                  active ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
-                )}
-              >
-                <span className="flex items-center gap-2">
-                  <span
+              <div key={name} className="flex items-center gap-2 rounded-control px-2 py-1 transition-colors hover:bg-surface-muted">
+                <button
+                  type="button"
+                  onClick={() => toggleMetroStation(name)}
+                  aria-pressed={checked}
+                  aria-label={checked ? `Убрать «${name}» из фильтра метро` : `Добавить «${name}» в фильтр метро`}
+                  className={cn(
+                    'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                    checked ? 'border-primary bg-primary text-white' : 'border-border-strong bg-white',
+                  )}
+                >
+                  {checked && <Check className="h-3 w-3 shrink-0" strokeWidth={3} />}
+                </button>
+                {url ? (
+                  <Link
+                    to={url}
+                    onClick={() => setMobileNavOpen(false)}
                     className={cn(
-                      'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
-                      active ? 'border-primary bg-primary text-white' : 'border-border-strong bg-white',
+                      'flex flex-1 items-center justify-between gap-2 py-0.5 text-left transition-colors hover:text-primary',
+                      metroFilter === name ? 'font-bold text-primary-hover' : 'font-medium text-ink',
                     )}
                   >
-                    {active && <Check className="h-3 w-3 shrink-0" strokeWidth={3} />}
+                    <span>{name}</span>
+                    <span className="text-xs text-ink-muted">{count}</span>
+                  </Link>
+                ) : (
+                  <span className="flex flex-1 items-center justify-between gap-2 py-0.5 text-ink">
+                    <span>{name}</span>
+                    <span className="text-xs text-ink-muted">{count}</span>
                   </span>
-                  {name}
-                </span>
-                <span className="text-xs text-ink-muted">{count}</span>
-              </button>
+                )}
+              </div>
             );
           })}
+          {metroStations.length > 8 && (
+            <button
+              type="button"
+              onClick={() => setMetroListExpanded((v) => !v)}
+              className="rounded-control px-2 py-1.5 text-left text-xs font-semibold text-ink-muted transition-colors hover:text-ink"
+            >
+              {metroListExpanded ? 'Свернуть' : `Ещё ${metroStations.length - 8} станций`}
+            </button>
+          )}
         </>
       )}
+
+      <div className="my-2 border-t border-border" />
+
+      <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">Статус</span>
+      <Link
+        to={underConstruction ? '/minsk/bcminsk' : '/minsk/bcminsk/stroyashchiesya'}
+        onClick={() => setMobileNavOpen(false)}
+        className={cn(
+          'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 transition-colors hover:text-primary',
+          underConstruction ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
+        )}
+      >
+        <span>Строящиеся</span>
+        {centers && (
+          <span className="text-xs text-ink-muted">{centers.filter((c) => c.status === 'under_construction').length}</span>
+        )}
+      </Link>
 
       <div className="my-2 border-t border-border" />
 
@@ -951,8 +1113,8 @@ export function BusinessCentersMinskPage() {
               <p className="text-sm text-ink">Нет бизнес-центров по выбранным фильтрам.</p>
             ) : (
               <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
-                {visibleCenters.map((c) => (
-                  <BusinessCenterCard key={c.slug} center={c} />
+                {orderedCenters.map((c) => (
+                  <BusinessCenterCard key={c.slug} center={c} metroStation={metroFilter} />
                 ))}
               </div>
             )}

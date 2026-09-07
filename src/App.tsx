@@ -7,6 +7,7 @@ import { useParams } from 'react-router-dom';
 import { PublicBuildingPlan } from './pages/PublicBuildingPlan';
 import { ObjectLandingPage } from './pages/ObjectLandingPage';
 import { DistrictGuidePage } from './pages/DistrictGuidePage';
+import { MinskMirTopicPage } from './pages/MinskMirTopicPage';
 import { BusinessCentersMinskPage } from './pages/BusinessCentersMinskPage';
 import { BusinessCenterDetailPage } from './pages/BusinessCenterDetailPage';
 import { MinskHub } from './pages/MinskHub';
@@ -186,10 +187,13 @@ export default function App() {
       <Route path="/" element={<Navigate to="/minsk" replace />} />
       <Route path="/minsk" element={<MinskHub />} />
       <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />
+      <Route path="/minsk/minsk-mir/:topic" element={<MinskMirTopicPage />} />
       <Route path="/minsk/bcminsk" element={<BusinessCentersMinskPage />} />
       {/* Хаб-страницы по классу/району (Fable-анализ, 2026-09-06) — тот же
           компонент, фильтр читается из useParams(), см. комментарий там же.
           Регистрируются ДО ":slug", чтобы не конфликтовать с ним. */}
+      {/* Ось «строящиеся» (аудит поиска 2026-09-07) — тот же компонент с пропом. */}
+      <Route path="/minsk/bcminsk/stroyashchiesya" element={<BusinessCentersMinskPage underConstruction />} />
       <Route path="/minsk/bcminsk/class/:classSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
       {/* Пересечение класс×район (владелец, 2026-09-06: "структура урлов...
@@ -203,6 +207,8 @@ export default function App() {
           2026-09-07) — отдельная, не пересекающаяся с классом/районом ось,
           не комбинируется с ними (см. комментарий у MICRODISTRICT_SLUGS). */}
       <Route path="/minsk/bcminsk/microrayon/:microdistrictSlug" element={<BusinessCentersMinskPage />} />
+      {/* Хаб по станции метро (аудит 2026-09-07) — независимая ось, см. METRO_STATION_SLUGS. */}
+      <Route path="/minsk/bcminsk/metro/:metroSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
       <Route path="/plan/:token" element={<PublicBuildingPlan />} />
       <Route path="/tz/:token" element={<BriefPublicPage />} />

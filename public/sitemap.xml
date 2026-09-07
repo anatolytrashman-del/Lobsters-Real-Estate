@@ -19,10 +19,46 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://redevelopment.pro/minsk/minsk-mir/biznes-centr</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://redevelopment.pro/minsk/minsk-mir/kovorking</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://redevelopment.pro/minsk/minsk-mir/kupit-ofis</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://redevelopment.pro/minsk/minsk-mir/arenda-ofisa</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://redevelopment.pro/minsk/minsk-mir/kommercheskie-pomeshcheniya</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://redevelopment.pro/minsk/bcminsk</loc>
     <lastmod>2026-09-06</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://redevelopment.pro/minsk/bcminsk/stroyashchiesya</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
   </url>
   <url>
     <loc>https://redevelopment.pro/minsk/bcminsk/class/a</loc>
