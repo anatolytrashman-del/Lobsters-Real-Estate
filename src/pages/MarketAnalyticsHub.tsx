@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Building2, Lock } from 'lucide-react';
+import { ArrowRight, Building2, Lock, Store } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { setBreadcrumbJsonLd, setGenericPageMeta, setOrganizationJsonLd } from '../lib/pageMeta';
@@ -9,7 +9,7 @@ import type { MarketSnapshot } from '../data/marketSnapshots';
 
 const TITLE = 'Цены на коммерческую недвижимость в Минске — Redevelopment';
 const DESCRIPTION =
-  'Аналитика рынка коммерческой недвижимости Минска: ставки аренды и цены продажи офисов в бизнес-центрах по классам и районам, по данным Kufar и Realt.';
+  'Аналитика рынка коммерческой недвижимости Минска: ставки аренды и цены продажи офисов в бизнес-центрах и торговых помещений по районам, по данным Kufar и Realt.';
 const PAGE_URL = 'https://redevelopment.pro/minsk/analytics';
 
 const MONTH_NAMES = [
@@ -40,25 +40,38 @@ function formatMoney(n: number, deal: 'rent' | 'sale'): string {
 // Другие сегменты плана (ANALYTICSPLAN.md §1.1/§4.1) — пока без собственного
 // скрапа и без привязки объявлений к типу здания, поэтому здесь только
 // заглушки "скоро", не тонкие пустые страницы.
-const UPCOMING_SEGMENTS = [
-  'Торговые помещения и ПСН',
-  'Склады и производство',
-  'Первичный рынок',
-  'Готовый арендный бизнес',
-];
+const UPCOMING_SEGMENTS = ['Склады и производство', 'Первичный рынок', 'Готовый арендный бизнес'];
 
 export function MarketAnalyticsHub() {
-  const [snapshots, setSnapshots] = useState<MarketSnapshot[] | null>(null);
+  const [officeSnapshots, setOfficeSnapshots] = useState<MarketSnapshot[] | null>(null);
+  const [retailSnapshots, setRetailSnapshots] = useState<MarketSnapshot[] | null>(null);
 
   useEffect(() => {
     fetchLatestMarketSnapshots('ofisy_bc')
-      .then(setSnapshots)
-      .catch(() => setSnapshots([]));
+      .then(setOfficeSnapshots)
+      .catch(() => setOfficeSnapshots([]));
+    fetchLatestMarketSnapshots('torgovye')
+      .then(setRetailSnapshots)
+      .catch(() => setRetailSnapshots([]));
   }, []);
 
-  const cityRent = useMemo(() => snapshots?.find((s) => s.sliceType === 'city' && s.deal === 'rent'), [snapshots]);
-  const citySale = useMemo(() => snapshots?.find((s) => s.sliceType === 'city' && s.deal === 'sale'), [snapshots]);
-  const period = cityRent?.period ?? citySale?.period ?? null;
+  const cityRent = useMemo(
+    () => officeSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'rent'),
+    [officeSnapshots],
+  );
+  const citySale = useMemo(
+    () => officeSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'sale'),
+    [officeSnapshots],
+  );
+  const retailCityRent = useMemo(
+    () => retailSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'rent'),
+    [retailSnapshots],
+  );
+  const retailCitySale = useMemo(
+    () => retailSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'sale'),
+    [retailSnapshots],
+  );
+  const period = cityRent?.period ?? citySale?.period ?? retailCityRent?.period ?? retailCitySale?.period ?? null;
 
   useEffect(() => {
     setGenericPageMeta({ title: TITLE, description: DESCRIPTION, url: PAGE_URL, ogType: 'article' });
@@ -120,6 +133,44 @@ export function MarketAnalyticsHub() {
                 </span>
                 <span className="pl-6.5 text-xs text-ink-muted">
                   {citySale?.median != null ? `Медиана: ${formatMoney(citySale.median, 'sale')}` : 'По классам и районам'}
+                </span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+            </Link>
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-bold text-ink">Торговые помещения и ПСН</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Link
+              to="/minsk/analytics/torgovye/arenda"
+              className={cn('flex items-center justify-between gap-2 p-4 transition-colors hover:border-primary/40', glassCardClass)}
+              style={glassCardShadow}
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2.5 font-medium text-ink">
+                  <Store className="h-4 w-4 shrink-0 text-ink-faint" />
+                  Ставки аренды
+                </span>
+                <span className="pl-6.5 text-xs text-ink-muted">
+                  {retailCityRent?.median != null ? `Медиана: ${formatMoney(retailCityRent.median, 'rent')}` : 'По районам и типу здания'}
+                </span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+            </Link>
+            <Link
+              to="/minsk/analytics/torgovye/prodazha"
+              className={cn('flex items-center justify-between gap-2 p-4 transition-colors hover:border-primary/40', glassCardClass)}
+              style={glassCardShadow}
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2.5 font-medium text-ink">
+                  <Store className="h-4 w-4 shrink-0 text-ink-faint" />
+                  Цены продажи
+                </span>
+                <span className="pl-6.5 text-xs text-ink-muted">
+                  {retailCitySale?.median != null ? `Медиана: ${formatMoney(retailCitySale.median, 'sale')}` : 'По районам и типу здания'}
                 </span>
               </span>
               <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />

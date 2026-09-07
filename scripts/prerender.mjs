@@ -76,6 +76,8 @@ const STATIC_PATHS = [
   'minsk/analytics/metodika',
   'minsk/analytics/ofisy/arenda',
   'minsk/analytics/ofisy/prodazha',
+  'minsk/analytics/torgovye/arenda',
+  'minsk/analytics/torgovye/prodazha',
   'minsk/minsk-mir',
   ...MINSK_MIR_TOPIC_SLUGS.map((s) => `minsk/minsk-mir/${s}`),
   'minsk/bcminsk',

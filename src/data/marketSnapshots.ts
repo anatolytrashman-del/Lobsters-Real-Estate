@@ -9,7 +9,7 @@ export interface MarketSnapshot {
   period: string; // 'YYYY-MM-01'
   segment: string;
   deal: 'rent' | 'sale';
-  sliceType: 'city' | 'class' | 'district';
+  sliceType: 'city' | 'class' | 'district' | 'building_type';
   sliceKey: string;
   currency: string;
   n: number;

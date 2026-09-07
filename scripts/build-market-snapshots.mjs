@@ -5,26 +5,25 @@
 // срез, ключ среза) → n/медиана/p25/p75, без перезаписи истории (снимки
 // за прошлые месяцы не трогаются, только upsert по текущему периоду).
 //
-// Сейчас единственный сегмент с реальными данными — 'ofisy_bc' (офисы в
-// бизнес-центрах, city-wide, есть привязка к business_centers.business_class/
-// district). Остальные сегменты плана (торговля/склады/офисы вне БЦ) не
-// собираются — для них нет ни своего скрапа, ни таблицы с привязкой к
-// сегменту/типу здания (см. ANALYTICSPLAN.md, раздел 3.1, п.2 «Нормализация» —
-// это отдельная, ещё не сделанная задача).
+// Два сегмента с реальными данными:
+// - 'ofisy_bc' (офисы в бизнес-центрах, city-wide) — из
+//   business_center_offers, привязка к business_centers.business_class/
+//   district; срезы city/class/district. Дедупликации Kufar↔Realt тут НЕТ —
+//   у business_center_offers нет ни ручного review-флоу (см. комментарий в
+//   sync-business-center-offers.mjs), ни общего dedup-ключа между
+//   источниками — известное ограничение, отражено в /minsk/analytics/metodika.
+// - 'torgovye' (торговые помещения, city-wide) — из citywide_offers
+//   (см. sync-citywide-retail-offers.mjs), срезы city/district/building_type
+//   (building_type — не у всех строк заполнен, см. её же комментарий про
+//   разницу Kufar/Realt). Дедупликация Kufar↔Realt тут ЕСТЬ, но уже сделана
+//   в самом sync-скрипте на этапе сбора, не здесь.
+// Остальные сегменты плана (склады/офисы вне БЦ/первичка/ГАБ/машиноместа) не
+// собираются — для них нет ни скрапа, ни таблицы (ANALYTICSPLAN.md §3.1 п.2).
 //
-// Срезы: city (весь город), class (по business_class — только реально
-// встречающиеся значения), district (по district — только реально
-// встречающиеся). Перед агрегацией — фильтр price_per_sqm>0 и обрезка по
-// 5–95 перцентилю ВНУТРИ среза (ANALYTICSPLAN.md §3.1 п.4), но только при
-// n≥8 — на совсем маленьких выборках обрезка перцентилями съедает и так
-// скудные данные, смысла в ней нет.
-//
-// Дедупликация между Kufar/Realt НЕ делается — business_center_offers сам
-// по себе не имеет ручного review-флоу (см. комментарий в
-// sync-business-center-offers.mjs) и общего dedup-ключа между источниками,
-// как у market_offers/MarketOffersReview.tsx. Один и тот же объект,
-// выставленный на обеих площадках, может учитываться дважды — известное
-// ограничение, отражено в /minsk/analytics/metodika.
+// Перед агрегацией внутри каждого среза — фильтр price_per_sqm>0 и обрезка
+// по 5–95 перцентилю (ANALYTICSPLAN.md §3.1 п.4), но только при n≥8 — на
+// совсем маленьких выборках обрезка перцентилями съедает и так скудные
+// данные, смысла в ней нет.
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -80,58 +79,91 @@ function firstOfMonth() {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
 }
 
+// Общая агрегация: rows — объекты с price_per_sqm/deal_type + произвольным
+// набором доп. полей для среза (extraSlices описывает, какие поля и в какой
+// slice_type превращать). Всегда добавляет срез city ('all').
+function buildSnapshotsForSegment(rows, segment, period, extraSlices) {
+  const snapshots = [];
+  for (const deal of ['rent', 'sale']) {
+    const dealRows = rows.filter((r) => r.deal_type === deal && r.price_per_sqm != null && Number(r.price_per_sqm) > 0);
+    if (dealRows.length === 0) continue;
+
+    const citySummary = summarize(dealRows.map((r) => Number(r.price_per_sqm)));
+    snapshots.push({ period, segment, deal, slice_type: 'city', slice_key: 'all', currency: 'USD', ...citySummary });
+
+    for (const { sliceType, field } of extraSlices) {
+      const grouped = new Map();
+      for (const r of dealRows) {
+        const key = r[field];
+        if (!key) continue;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(Number(r.price_per_sqm));
+      }
+      for (const [key, values] of grouped) {
+        snapshots.push({ period, segment, deal, slice_type: sliceType, slice_key: key, currency: 'USD', ...summarize(values) });
+      }
+    }
+  }
+  return snapshots;
+}
+
 async function main() {
+  const period = firstOfMonth();
+  const snapshots = [];
+
+  // --- Сегмент 'ofisy_bc' ---
   const { data: centers, error: centersError } = await supabase
     .from('business_centers')
     .select('slug,business_class,district');
   if (centersError) throw centersError;
 
-  const { data: offers, error: offersError } = await supabase
+  const { data: bcOffers, error: bcOffersError } = await supabase
     .from('business_center_offers')
     .select('business_center_slug,deal_type,price_per_sqm');
-  if (offersError) throw offersError;
+  if (bcOffersError) throw bcOffersError;
 
   const centerBySlug = new Map(centers.map((c) => [c.slug, c]));
-  const rows = offers
-    .map((o) => ({
-      ...o,
-      center: centerBySlug.get(o.business_center_slug) ?? null,
-    }))
-    .filter((o) => o.price_per_sqm != null && Number(o.price_per_sqm) > 0);
+  const officeRows = bcOffers.map((o) => ({
+    deal_type: o.deal_type,
+    price_per_sqm: o.price_per_sqm,
+    class: centerBySlug.get(o.business_center_slug)?.business_class ?? null,
+    district: centerBySlug.get(o.business_center_slug)?.district ?? null,
+  }));
+  console.log(`Загружено ${centers.length} БЦ, ${bcOffers.length} объявлений офисов в БЦ.`);
+  snapshots.push(
+    ...buildSnapshotsForSegment(officeRows, 'ofisy_bc', period, [
+      { sliceType: 'class', field: 'class' },
+      { sliceType: 'district', field: 'district' },
+    ]),
+  );
 
-  console.log(`Загружено ${centers.length} БЦ, ${offers.length} объявлений (${rows.length} с ценой за м²).`);
-
-  const period = firstOfMonth();
-  const snapshots = [];
-
-  for (const deal of ['rent', 'sale']) {
-    const dealRows = rows.filter((r) => r.deal_type === deal);
-    if (dealRows.length === 0) continue;
-
-    const citySummary = summarize(dealRows.map((r) => Number(r.price_per_sqm)));
-    snapshots.push({ period, segment: 'ofisy_bc', deal, slice_type: 'city', slice_key: 'all', currency: 'USD', ...citySummary });
-
-    const byClass = new Map();
-    for (const r of dealRows) {
-      const cls = r.center?.business_class;
-      if (!cls) continue;
-      if (!byClass.has(cls)) byClass.set(cls, []);
-      byClass.get(cls).push(Number(r.price_per_sqm));
+  // --- Сегмент 'torgovye' ---
+  // PostgREST по умолчанию отдаёт не больше 1000 строк за запрос —
+  // citywide_offers уже больше (проверено вживую: без пагинации
+  // "Загружено 1000" при реальных 1817), поэтому листаем .range() до конца.
+  const retailOffers = [];
+  {
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from('citywide_offers')
+        .select('deal_type,price_per_sqm,district,building_type')
+        .eq('segment', 'torgovye')
+        .range(from, from + PAGE - 1);
+      if (error) throw error;
+      retailOffers.push(...data);
+      if (data.length < PAGE) break;
     }
-    for (const [cls, values] of byClass) {
-      snapshots.push({ period, segment: 'ofisy_bc', deal, slice_type: 'class', slice_key: cls, currency: 'USD', ...summarize(values) });
-    }
+  }
 
-    const byDistrict = new Map();
-    for (const r of dealRows) {
-      const district = r.center?.district;
-      if (!district) continue;
-      if (!byDistrict.has(district)) byDistrict.set(district, []);
-      byDistrict.get(district).push(Number(r.price_per_sqm));
-    }
-    for (const [district, values] of byDistrict) {
-      snapshots.push({ period, segment: 'ofisy_bc', deal, slice_type: 'district', slice_key: district, currency: 'USD', ...summarize(values) });
-    }
+  console.log(`Загружено ${retailOffers.length} объявлений торговых помещений (citywide_offers).`);
+  if (retailOffers && retailOffers.length > 0) {
+    snapshots.push(
+      ...buildSnapshotsForSegment(retailOffers, 'torgovye', period, [
+        { sliceType: 'district', field: 'district' },
+        { sliceType: 'building_type', field: 'building_type' },
+      ]),
+    );
   }
 
   console.log(`Посчитано ${snapshots.length} срезов за ${period}.`);
