@@ -1,0 +1,115 @@
+import { useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { cn } from '../lib/cn';
+import { glassCardClass, glassCardShadow } from '../lib/glass';
+import { setArticleJsonLd, setBreadcrumbJsonLd, setGenericPageMeta, setOrganizationJsonLd } from '../lib/pageMeta';
+import { MIN_RELIABLE_N } from '../data/marketSnapshots';
+
+const TITLE = 'Методика расчёта — аналитика рынка коммерческой недвижимости';
+const DESCRIPTION = 'Как мы собираем и считаем ставки аренды и цены продажи коммерческой недвижимости в Минске.';
+const URL = 'https://redevelopment.pro/minsk/analytics/metodika';
+const LAST_UPDATED = '2026-09-07';
+
+export function AnalyticsMethodologyPage() {
+  useEffect(() => {
+    setGenericPageMeta({ title: TITLE, description: DESCRIPTION, url: URL, ogType: 'article' });
+    setOrganizationJsonLd(false);
+    setBreadcrumbJsonLd([
+      { name: 'Минск', url: 'https://redevelopment.pro/minsk' },
+      { name: 'Аналитика рынка', url: 'https://redevelopment.pro/minsk/analytics' },
+      { name: 'Методика' },
+    ]);
+    setArticleJsonLd({
+      headline: TITLE,
+      description: DESCRIPTION,
+      url: URL,
+      datePublished: LAST_UPDATED,
+      dateModified: LAST_UPDATED,
+    });
+  }, []);
+
+  return (
+    <div className="min-h-svh bg-bg">
+      <div className="border-b border-border py-5">
+        <div className="mx-auto flex max-w-5xl items-center justify-center px-4 sm:px-8">
+          <Link to="/minsk" className="text-lg font-extrabold tracking-wide text-ink">
+            <span className="font-black text-primary-hover">RED</span>EVELOPMENT
+          </Link>
+        </div>
+      </div>
+
+      <main className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-12 sm:px-8">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-2xl font-extrabold text-ink sm:text-3xl">Методика</h1>
+          <p className="text-sm text-ink-muted">Версия от {LAST_UPDATED}. Обновляем при изменении подхода к расчёту.</p>
+        </div>
+
+        <div className={cn('flex flex-col gap-5 p-6 text-sm leading-relaxed text-ink', glassCardClass)} style={glassCardShadow}>
+          <section className="flex flex-col gap-2">
+            <h2 className="font-bold text-ink">Что сейчас считается</h2>
+            <p>
+              Сейчас в разделе аналитики есть один сегмент — офисы в бизнес-центрах Минска (аренда и продажа). Это
+              143 здания из нашего каталога бизнес-центров. Остальные сегменты рынка (торговые помещения, склады,
+              офисы вне бизнес-центров) пока не собираются — нет ни своего скрапа, ни справочника зданий, к которому
+              можно привязать объявления.
+            </p>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="font-bold text-ink">Источники</h2>
+            <p>
+              Активные объявления с Kufar (re.kufar.by) и Realt.by, найденные по точному адресу каждого здания из
+              каталога. Собираются автоматически раз в месяц.
+            </p>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="font-bold text-ink">Ставка предложения, не ставка сделки</h2>
+            <p>
+              Мы считаем цену, которую просит собственник в объявлении на момент сбора данных, а не подтверждённую
+              цену сделки. По оценке отраслевого аналитика «Твоя столица», ставка сделки обычно ниже ставки
+              предложения примерно на 10% — это стоит учитывать при сравнении наших цифр с реальными переговорами.
+            </p>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="font-bold text-ink">Что не делается (пока)</h2>
+            <p>
+              Между Kufar и Realt.by нет дедупликации: если один и тот же объект выставлен на обеих площадках, он
+              может учитываться дважды. Отдельного фильтра выбросов сверх обрезки по перцентилям (см. ниже) нет.
+              Это известное ограничение первой версии, а не скрытая погрешность — учитывать при цитировании цифр.
+            </p>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="font-bold text-ink">Расчёт</h2>
+            <p>
+              Для каждого среза (город целиком; класс здания A/B+/B/C; административный район) — медиана и 25-й/
+              75-й перцентили цены за м² по объявлениям с указанной ценой. При выборке от 8 объявлений цена за м²
+              вне 5–95-го перцентиля внутри этого среза исключается перед расчётом медианы — чтобы одно объявление
+              с явно ошибочной ценой не искажало картину. Валюта — доллары США (так их указывают сами площадки).
+            </p>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="font-bold text-ink">Порог достаточности выборки</h2>
+            <p>
+              Срез с {MIN_RELIABLE_N} объявлениями и больше показывается как обычная цифра. Меньше — помечается
+              «ориентировочно» (если хотя бы одно объявление есть) или «недостаточно данных» (совсем пусто). Это
+              не значит, что в здании/районе нет предложений вообще — значит, что мы не набрали достаточно
+              объявлений для устойчивой медианы.
+            </p>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="font-bold text-ink">Обновление</h2>
+            <p>
+              Снимок строится автоматически раз в месяц, 3-го числа. История снимков не перезаписывается — старые
+              периоды остаются в базе, это основа будущих графиков динамики.
+            </p>
+          </section>
+        </div>
+      </main>
+    </div>
+  );
+}

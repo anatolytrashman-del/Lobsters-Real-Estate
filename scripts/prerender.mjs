@@ -72,6 +72,10 @@ const MINSK_MIR_TOPIC_SLUGS = ['biznes-centr', 'kovorking', 'kupit-ofis', 'arend
 
 const STATIC_PATHS = [
   'minsk',
+  'minsk/analytics',
+  'minsk/analytics/metodika',
+  'minsk/analytics/ofisy/arenda',
+  'minsk/analytics/ofisy/prodazha',
   'minsk/minsk-mir',
   ...MINSK_MIR_TOPIC_SLUGS.map((s) => `minsk/minsk-mir/${s}`),
   'minsk/bcminsk',

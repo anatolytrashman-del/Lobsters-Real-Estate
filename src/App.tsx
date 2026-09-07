@@ -12,6 +12,9 @@ import { BusinessCentersMinskPage } from './pages/BusinessCentersMinskPage';
 import { BusinessCentersRankingPage } from './pages/BusinessCentersRankingPage';
 import { BusinessCenterDetailPage } from './pages/BusinessCenterDetailPage';
 import { MinskHub } from './pages/MinskHub';
+import { MarketAnalyticsHub } from './pages/MarketAnalyticsHub';
+import { OfficeAnalyticsPage } from './pages/OfficeAnalyticsPage';
+import { AnalyticsMethodologyPage } from './pages/AnalyticsMethodologyPage';
 import { BriefPublicPage } from './pages/BriefPublicPage';
 import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
@@ -187,6 +190,13 @@ export default function App() {
           догрузку чанка. */}
       <Route path="/" element={<Navigate to="/minsk" replace />} />
       <Route path="/minsk" element={<MinskHub />} />
+      {/* Аналитика рынка (ANALYTICSPLAN.md) — бенчмарк-страницы с постоянным
+          URL, месяц меняется в тексте, не в адресе. Регистрируются раньше
+          "/minsk/:slug" (лендинг объекта) ниже, чтобы не конфликтовать. */}
+      <Route path="/minsk/analytics" element={<MarketAnalyticsHub />} />
+      <Route path="/minsk/analytics/metodika" element={<AnalyticsMethodologyPage />} />
+      <Route path="/minsk/analytics/ofisy/arenda" element={<OfficeAnalyticsPage deal="rent" />} />
+      <Route path="/minsk/analytics/ofisy/prodazha" element={<OfficeAnalyticsPage deal="sale" />} />
       <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />
       <Route path="/minsk/minsk-mir/:topic" element={<MinskMirTopicPage />} />
       <Route path="/minsk/bcminsk" element={<BusinessCentersMinskPage />} />
