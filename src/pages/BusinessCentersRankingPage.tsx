@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Award, MapPin, Ruler, TrainFront } from 'lucide-react';
+import { ArrowRight, Award, MapPin, Ruler, Star, TrainFront } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { setGenericPageMeta, setArticleJsonLd, setBreadcrumbJsonLd, setFaqJsonLd, setItemListJsonLd } from '../lib/pageMeta';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
 import type { BusinessCenter } from '../data/businessCenters';
-import { shortName, shortAddress, businessClassTone } from '../lib/businessCenterDisplay';
+import { shortName, shortAddress, businessClassTone, mapRatingFromHighlights } from '../lib/businessCenterDisplay';
 import { Badge } from '../components/ui/Badge';
 import { PhotoBlock } from '../components/businessCenters/BusinessCenterVisuals';
 import { nearestMetroStation } from '../lib/metroStations';
@@ -14,35 +14,45 @@ import { FaqAccordion } from '../components/ui/FaqAccordion';
 
 // Рейтинг «Лучшие бизнес-центры Минска» (аудит поиска 2026-09-07: подсказка
 // Google «Лучшие бизнес-центры Минска» — «рейтинг с методикой и датой»).
-// Методика сознательно простая и полностью прозрачная (никаких скрытых
-// весов/баллов) — иначе рейтинг выглядел бы произвольным, а это ровно то,
-// от чего предостерегает сам документ аудита:
-//   1) только деловой класс A и B+ — два верхних, «премиальных» яруса
-//      классификации (методика — в блоке SEO-текста на каталоге,
-//      /minsk/bcminsk), только уже сданные здания (строящиеся не сравнить
-//      по факту);
-//   2) внутри списка — сортировка по общей площади по убыванию: крупный
-//      сданный объект — это косвенный, но объективный признак масштаба и
-//      устойчивости девелопера, единственная широко доступная метрика
-//      (площадь заполнена у 138 из 143 БЦ каталога, в отличие от рейтинга
-//      Яндекс.Карт — тот есть лишь у 18).
-// Ничего не взвешено «на глаз» — ни отзывов, ни субъективных оценок
-// качества, которых у нас физически нет по всем зданиям сразу.
+// Владелец (2026-09-07, после первой версии на площади): «поменял бы
+// концепт этой страницы и поставил в выдачу только БЦ класса А с рейтингом
+// выше 4.5» — методика теперь на двух прозрачных условиях, без скрытых
+// баллов:
+//   1) только деловой класс A — высший ярус классификации;
+//   2) рейтинг Яндекс.Карт (тот же источник, что и бейдж на карточке БЦ,
+//      см. mapRatingFromHighlights) — не ниже 4,5 из 5.
+// Честная оговорка, а не подгонка списка под желаемую длину: рейтинг с
+// карт структурно распознан пока не у всех БЦ (18 из 143 по каталогу) — в
+// список попадают только те класса A, для кого рейтинг уже есть в базе и
+// он ≥4,5; здание без распознанного рейтинга просто не участвует, не
+// считается автоматически «не подходящим».
+const RATING_THRESHOLD = 4.5;
 const DATE_PUBLISHED = '2026-09-07';
 const PAGE_URL = 'https://redevelopment.pro/minsk/bcminsk/reyting';
-const TITLE = 'Лучшие бизнес-центры Минска — рейтинг класса A и B+ по площади';
+const TITLE = `Лучшие бизнес-центры Минска — класс A с рейтингом от ${RATING_THRESHOLD} на Яндекс.Картах`;
 const DESCRIPTION =
-  'Рейтинг бизнес-центров Минска класса A и B+: сданные здания, отсортированные по общей площади. Открытая методика, дата обновления, ссылки на карточки каждого БЦ.';
+  'Рейтинг бизнес-центров Минска: только класс A с рейтингом на Яндекс.Картах не ниже 4,5 из 5. Открытая методика, дата обновления, ссылки на карточки каждого БЦ.';
 const PAGE_H1 = 'Лучшие бизнес-центры Минска';
-const RANKED_CLASSES: NonNullable<BusinessCenter['businessClass']>[] = ['A', 'B+'];
 
-function buildRanking(centers: BusinessCenter[]): BusinessCenter[] {
-  return centers
-    .filter((c) => c.businessClass && RANKED_CLASSES.includes(c.businessClass) && c.status !== 'under_construction' && c.totalArea != null)
-    .sort((a, b) => (b.totalArea ?? 0) - (a.totalArea ?? 0));
+interface RankedCenter {
+  center: BusinessCenter;
+  rating: number;
+  ratingLabel: string;
 }
 
-function RankingRow({ center, place }: { center: BusinessCenter; place: number }) {
+function buildRanking(centers: BusinessCenter[]): RankedCenter[] {
+  return centers
+    .filter((c) => c.businessClass === 'A' && c.status !== 'under_construction')
+    .map((c) => {
+      const rating = mapRatingFromHighlights(c.highlights);
+      return rating ? { center: c, rating: rating.value, ratingLabel: rating.label } : null;
+    })
+    .filter((r): r is RankedCenter => r !== null && r.rating >= RATING_THRESHOLD)
+    .sort((a, b) => b.rating - a.rating || (b.center.totalArea ?? 0) - (a.center.totalArea ?? 0));
+}
+
+function RankingRow({ ranked, place }: { ranked: RankedCenter; place: number }) {
+  const { center, ratingLabel } = ranked;
   const nearestMetro = nearestMetroStation(center.nearestMetroStations ?? []);
   return (
     <Link
@@ -60,6 +70,10 @@ function RankingRow({ center, place }: { center: BusinessCenter; place: number }
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-base font-bold leading-snug text-ink">{shortName(center)}</h2>
           {center.businessClass && <Badge tone={businessClassTone[center.businessClass]}>Класс {center.businessClass}</Badge>}
+          <span className="flex items-center gap-1 rounded-full bg-surface-muted px-2 py-0.5 text-xs font-bold text-ink">
+            <Star className="h-3 w-3 shrink-0 fill-current text-primary-hover" />
+            {ratingLabel}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-muted">
           <span className="flex items-center gap-1">
@@ -94,11 +108,7 @@ export function BusinessCentersRankingPage() {
   }, []);
 
   const ranking = useMemo(() => (centers ? buildRanking(centers) : []), [centers]);
-  const byClass = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const c of ranking) if (c.businessClass) counts[c.businessClass] = (counts[c.businessClass] ?? 0) + 1;
-    return counts;
-  }, [ranking]);
+  const classATotal = useMemo(() => (centers ?? []).filter((c) => c.businessClass === 'A' && c.status !== 'under_construction').length, [centers]);
 
   const faqItems = useMemo(() => {
     if (ranking.length === 0) return [];
@@ -106,24 +116,23 @@ export function BusinessCentersRankingPage() {
     return [
       {
         question: 'По какой методике составлен этот рейтинг?',
+        answer: `В рейтинг попадают бизнес-центры только класса A с рейтингом на Яндекс.Картах не ниже ${RATING_THRESHOLD} из 5. Внутри списка — сортировка по рейтингу по убыванию, при равном рейтинге — по общей площади. Субъективных оценок и скрытых весов в методике нет: два прозрачных условия, оба проверяемых.`,
+      },
+      {
+        question: 'Какой бизнес-центр класса A в Минске с самым высоким рейтингом?',
+        answer: `${shortName(leader.center)} — ${leader.ratingLabel} из 5 на Яндекс.Картах.`,
+      },
+      {
+        question: 'Сколько бизнес-центров попало в рейтинг?',
+        answer: `${ranking.length} из ${classATotal} сданных бизнес-центров класса A в каталоге — у остальных рейтинг на картах либо ниже ${RATING_THRESHOLD}, либо ещё не распознан в базе.`,
+      },
+      {
+        question: 'Почему в рейтинге нет зданий класса B+, B и C?',
         answer:
-          'В рейтинг попадают только сданные бизнес-центры класса A и B+ (два верхних яруса деловой классификации). Внутри списка здания отсортированы по общей площади по убыванию — это единственная объективная метрика масштаба, широко доступная по всему каталогу. Субъективных оценок и скрытых весов в методике нет.',
-      },
-      {
-        question: 'Какой бизнес-центр Минска самый большой из класса A и B+?',
-        answer: `${shortName(leader)} — ${leader.totalArea?.toLocaleString('ru-RU')} м², класс ${leader.businessClass}.`,
-      },
-      {
-        question: 'Сколько бизнес-центров класса A и B+ в рейтинге?',
-        answer: `Всего ${ranking.length}: класс A — ${byClass.A ?? 0}, класс B+ — ${byClass['B+'] ?? 0}.`,
-      },
-      {
-        question: 'Почему в рейтинге нет зданий класса B и C?',
-        answer:
-          'Рейтинг нарочно ограничен верхними двумя классами — B и C заметно отличаются по качеству инженерии и отделки, сравнивать их в одном списке по площади было бы некорректно. Полный каталог со всеми классами — на странице «Бизнес-центры Минска».',
+          'Рейтинг нарочно ограничен высшим классом A — самым качественным по инженерии, отделке и расположению. Все бизнес-центры Минска, включая другие классы, — в полном каталоге на странице «Бизнес-центры Минска».',
       },
     ];
-  }, [ranking, byClass]);
+  }, [ranking, classATotal]);
 
   useEffect(() => {
     setGenericPageMeta({ title: TITLE, description: DESCRIPTION, url: PAGE_URL, ogType: 'article' });
@@ -137,7 +146,7 @@ export function BusinessCentersRankingPage() {
 
   useEffect(() => {
     if (ranking.length === 0) return;
-    setItemListJsonLd(ranking.map((c) => ({ name: shortName(c), url: `https://redevelopment.pro/minsk/bcminsk/${c.slug}` })));
+    setItemListJsonLd(ranking.map((r) => ({ name: shortName(r.center), url: `https://redevelopment.pro/minsk/bcminsk/${r.center.slug}` })));
     setFaqJsonLd(faqItems);
   }, [ranking, faqItems]);
 
@@ -178,15 +187,16 @@ export function BusinessCentersRankingPage() {
             <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">{PAGE_H1}</h1>
           </div>
           <p className="text-sm leading-relaxed text-ink-muted">
-            Сданные бизнес-центры класса A и B+ — двух верхних ярусов деловой классификации, отсортированные по общей
-            площади. Методика — ниже, полностью открытая: никаких скрытых баллов, только два прозрачных критерия.
+            Только бизнес-центры класса A с рейтингом на Яндекс.Картах не ниже {RATING_THRESHOLD} из 5. Методика —
+            ниже, полностью открытая: два прозрачных условия, никаких скрытых баллов.
           </p>
           <div className="rounded-control border border-border bg-surface px-4 py-3 text-xs text-ink-muted">
-            <strong className="text-ink">Методика (обновлено {DATE_PUBLISHED}):</strong> в рейтинг попадают только
-            сданные БЦ класса A и B+; внутри списка — сортировка по общей площади по убыванию. Строящиеся объекты — в
-            отдельном разделе{' '}
-            <Link to="/minsk/bcminsk/stroyashchiesya" className="font-semibold text-primary-hover hover:underline">
-              «Строящиеся бизнес-центры»
+            <strong className="text-ink">Методика (обновлено {DATE_PUBLISHED}):</strong> деловой класс A и рейтинг на
+            Яндекс.Картах от {RATING_THRESHOLD} из 5 — оба условия обязательны. Рейтинг распознан пока не у всех БЦ
+            каталога: здание без него в список не попадает, даже если по факту хорошее — это честный пробел данных,
+            не оценка. Полный список класса A — на{' '}
+            <Link to="/minsk/bcminsk/class/a" className="font-semibold text-primary-hover hover:underline">
+              хабе класса A
             </Link>
             .
           </div>
@@ -196,8 +206,11 @@ export function BusinessCentersRankingPage() {
 
         {centers !== null && (
           <div className="flex flex-col gap-3">
-            {ranking.map((c, i) => (
-              <RankingRow key={c.slug} center={c} place={i + 1} />
+            {ranking.length === 0 && (
+              <p className="p-4 text-sm text-ink-muted">Пока ни один бизнес-центр не набрал рейтинг {RATING_THRESHOLD} и выше в базе.</p>
+            )}
+            {ranking.map((r, i) => (
+              <RankingRow key={r.center.slug} ranked={r} place={i + 1} />
             ))}
           </div>
         )}

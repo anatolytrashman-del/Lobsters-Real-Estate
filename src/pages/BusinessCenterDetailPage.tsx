@@ -45,7 +45,7 @@ import { glassCardClass, glassCardShadow, glassPillClass, glassPillShadow } from
 import { Badge } from '../components/ui/Badge';
 import { PhotoBlock, FactRow, FactTile } from '../components/businessCenters/BusinessCenterVisuals';
 import { setBreadcrumbJsonLd, setFaqJsonLd, setNoIndex, clearNoIndex, setBusinessCenterPageMeta } from '../lib/pageMeta';
-import { shortName, sortByShortName } from '../lib/businessCenterDisplay';
+import { shortName, sortByShortName, mapRatingFromHighlights } from '../lib/businessCenterDisplay';
 import { nearestMetroStation } from '../lib/metroStations';
 import { metroHubDistance, metroHubUrl } from '../lib/businessCenterHubs';
 import type { BusinessCenter, HighlightIconKey, TechnicalParam, TenantOrganization } from '../data/businessCenters';
@@ -136,7 +136,7 @@ export function BusinessCenterDetailPage() {
   // с заголовком (см. комментарий у JSX ниже) — остальные блоки остаются в
   // общем списке как были.
   const ratingHighlight = useMemo(() => center?.highlights.find((h) => h.icon === 'rating') ?? null, [center]);
-  const mapRating = useMemo(() => (ratingHighlight ? extractMapRating(ratingHighlight.text) : null), [ratingHighlight]);
+  const mapRating = useMemo(() => mapRatingFromHighlights(center?.highlights ?? []), [center]);
   // Точное расстояние до метро из 2GIS (владелец подключает в параллельной
   // ветке, 2026-09-06) — по прямой, в метрах. Когда есть — показывается
   // ВМЕСТО center.metro (владелец, 2026-09-06: "дублируется метро... оставь
@@ -318,7 +318,7 @@ export function BusinessCenterDetailPage() {
                 {mapRating && (
                   <Badge tone="neutral" title={ratingHighlight?.text}>
                     <Star className="h-3 w-3 shrink-0 fill-current" />
-                    {mapRating.value} · {mapRating.source}
+                    {mapRating.label} · {mapRating.source}
                   </Badge>
                 )}
                 {/* Рейтинг 2ГИС — отдельный источник от Яндекс.Карт выше,
@@ -884,16 +884,6 @@ const HIGHLIGHT_ICONS: Record<HighlightIconKey, typeof FileText> = {
 // первой очереди, не среднее по всем трём, честный, но частичный
 // компромисс ради компактности бейджа. Формат не узнан — просто не
 // показываем бейдж, не гадаем.
-function extractMapRating(text: string): { value: string; source: string } | null {
-  // ** снимаем перед разбором — иначе "**4,8** из 5" не матчится по числу
-  // сразу за "из 5" (между ними остаются сами звёздочки markdown-жирного).
-  const line = text.split('\n')[0].replace(/\*/g, '');
-  const valueMatch = line.match(/([\d]+[.,]\d+)\s*из\s*5/);
-  if (!valueMatch) return null;
-  const sourceMatch = line.match(/^[-\s]*([^:]+):/);
-  return { value: valueMatch[1], source: sourceMatch ? sourceMatch[1].trim() : 'карты' };
-}
-
 // Расписание из 2GIS (владелец, 2026-09-06) — группирует подряд идущие дни
 // с одинаковыми часами в одну строку ("Пн–Пт: 08:00–17:00"), а не по строке
 // на каждый день недели — иначе для типового графика 5/2 получилось бы 5

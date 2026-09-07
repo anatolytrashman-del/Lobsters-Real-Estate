@@ -8,6 +8,27 @@ import type { BusinessCenter } from '../data/businessCenters';
 // Владелец, увидев красные пилюли "Класс А" на карточках хаба: "убираем
 // красный оттенок тут, не нравится, делай нейтральным" — A перестал быть
 // 'primary' (красный/розовый в этой теме), остальные классы не трогал.
+// Рейтинг с карт (Яндекс.Карты) — свободный текст в первом highlight с
+// icon='rating' (пример: "- Яндекс.Карты: **4,8** из 5 (836 оценок...)"),
+// структурного поля под него нет. Общий парсер — раньше жил только внутри
+// BusinessCenterDetailPage.tsx (бейдж у заголовка), теперь нужен ещё и
+// рейтингу /minsk/bcminsk/reyting, поэтому вынесен сюда как единственный
+// источник разбора этой строки.
+export function mapRatingFromHighlights(
+  highlights: BusinessCenter['highlights'],
+): { value: number; label: string; source: string } | null {
+  const ratingHighlight = highlights.find((h) => h.icon === 'rating');
+  if (!ratingHighlight) return null;
+  // ** снимаем перед разбором — иначе "**4,8** из 5" не матчится по числу
+  // сразу за "из 5" (между ними остаются сами звёздочки markdown-жирного).
+  const line = ratingHighlight.text.split('\n')[0].replace(/\*/g, '');
+  const valueMatch = line.match(/(\d+[.,]\d+)\s*из\s*5/);
+  if (!valueMatch) return null;
+  const sourceMatch = line.match(/^[-\s]*([^:]+):/);
+  const label = valueMatch[1];
+  return { value: parseFloat(label.replace(',', '.')), label, source: sourceMatch ? sourceMatch[1].trim() : 'карты' };
+}
+
 export const businessClassTone: Record<NonNullable<BusinessCenter['businessClass']>, 'primary' | 'success' | 'neutral'> = {
   A: 'neutral',
   'B+': 'success',
