@@ -11,6 +11,7 @@ function fromRow(row: MarketSnapshotRow): MarketSnapshot {
     sliceType: row.slice_type as MarketSnapshot['sliceType'],
     sliceKey: row.slice_key,
     currency: row.currency,
+    unit: row.unit,
     n: row.n,
     median: row.median,
     p25: row.p25,

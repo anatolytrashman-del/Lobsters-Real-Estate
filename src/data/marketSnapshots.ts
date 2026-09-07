@@ -1,9 +1,9 @@
 // Месячные агрегаты рынка коммерческой недвижимости — public.market_snapshots
 // (см. scripts/build-market-snapshots.mjs, ANALYTICSPLAN.md §3.1, §9 спринт 1).
-// Сейчас единственный сегмент с данными — 'ofisy_bc' (офисы в бизнес-центрах,
-// city-wide, из business_center_offers). Тип сегмента открытый (string), не
-// строгий enum — остальные сегменты плана (торговля/склады/офисы вне БЦ)
-// появятся позже, без изменения схемы.
+// Сегменты: 'ofisy_bc' (офисы в БЦ), 'torgovye' (торговые), 'sklady' (склады)
+// — цена за м² (unit='usd_per_sqm'); 'mashinomesta' (машиноместа) — цена за
+// ОБЪЕКТ целиком, не за м² (unit='usd_total', см. sync-citywide-parking-
+// offers.mjs). Тип сегмента открытый (string), не строгий enum.
 export interface MarketSnapshot {
   id: number;
   period: string; // 'YYYY-MM-01'
@@ -12,6 +12,7 @@ export interface MarketSnapshot {
   sliceType: 'city' | 'class' | 'district' | 'building_type';
   sliceKey: string;
   currency: string;
+  unit: string; // 'usd_per_sqm' | 'usd_total'
   n: number;
   median: number | null;
   p25: number | null;
@@ -26,6 +27,7 @@ export interface MarketSnapshotRow {
   slice_type: string;
   slice_key: string;
   currency: string;
+  unit: string;
   n: number;
   median: number | null;
   p25: number | null;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Boxes, Building2, Lock, Store } from 'lucide-react';
+import { ArrowRight, Boxes, Building2, CarFront, Lock, Store } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { setBreadcrumbJsonLd, setGenericPageMeta, setOrganizationJsonLd } from '../lib/pageMeta';
@@ -37,15 +37,22 @@ function formatMoney(n: number, deal: 'rent' | 'sale'): string {
   return `$${rounded.toLocaleString('ru-RU')}${deal === 'rent' ? '/м²/мес' : '/м²'}`;
 }
 
+// Машиноместа — цена за объект целиком (usd_total), не за м², своё
+// форматирование без "/м²".
+function formatParkingMoney(n: number, deal: 'rent' | 'sale'): string {
+  return `$${Math.round(n).toLocaleString('ru-RU')}${deal === 'rent' ? '/мес' : ''}`;
+}
+
 // Другие сегменты плана (ANALYTICSPLAN.md §1.1/§4.1) — пока без собственного
 // скрапа и без привязки объявлений к типу здания, поэтому здесь только
 // заглушки "скоро", не тонкие пустые страницы.
-const UPCOMING_SEGMENTS = ['Первичный рынок', 'Готовый арендный бизнес', 'Машиноместа и паркинги'];
+const UPCOMING_SEGMENTS = ['Первичный рынок', 'Готовый арендный бизнес'];
 
 export function MarketAnalyticsHub() {
   const [officeSnapshots, setOfficeSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [retailSnapshots, setRetailSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [warehouseSnapshots, setWarehouseSnapshots] = useState<MarketSnapshot[] | null>(null);
+  const [parkingSnapshots, setParkingSnapshots] = useState<MarketSnapshot[] | null>(null);
 
   useEffect(() => {
     fetchLatestMarketSnapshots('ofisy_bc')
@@ -57,6 +64,9 @@ export function MarketAnalyticsHub() {
     fetchLatestMarketSnapshots('sklady')
       .then(setWarehouseSnapshots)
       .catch(() => setWarehouseSnapshots([]));
+    fetchLatestMarketSnapshots('mashinomesta')
+      .then(setParkingSnapshots)
+      .catch(() => setParkingSnapshots([]));
   }, []);
 
   const cityRent = useMemo(
@@ -83,6 +93,14 @@ export function MarketAnalyticsHub() {
     () => warehouseSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'sale'),
     [warehouseSnapshots],
   );
+  const parkingCityRent = useMemo(
+    () => parkingSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'rent'),
+    [parkingSnapshots],
+  );
+  const parkingCitySale = useMemo(
+    () => parkingSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'sale'),
+    [parkingSnapshots],
+  );
   const period =
     cityRent?.period ??
     citySale?.period ??
@@ -90,6 +108,8 @@ export function MarketAnalyticsHub() {
     retailCitySale?.period ??
     warehouseCityRent?.period ??
     warehouseCitySale?.period ??
+    parkingCityRent?.period ??
+    parkingCitySale?.period ??
     null;
 
   useEffect(() => {
@@ -228,6 +248,48 @@ export function MarketAnalyticsHub() {
                 </span>
                 <span className="pl-6.5 text-xs text-ink-muted">
                   {warehouseCitySale?.median != null ? `Медиана: ${formatMoney(warehouseCitySale.median, 'sale')}` : 'По районам'}
+                </span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+            </Link>
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-bold text-ink">Машиноместа и паркинги</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Link
+              to="/minsk/analytics/mashinomesta/arenda"
+              className={cn('flex items-center justify-between gap-2 p-4 transition-colors hover:border-primary/40', glassCardClass)}
+              style={glassCardShadow}
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2.5 font-medium text-ink">
+                  <CarFront className="h-4 w-4 shrink-0 text-ink-faint" />
+                  Ставки аренды
+                </span>
+                <span className="pl-6.5 text-xs text-ink-muted">
+                  {parkingCityRent?.median != null
+                    ? `Медиана: ${formatParkingMoney(parkingCityRent.median, 'rent')}`
+                    : 'По районам и типу парковки'}
+                </span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+            </Link>
+            <Link
+              to="/minsk/analytics/mashinomesta/prodazha"
+              className={cn('flex items-center justify-between gap-2 p-4 transition-colors hover:border-primary/40', glassCardClass)}
+              style={glassCardShadow}
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2.5 font-medium text-ink">
+                  <CarFront className="h-4 w-4 shrink-0 text-ink-faint" />
+                  Цены продажи
+                </span>
+                <span className="pl-6.5 text-xs text-ink-muted">
+                  {parkingCitySale?.median != null
+                    ? `Медиана: ${formatParkingMoney(parkingCitySale.median, 'sale')}`
+                    : 'По районам и типу парковки'}
                 </span>
               </span>
               <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />

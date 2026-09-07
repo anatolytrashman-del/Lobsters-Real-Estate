@@ -16,6 +16,7 @@ import { MarketAnalyticsHub } from './pages/MarketAnalyticsHub';
 import { OfficeAnalyticsPage } from './pages/OfficeAnalyticsPage';
 import { RetailAnalyticsPage } from './pages/RetailAnalyticsPage';
 import { WarehouseAnalyticsPage } from './pages/WarehouseAnalyticsPage';
+import { ParkingAnalyticsPage } from './pages/ParkingAnalyticsPage';
 import { MinskMirAnalyticsPage } from './pages/MinskMirAnalyticsPage';
 import { DistrictsAnalyticsPage } from './pages/DistrictsAnalyticsPage';
 import { AnalyticsMethodologyPage } from './pages/AnalyticsMethodologyPage';
@@ -205,6 +206,8 @@ export default function App() {
       <Route path="/minsk/analytics/torgovye/prodazha" element={<RetailAnalyticsPage deal="sale" />} />
       <Route path="/minsk/analytics/sklady/arenda" element={<WarehouseAnalyticsPage deal="rent" />} />
       <Route path="/minsk/analytics/sklady/prodazha" element={<WarehouseAnalyticsPage deal="sale" />} />
+      <Route path="/minsk/analytics/mashinomesta/arenda" element={<ParkingAnalyticsPage deal="rent" />} />
+      <Route path="/minsk/analytics/mashinomesta/prodazha" element={<ParkingAnalyticsPage deal="sale" />} />
       <Route path="/minsk/analytics/minsk-mir" element={<MinskMirAnalyticsPage />} />
       <Route path="/minsk/analytics/rajony" element={<DistrictsAnalyticsPage />} />
       <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />

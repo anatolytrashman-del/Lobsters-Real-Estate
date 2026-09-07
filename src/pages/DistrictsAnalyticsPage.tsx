@@ -195,6 +195,14 @@ export function DistrictsAnalyticsPage() {
             — там расстояние до метро и микрорайон считаются по координатам конкретного здания.
           </p>
           <p className="text-sm text-ink-muted">
+            Машиномест в этой таблице нет — там цена считается за объект целиком, не за м², смешивать с остальными
+            тремя колонками в одних единицах было бы некорректно; сводка по районам для них — на{' '}
+            <Link to="/minsk/analytics/mashinomesta/arenda" className="text-primary-hover hover:underline">
+              собственной странице
+            </Link>
+            .
+          </p>
+          <p className="text-sm text-ink-muted">
             Цены на продажу и подробности по каждому сегменту — на страницах{' '}
             <Link to="/minsk/analytics/ofisy/arenda" className="text-primary-hover hover:underline">
               офисов

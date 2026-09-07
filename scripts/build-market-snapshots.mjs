@@ -24,8 +24,13 @@
 //   конкретно (то же общее поле commercial_building, что и у розницы, не
 //   специализированное под складской класс/направление — тех данных у
 //   источников нет вовсе, см. комментарий в самом sync-скрипте).
-// Остальные сегменты плана (офисы вне БЦ/первичка/ГАБ/машиноместа) не
-// собираются — для них нет ни скрапа, ни таблицы (ANALYTICSPLAN.md §3.1 п.2).
+// - 'mashinomesta' (машиноместа, city-wide, только Kufar — см.
+//   sync-citywide-parking-offers.mjs) — ЦЕНА ЗА ОБЪЕКТ ЦЕЛИКОМ, не за м²:
+//   агрегируется по полю price_total (не price_per_sqm), unit снимков —
+//   'usd_total'. Срезы city/district/building_type (последнее — тип
+//   парковки: Подземная/Многоуровневая/Наземная/Открытая/На крыше).
+// Остальные сегменты плана (офисы вне БЦ/первичка/ГАБ) не собираются — для
+// них нет ни скрапа, ни таблицы (ANALYTICSPLAN.md §3.1 п.2).
 //
 // Перед агрегацией внутри каждого среза — фильтр price_per_sqm>0 и обрезка
 // по 5–95 перцентилю (ANALYTICSPLAN.md §3.1 п.4), но только при n≥8 — на
@@ -86,17 +91,23 @@ function firstOfMonth() {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
 }
 
-// Общая агрегация: rows — объекты с price_per_sqm/deal_type + произвольным
-// набором доп. полей для среза (extraSlices описывает, какие поля и в какой
-// slice_type превращать). Всегда добавляет срез city ('all').
-function buildSnapshotsForSegment(rows, segment, period, extraSlices) {
+// Общая агрегация: rows — объекты с deal_type + числовым полем-значением
+// (по умолчанию price_per_sqm, но для машиномест — price_total, см.
+// сегмент 'mashinomesta' ниже: там цена за объект целиком, не за м², своя
+// единица 'usd_total' записывается в новую колонку market_snapshots.unit)
+// + произвольным набором доп. полей для среза (extraSlices описывает,
+// какие поля и в какой slice_type превращать). Всегда добавляет срез city
+// ('all').
+function buildSnapshotsForSegment(rows, segment, period, extraSlices, options = {}) {
+  const valueField = options.valueField ?? 'price_per_sqm';
+  const unit = options.unit ?? 'usd_per_sqm';
   const snapshots = [];
   for (const deal of ['rent', 'sale']) {
-    const dealRows = rows.filter((r) => r.deal_type === deal && r.price_per_sqm != null && Number(r.price_per_sqm) > 0);
+    const dealRows = rows.filter((r) => r.deal_type === deal && r[valueField] != null && Number(r[valueField]) > 0);
     if (dealRows.length === 0) continue;
 
-    const citySummary = summarize(dealRows.map((r) => Number(r.price_per_sqm)));
-    snapshots.push({ period, segment, deal, slice_type: 'city', slice_key: 'all', currency: 'USD', ...citySummary });
+    const citySummary = summarize(dealRows.map((r) => Number(r[valueField])));
+    snapshots.push({ period, segment, deal, slice_type: 'city', slice_key: 'all', currency: 'USD', unit, ...citySummary });
 
     for (const { sliceType, field } of extraSlices) {
       const grouped = new Map();
@@ -104,10 +115,10 @@ function buildSnapshotsForSegment(rows, segment, period, extraSlices) {
         const key = r[field];
         if (!key) continue;
         if (!grouped.has(key)) grouped.set(key, []);
-        grouped.get(key).push(Number(r.price_per_sqm));
+        grouped.get(key).push(Number(r[valueField]));
       }
       for (const [key, values] of grouped) {
-        snapshots.push({ period, segment, deal, slice_type: sliceType, slice_key: key, currency: 'USD', ...summarize(values) });
+        snapshots.push({ period, segment, deal, slice_type: sliceType, slice_key: key, currency: 'USD', unit, ...summarize(values) });
       }
     }
   }
@@ -155,7 +166,7 @@ async function main() {
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await supabase
         .from('citywide_offers')
-        .select('deal_type,price_per_sqm,district,building_type')
+        .select('deal_type,price_per_sqm,price_total,district,building_type')
         .eq('segment', segment)
         .range(from, from + PAGE - 1);
       if (error) throw error;
@@ -180,6 +191,28 @@ async function main() {
   console.log(`Загружено ${warehouseOffers.length} объявлений складов (citywide_offers).`);
   if (warehouseOffers.length > 0) {
     snapshots.push(...buildSnapshotsForSegment(warehouseOffers, 'sklady', period, [{ sliceType: 'district', field: 'district' }]));
+  }
+
+  // Машиноместа — цена за объект целиком (price_total), не за м²
+  // (price_per_sqm у этого сегмента всегда NULL, см. sync-citywide-parking-
+  // offers.mjs). building_type тут хранит тип парковки (Подземная/
+  // Многоуровневая/...) — распределение живое, не вырожденное, как у
+  // складов, поэтому срез оставлен.
+  const parkingOffers = await fetchCitywideOffers('mashinomesta');
+  console.log(`Загружено ${parkingOffers.length} объявлений машиномест (citywide_offers).`);
+  if (parkingOffers.length > 0) {
+    snapshots.push(
+      ...buildSnapshotsForSegment(
+        parkingOffers,
+        'mashinomesta',
+        period,
+        [
+          { sliceType: 'district', field: 'district' },
+          { sliceType: 'building_type', field: 'building_type' },
+        ],
+        { valueField: 'price_total', unit: 'usd_total' },
+      ),
+    );
   }
 
   console.log(`Посчитано ${snapshots.length} срезов за ${period}.`);

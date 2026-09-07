@@ -80,6 +80,8 @@ const STATIC_PATHS = [
   'minsk/analytics/torgovye/prodazha',
   'minsk/analytics/sklady/arenda',
   'minsk/analytics/sklady/prodazha',
+  'minsk/analytics/mashinomesta/arenda',
+  'minsk/analytics/mashinomesta/prodazha',
   'minsk/analytics/minsk-mir',
   'minsk/analytics/rajony',
   'minsk/minsk-mir',

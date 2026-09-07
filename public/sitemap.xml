@@ -61,6 +61,18 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://redevelopment.pro/minsk/analytics/mashinomesta/arenda</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://redevelopment.pro/minsk/analytics/mashinomesta/prodazha</loc>
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>https://redevelopment.pro/minsk/analytics/minsk-mir</loc>
     <lastmod>2026-09-07</lastmod>
     <changefreq>monthly</changefreq>
