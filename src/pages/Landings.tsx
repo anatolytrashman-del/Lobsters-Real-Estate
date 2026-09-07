@@ -100,6 +100,64 @@ const LANDINGS: LandingEntry[] = [
     url: 'https://redevelopment.pro/minsk/bcminsk/ulitsa/pr-t-pobediteley',
     status: 'in-progress',
   },
+  // Раздел «Аналитика рынка» (ANALYTICSPLAN.md, спринты 1-3) — все
+  // страницы 'in-progress': методика/охват сегментов ещё дополняются,
+  // первичка/ГАБ/квартальный обзор из плана не начаты (нет источника
+  // данных на первичку/ГАБ, обзору нужен второй месячный снимок).
+  {
+    title: 'Хаб «Аналитика рынка»',
+    description:
+      '/minsk/analytics — сводка по всем живым сегментам (офисы в БЦ, торговые помещения, склады, машиноместа), ссылки на район и на сравнение районов. Доработать: первичка/ГАБ пока без данных (нет источника), квартальный обзор ждёт второй месячный снимок.',
+    url: 'https://redevelopment.pro/minsk/analytics',
+    status: 'in-progress',
+  },
+  {
+    title: 'Методика аналитики рынка',
+    description: '/minsk/analytics/metodika — источники, дедупликация, пороги достаточности выборки, обновление раз в месяц.',
+    url: 'https://redevelopment.pro/minsk/analytics/metodika',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: офисы в БЦ',
+    description:
+      'Ставки аренды и цены продажи по классам A/B+/B/C и районам, сравнение с «Твоей столицей» и Colliers. /minsk/analytics/ofisy/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/ofisy/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: торговые помещения',
+    description:
+      'Ставки аренды и цены продажи по районам и типу здания, city-wide (Kufar + Realt, с дедупликацией). /minsk/analytics/torgovye/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/torgovye/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: склады',
+    description:
+      'Ставки аренды и цены продажи складов по районам, city-wide (Kufar + Realt). Без разбивки по типу здания — у складов оно почти всегда не заполнено источниками. /minsk/analytics/sklady/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/sklady/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: машиноместа и паркинги',
+    description:
+      'Цена за объект целиком (не за м²) по районам и типу парковки — только Kufar (у Realt нет поля, отличающего машиноместо от гаража-бокса). /minsk/analytics/mashinomesta/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/mashinomesta/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: Минск Мир',
+    description: 'Первичный и вторичный рынок конкретно в Минск Мире — /minsk/analytics/minsk-mir.',
+    url: 'https://redevelopment.pro/minsk/analytics/minsk-mir',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: районы Минска',
+    description:
+      'Сравнение медианной ставки аренды по административным районам сразу по трём сегментам (офисы в БЦ / торговля / склады) — /minsk/analytics/rajony. Машиноместа не в этой таблице — там другая единица цены (за объект, не за м²).',
+    url: 'https://redevelopment.pro/minsk/analytics/rajony',
+    status: 'in-progress',
+  },
 ];
 
 export function Landings() {
