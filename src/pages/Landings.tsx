@@ -86,6 +86,13 @@ const LANDINGS: LandingEntry[] = [
       status: 'in-progress',
     }),
   ),
+  {
+    title: 'Хаб «Бизнес-центры у метро»',
+    description:
+      'Пример: /minsk/bcminsk/metro/molodezhnaya — карточки БЦ в радиусе 1,5 км от станции, отсортированы по расстоянию. Ещё 32 такие страницы (по одной на станцию с хотя бы 1 БЦ). Доработать: проверить формулировки FAQ, при желании — свои тексты под ключевые станции (Молодёжная/Академия наук/Пушкинская — самые насыщенные).',
+    url: 'https://redevelopment.pro/minsk/bcminsk/metro/molodezhnaya',
+    status: 'in-progress',
+  },
 ];
 
 export function Landings() {
