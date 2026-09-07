@@ -33,10 +33,12 @@ import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/b
 import {
   CLASS_SLUG_TO_VALUE,
   DISTRICT_SLUG_TO_NAME,
+  MICRODISTRICT_SLUG_TO_NAME,
   classDistrictHubUrl,
   classHubUrl,
   districtHubUrl,
   districtPrepositional,
+  microdistrictHubUrl,
 } from '../lib/businessCenterHubs';
 import type { BusinessCenter } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
@@ -178,7 +180,11 @@ function BusinessCenterCard({ center }: { center: BusinessCenter }) {
 // упрощение: класс и район не комбинируются в одном URL (как и в примерах
 // самого документа) — выбор одной оси сбрасывает другую.
 export function BusinessCentersMinskPage() {
-  const { classSlug, districtSlug } = useParams<{ classSlug?: string; districtSlug?: string }>();
+  const { classSlug, districtSlug, microdistrictSlug } = useParams<{
+    classSlug?: string;
+    districtSlug?: string;
+    microdistrictSlug?: string;
+  }>();
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
   // Боковое меню на мобильном скрыто за плавающей кнопкой (владелец, 2026-09-04:
   // "сделай конструктивно как на странице Минск Мира, чтобы оно с мобилки
@@ -187,11 +193,16 @@ export function BusinessCentersMinskPage() {
 
   const classFilter = classSlug ? (CLASS_SLUG_TO_VALUE[classSlug] ?? null) : null;
   const districtFilter = districtSlug ? (DISTRICT_SLUG_TO_NAME[districtSlug] ?? null) : null;
+  // Микрорайон — отдельная, НЕ комбинируемая с классом/районом ось (владелец,
+  // 2026-09-07: "Бизнес-центры Уручье" и т.п.) — своя ветка роутинга
+  // (App.tsx), поэтому classSlug/districtSlug на этом маршруте всегда пусты.
+  const microdistrictFilter = microdistrictSlug ? (MICRODISTRICT_SLUG_TO_NAME[microdistrictSlug] ?? null) : null;
   // Невалидный slug в /class/:classSlug или /raion/:districtSlug — не
   // существующий класс/район, не просто "пусто" (тот же принцип soft-404,
   // что и у неизвестного :slug на BusinessCenterDetailPage.tsx).
   const badClassSlug = Boolean(classSlug) && classFilter === null;
   const badDistrictSlug = Boolean(districtSlug) && districtFilter === null;
+  const badMicrodistrictSlug = Boolean(microdistrictSlug) && microdistrictFilter === null;
   // Пересечение класс×район без единого БЦ (владелец, 2026-09-06: "делай
   // структуру урлов [дерево пересечений]") — тот же soft-404, что и у
   // невалидного slug: сам план (`BCMINSK_SEO_PLAN.md`) явно предупреждал не
@@ -202,7 +213,7 @@ export function BusinessCentersMinskPage() {
     districtFilter !== null &&
     centers !== null &&
     !centers.some((c) => c.businessClass === classFilter && c.district === districtFilter);
-  const notFound = badClassSlug || badDistrictSlug || comboEmpty;
+  const notFound = badClassSlug || badDistrictSlug || badMicrodistrictSlug || comboEmpty;
 
   useEffect(() => {
     fetchBusinessCenters()
@@ -222,7 +233,9 @@ export function BusinessCentersMinskPage() {
           ? `Бизнес-центры класса ${classFilter} в Минске`
           : districtFilter
             ? `Бизнес-центры Минска: ${districtFilter} район`
-            : TITLE;
+            : microdistrictFilter
+              ? `Бизнес-центры ${microdistrictFilter}`
+              : TITLE;
     const hubDescription =
       classFilter && districtFilter
         ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска: адреса, площадь, этажность, метро.`
@@ -230,7 +243,9 @@ export function BusinessCentersMinskPage() {
           ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
           : districtFilter
             ? `Бизнес-центры в ${districtPrepositional(districtFilter)} районе Минска: адреса, деловой класс, площадь, метро.`
-            : DESCRIPTION;
+            : microdistrictFilter
+              ? `Бизнес-центры в микрорайоне ${microdistrictFilter} (Минск): адреса, деловой класс, площадь, метро.`
+              : DESCRIPTION;
     const hubUrl =
       classFilter && districtFilter
         ? `https://redevelopment.pro${classDistrictHubUrl(classFilter, districtFilter) ?? ''}`
@@ -238,7 +253,9 @@ export function BusinessCentersMinskPage() {
           ? `https://redevelopment.pro${classHubUrl(classFilter)}`
           : districtFilter
             ? `https://redevelopment.pro${districtHubUrl(districtFilter) ?? ''}`
-            : PAGE_URL;
+            : microdistrictFilter
+              ? `https://redevelopment.pro${microdistrictHubUrl(microdistrictFilter) ?? ''}`
+              : PAGE_URL;
 
     setGenericPageMeta({ title: hubTitle, description: hubDescription, url: hubUrl, image: OG_IMAGE, ogType: 'article' });
     setArticleJsonLd({
@@ -257,18 +274,18 @@ export function BusinessCentersMinskPage() {
             { name: `Класс ${classFilter}`, url: `https://redevelopment.pro${classHubUrl(classFilter)}` },
             { name: `${districtFilter} район` },
           ]
-        : classFilter || districtFilter
+        : classFilter || districtFilter || microdistrictFilter
           ? [
               { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
               { name: 'Бизнес-центры Минска', url: PAGE_URL },
-              { name: classFilter ? `Класс ${classFilter}` : (districtFilter as string) },
+              { name: classFilter ? `Класс ${classFilter}` : ((districtFilter ?? microdistrictFilter) as string) },
             ]
           : [
               { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
               { name: 'Бизнес-центры Минска' },
             ],
     );
-  }, [classFilter, districtFilter, notFound]);
+  }, [classFilter, districtFilter, microdistrictFilter, notFound]);
 
   // Districts/классы для сайдбара — считаются НЕ от всего `centers`, а от
   // среза по ДРУГОЙ активной оси (владелец, 2026-09-06: "структура урлов
@@ -313,12 +330,29 @@ export function BusinessCentersMinskPage() {
     return counts;
   }, [centersForDistrictList]);
 
+  // Микрорайоны — независимая ось (не пересекается с классом/районом, см.
+  // комментарий у microdistrictFilter), поэтому считается от ВСЕХ centers,
+  // не от среза по другой оси. Список ограничен теми, для кого есть слаг
+  // (MICRODISTRICT_SLUGS — только районы с хотя бы 1 БЦ на момент матчинга,
+  // см. businessCenterHubs.ts) — сортировка по числу БЦ, не по алфавиту:
+  // это открывающий список, не устоявшийся набор из 9 админ-районов.
+  const microdistricts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of centers ?? []) if (c.microdistrict) counts[c.microdistrict] = (counts[c.microdistrict] ?? 0) + 1;
+    return Object.entries(counts)
+      .filter(([name]) => microdistrictHubUrl(name) !== null)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
+  }, [centers]);
+
   const visibleCenters = useMemo(
     () =>
       (centers ?? []).filter(
-        (c) => (classFilter === null || c.businessClass === classFilter) && (districtFilter === null || c.district === districtFilter),
+        (c) =>
+          (classFilter === null || c.businessClass === classFilter) &&
+          (districtFilter === null || c.district === districtFilter) &&
+          (microdistrictFilter === null || c.microdistrict === microdistrictFilter),
       ),
-    [centers, classFilter, districtFilter],
+    [centers, classFilter, districtFilter, microdistrictFilter],
   );
 
   // Боковой список — те же фильтры, что и у самой сетки карточек ниже: список
@@ -366,7 +400,9 @@ export function BusinessCentersMinskPage() {
         ? `класса ${classFilter}`
         : districtFilter
           ? `в ${districtPrepositional(districtFilter)} районе`
-          : 'в Минске';
+          : microdistrictFilter
+            ? `в ${microdistrictFilter}`
+            : 'в Минске';
   const biggest = useMemo(
     () => visibleCenters.filter((c) => c.totalArea != null).sort((a, b) => (b.totalArea ?? 0) - (a.totalArea ?? 0))[0] ?? null,
     [visibleCenters],
@@ -404,7 +440,7 @@ export function BusinessCentersMinskPage() {
     [districtCounts],
   );
 
-  const showCatalogSeoText = !classFilter && !districtFilter && centers !== null && centers.length > 0;
+  const showCatalogSeoText = !classFilter && !districtFilter && !microdistrictFilter && centers !== null && centers.length > 0;
 
   const faqItems = useMemo(() => {
     const items: { question: string; answer: string }[] = [];
@@ -461,7 +497,9 @@ export function BusinessCentersMinskPage() {
         ? `Бизнес-центры класса ${classFilter} в Минске`
         : districtFilter
           ? `Бизнес-центры Минска: ${districtFilter} район`
-          : PAGE_H1;
+          : microdistrictFilter
+            ? `Бизнес-центры ${microdistrictFilter}`
+            : PAGE_H1;
   const heroIntro =
     classFilter && districtFilter
       ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска — адреса, площадь, этажность, метро.`
@@ -469,6 +507,8 @@ export function BusinessCentersMinskPage() {
         ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров делового класса ${classFilter} в Минске — адреса, площадь, этажность, метро.`
         : districtFilter
           ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в ${districtPrepositional(districtFilter)} районе Минска — сравнивайте по классу, площади и расположению.`
+          : microdistrictFilter
+            ? `${centers ? `${visibleCenters.length} ` : ''}бизнес-центров в микрорайоне ${microdistrictFilter} (Минск) — адреса, деловой класс, площадь, метро.`
           : INTRO_TEXT;
 
   // Содержимое бокового меню — общий JSX для десктопной sticky-колонки и
@@ -508,6 +548,37 @@ export function BusinessCentersMinskPage() {
           </Link>
         );
       })}
+
+      {microdistricts.length > 0 && (
+        <>
+          <div className="my-2 border-t border-border" />
+          <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">
+            Микрорайон
+          </span>
+          {/* Отдельная, не пересекающаяся с классом/районом ось (владелец,
+              2026-09-07: "Бизнес-центры Уручье" — как люди сами говорят, не
+              административный район) — переход сюда уводит с текущего
+              хаба класса/района на отдельный маршрут. */}
+          {microdistricts.map(([name, count]) => {
+            const url = microdistrictHubUrl(name);
+            if (!url) return null;
+            return (
+              <Link
+                key={name}
+                to={url}
+                onClick={() => setMobileNavOpen(false)}
+                className={cn(
+                  'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
+                  microdistrictFilter === name ? 'bg-primary/10 font-bold text-primary' : 'font-medium text-ink',
+                )}
+              >
+                <span>{name}</span>
+                <span className="text-xs text-ink-faint">{count}</span>
+              </Link>
+            );
+          })}
+        </>
+      )}
 
       {availableClasses.length > 0 && (
         <>

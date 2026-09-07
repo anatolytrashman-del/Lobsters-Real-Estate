@@ -9,6 +9,7 @@ function fromRow(row: BusinessCenterRow): BusinessCenter {
     name: row.name,
     address: row.address,
     district: row.district,
+    microdistrict: row.microdistrict,
     businessClass: (row.business_class as BusinessCenter['businessClass']) ?? null,
     totalArea: row.total_area,
     yearBuilt: row.year_built,
@@ -47,6 +48,7 @@ function toPayload(input: Partial<BusinessCenterInput>) {
   if (input.name !== undefined) payload.name = input.name;
   if (input.address !== undefined) payload.address = input.address;
   if (input.district !== undefined) payload.district = input.district;
+  if (input.microdistrict !== undefined) payload.microdistrict = input.microdistrict;
   if (input.businessClass !== undefined) payload.business_class = input.businessClass;
   if (input.totalArea !== undefined) payload.total_area = input.totalArea;
   if (input.yearBuilt !== undefined) payload.year_built = input.yearBuilt;

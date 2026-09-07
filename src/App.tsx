@@ -178,6 +178,10 @@ export default function App() {
           но так рядом с ними явно видно, что это третий, более узкий
           вариант того же роута), тоже ДО ":slug". */}
       <Route path="/minsk/bcminsk/class/:classSlug/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
+      {/* Хаб по неформальному микрорайону ("Уручье", "Малиновка" — владелец,
+          2026-09-07) — отдельная, не пересекающаяся с классом/районом ось,
+          не комбинируется с ними (см. комментарий у MICRODISTRICT_SLUGS). */}
+      <Route path="/minsk/bcminsk/microrayon/:microdistrictSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
       <Route path="/plan/:token" element={<PublicBuildingPlan />} />
       <Route path="/tz/:token" element={<BriefPublicPage />} />

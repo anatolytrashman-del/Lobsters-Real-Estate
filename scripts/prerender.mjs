@@ -92,6 +92,46 @@ const DISTRICT_HUB_SLUG_BY_NAME = {
   Ленинский: 'leninsky',
 };
 
+// Хабы по неформальным микрорайонам (владелец, 2026-09-07: "Бизнес-центры
+// Уручье") — та же карта slug'ов, что в businessCenterHubs.ts (сознательно
+// продублирована, см. комментарий выше про DISTRICT_HUB_SLUGS — этот скрипт
+// без TS-загрузчика). Список НЕПУСТЫХ микрорайонов — динамический (та же
+// защита от тонкого контента, что и у комбо класс×район).
+const MICRODISTRICT_HUB_SLUG_BY_NAME = {
+  Комаровка: 'komarovka',
+  Чкаловский: 'chkalovsky',
+  'Каменная Горка': 'kamennaya-gorka',
+  Веснянка: 'vesnyanka',
+  'Зелёный Луг': 'zelenyy-lug',
+  Сухарево: 'suharevo',
+  'Золотая Горка': 'zolotaya-gorka',
+  Уручье: 'uruchye',
+  Степянка: 'stepyanka',
+  Барановщина: 'baranovschina',
+  Магистр: 'magistr',
+  Радужный: 'raduzhny',
+  'Раковское Шоссе-1': 'rakovskoe-shosse-1',
+  Лошица: 'loshitsa',
+  'Великий Лес': 'velikiy-les',
+  Грушевка: 'grushevka',
+  Слепянка: 'slepyanka',
+  'Михалово-2': 'mihalovo-2',
+};
+
+async function fetchMicrodistrictHubPaths() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=microdistrict&microdistrict=not.is.null`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе microdistrict`);
+  const rows = await res.json();
+  const slugs = new Set();
+  for (const r of rows) {
+    const slug = MICRODISTRICT_HUB_SLUG_BY_NAME[r.microdistrict];
+    if (slug) slugs.add(`minsk/bcminsk/microrayon/${slug}`);
+  }
+  return [...slugs];
+}
+
 async function fetchClassDistrictComboPaths() {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=business_class,district`, {
     headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
@@ -188,6 +228,7 @@ async function main() {
     ...(await fetchLandingPaths()),
     ...(await fetchBusinessCenterPaths()),
     ...(await fetchClassDistrictComboPaths()),
+    ...(await fetchMicrodistrictHubPaths()),
     ...STATIC_PATHS,
   ];
   if (paths.length === 0) {

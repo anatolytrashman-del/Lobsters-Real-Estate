@@ -330,6 +330,10 @@ export function BusinessCentersAdminTab() {
         // (см. комментарий у BusinessCenter.nearestMetroStations), тот же
         // принцип, что и у technicalParams выше.
         nearestMetroStations: editing !== 'new' && editing ? editing.nearestMetroStations : [],
+        // Тот же принцип — вычисляется point-in-polygon матчингом против
+        // minsk_microdistricts, не вручную (см. комментарий у
+        // BusinessCenter.microdistrict).
+        microdistrict: editing !== 'new' && editing ? editing.microdistrict : null,
         photos: form.photos
           .split('\n')
           .map((s) => s.trim())
