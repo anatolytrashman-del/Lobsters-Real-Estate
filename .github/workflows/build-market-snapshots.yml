@@ -1,0 +1,22 @@
+name: Build market snapshots
+
+on:
+  schedule:
+    # 3-го числа, через 2 часа после sync-business-center-offers.yml (0 4 3 * *)
+    # — снимок строится из уже свежих объявлений, не из вчерашних.
+    - cron: '0 6 3 * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/build-market-snapshots.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

@@ -72,6 +72,18 @@ const MINSK_MIR_TOPIC_SLUGS = ['biznes-centr', 'kovorking', 'kupit-ofis', 'arend
 
 const STATIC_PATHS = [
   'minsk',
+  'minsk/analytics',
+  'minsk/analytics/metodika',
+  'minsk/analytics/ofisy/arenda',
+  'minsk/analytics/ofisy/prodazha',
+  'minsk/analytics/torgovye/arenda',
+  'minsk/analytics/torgovye/prodazha',
+  'minsk/analytics/sklady/arenda',
+  'minsk/analytics/sklady/prodazha',
+  'minsk/analytics/mashinomesta/arenda',
+  'minsk/analytics/mashinomesta/prodazha',
+  'minsk/analytics/minsk-mir',
+  'minsk/analytics/rajony',
   'minsk/minsk-mir',
   ...MINSK_MIR_TOPIC_SLUGS.map((s) => `minsk/minsk-mir/${s}`),
   'minsk/bcminsk',

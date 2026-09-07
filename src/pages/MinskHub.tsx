@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, BookOpen, Building2, Lock, Store } from 'lucide-react';
+import { ArrowRight, BarChart3, BookOpen, Building2, Lock, Store } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { setGenericPageMeta, setOrganizationJsonLd } from '../lib/pageMeta';
@@ -24,6 +24,11 @@ import { DISTRICTS, DISTRICTS_WITH_GUIDE } from '../data/districts';
 // индекс ни Google, ни Яндекса. Это не прежняя секция «Комплексы» (список
 // всех объектов), а ровно две ссылки — каталог как справочник и Red One как
 // единственная продающая страница.
+// ANALYTICSPLAN.md (2026-09-07) вернул раздел "Аналитика рынка" — на этот
+// раз не как ссылку на удалённую страницу, а на новый /minsk/analytics
+// (бенчмарк-страницы по ставкам аренды/продажи офисов из market_snapshots,
+// см. scripts/build-market-snapshots.mjs) — прямое поручение владельца по
+// новому плану, не отмена решения от 2026-08-25 задним числом.
 const TITLE = 'Коммерческая недвижимость в Минске — Redevelopment';
 const DESCRIPTION = 'Гиды по районам Минска для арендаторов и собственников коммерческой недвижимости.';
 const PAGE_URL = 'https://redevelopment.pro/minsk';
@@ -78,6 +83,20 @@ export function MinskHub() {
                   Деловой центр Red One
                 </span>
                 <span className="pl-6.5 text-xs text-ink-muted">Кабинеты и рабочие места в собственность в Минск Мире</span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+            </Link>
+            <Link
+              to="/minsk/analytics"
+              className={cn('flex items-center justify-between gap-2 p-4 transition-colors hover:border-primary/40', glassCardClass)}
+              style={glassCardShadow}
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2.5 font-medium text-ink">
+                  <BarChart3 className="h-4 w-4 shrink-0 text-ink-faint" />
+                  Аналитика рынка
+                </span>
+                <span className="pl-6.5 text-xs text-ink-muted">Ставки аренды и цены продажи офисов по классам и районам</span>
               </span>
               <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
             </Link>

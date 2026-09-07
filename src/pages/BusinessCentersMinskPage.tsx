@@ -7,6 +7,7 @@ import {
   Building2,
   Calendar,
   Camera,
+  DollarSign,
   HardHat,
   Layers,
   MapPin,
@@ -47,6 +48,8 @@ import {
 } from '../lib/businessCenterHubs';
 import type { BusinessCenter } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
+import { fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
+import { MIN_RELIABLE_N, type MarketSnapshot } from '../data/marketSnapshots';
 
 // Справочная SEO-страница по бизнес-центрам Минска (владелец, 2026-09-04) —
 // см. комментарий в data/businessCenters.ts про источник списка и принцип
@@ -230,6 +233,7 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     streetSlug?: string;
   }>();
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
+  const [officeSnapshots, setOfficeSnapshots] = useState<MarketSnapshot[] | null>(null);
   // Боковое меню на мобильном скрыто за плавающей кнопкой (владелец, 2026-09-04:
   // "сделай конструктивно как на странице Минск Мира, чтобы оно с мобилки
   // скрывалось") — тот же паттерн шторки, что и SECTION_NAV в DistrictGuidePage.tsx.
@@ -275,7 +279,41 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     fetchBusinessCenters()
       .then(setCenters)
       .catch(() => setCenters([]));
+    // ANALYTICSPLAN.md §4.2 — сводка ставок на фильтровых страницах, из
+    // уже собранного сегмента 'ofisy_bc' (market_snapshots). Дёшево (~20
+    // строк за один запрос) — грузим всегда, не только на хаб-страницах
+    // класса/района, показываем только там, где для этого есть срез.
+    fetchLatestMarketSnapshots('ofisy_bc')
+      .then(setOfficeSnapshots)
+      .catch(() => setOfficeSnapshots([]));
   }, []);
+
+  // Единственная ось — класс ИЛИ район (не комбо, не микрорайон/метро/
+  // улица/стройка): market_snapshots не хранит срез по пересечению класс×
+  // район, показывать его для комбо значило бы либо молчать, либо
+  // выдумывать — оставляем блок только там, где реальный срез есть.
+  const rateSliceKey = classFilter && !districtFilter ? classFilter : !classFilter && districtFilter ? districtFilter : classFilter || districtFilter ? null : 'all';
+  const rateSliceType: MarketSnapshot['sliceType'] | null = classFilter && !districtFilter ? 'class' : !classFilter && districtFilter ? 'district' : classFilter || districtFilter ? null : 'city';
+  const showRatesBlock =
+    !underConstruction && !metroFilter && !streetFilter && !microdistrictFilter && rateSliceKey !== null && rateSliceType !== null;
+  const rateRent = useMemo(
+    () =>
+      showRatesBlock
+        ? (officeSnapshots ?? []).find((s) => s.deal === 'rent' && s.sliceType === rateSliceType && s.sliceKey === rateSliceKey)
+        : undefined,
+    [officeSnapshots, showRatesBlock, rateSliceType, rateSliceKey],
+  );
+  const rateSale = useMemo(
+    () =>
+      showRatesBlock
+        ? (officeSnapshots ?? []).find((s) => s.deal === 'sale' && s.sliceType === rateSliceType && s.sliceKey === rateSliceKey)
+        : undefined,
+    [officeSnapshots, showRatesBlock, rateSliceType, rateSliceKey],
+  );
+  function formatRate(n: number, deal: 'rent' | 'sale'): string {
+    const rounded = deal === 'rent' ? Math.round(n * 10) / 10 : Math.round(n);
+    return `$${rounded.toLocaleString('ru-RU')}${deal === 'rent' ? '/м²/мес' : '/м²'}`;
+  }
 
   useEffect(() => {
     if (notFound) {
@@ -1057,6 +1095,45 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
                         ),
                     )}
                 </div>
+              </div>
+            )}
+
+            {/* Сводка ставок (ANALYTICSPLAN.md §4.2) — только там, где для
+                скоупа страницы реально есть срез в market_snapshots (класс
+                ИЛИ район, не их пересечение — см. rateSliceKey/rateSliceType
+                выше). Пока обе цифры не пришли или срез слишком мал — блок
+                просто не рендерится, не выдумываем "недостаточно данных"
+                отдельной плашкой ради ещё одной строки на странице. */}
+            {showRatesBlock && (rateRent?.median != null || rateSale?.median != null) && (
+              <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+                <h2 className="text-lg font-bold text-ink">Ставки аренды и продажи</h2>
+                <p className="text-xs text-ink-faint">
+                  Медиана по объявлениям Kufar и Realt{rateSliceType === 'class' ? ` для класса ${rateSliceKey}` : rateSliceType === 'district' ? ` в ${districtPrepositional(rateSliceKey ?? '')} районе` : ' по Минску'}
+                  {rateRent?.period ? `, ${rateRent.period.slice(0, 7)}` : ''}.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {rateRent?.median != null && (
+                    <FactTile
+                      icon={DollarSign}
+                      value={formatRate(rateRent.median, 'rent')}
+                      label={rateRent.n >= MIN_RELIABLE_N ? `Аренда (по ${rateRent.n} объявлениям)` : `Аренда — ориентировочно (${rateRent.n})`}
+                    />
+                  )}
+                  {rateSale?.median != null && (
+                    <FactTile
+                      icon={DollarSign}
+                      value={formatRate(rateSale.median, 'sale')}
+                      label={rateSale.n >= MIN_RELIABLE_N ? `Продажа (по ${rateSale.n} объявлениям)` : `Продажа — ориентировочно (${rateSale.n})`}
+                    />
+                  )}
+                </div>
+                <Link
+                  to="/minsk/analytics/ofisy/arenda"
+                  className="inline-flex w-fit items-center gap-1 text-sm text-primary-hover hover:underline"
+                >
+                  Подробная аналитика по офисам в БЦ
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
               </div>
             )}
 

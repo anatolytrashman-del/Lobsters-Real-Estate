@@ -57,6 +57,28 @@ export function districtPrepositional(district: string): string {
   return DISTRICT_PREPOSITIONAL[district] ?? district;
 }
 
+// Дательный падеж района ("по Московскому району", не "по Московский
+// району") — нужен для сравнения ставок со средней по району
+// (ANALYTICSPLAN.md §4.2, BusinessCenterDetailPage.tsx). Тот же принцип
+// явной карты на конечное известное множество, что и у предложного падежа
+// выше — падежные окончания у этих прилагательных не совпадают
+// ("Московском" vs "Московскому"), нельзя вывести одно из другого регуляркой.
+const DISTRICT_DATIVE: Record<string, string> = {
+  Центральный: 'Центральному',
+  Октябрьский: 'Октябрьскому',
+  Советский: 'Советскому',
+  Фрунзенский: 'Фрунзенскому',
+  Заводской: 'Заводскому',
+  Первомайский: 'Первомайскому',
+  Партизанский: 'Партизанскому',
+  Московский: 'Московскому',
+  Ленинский: 'Ленинскому',
+};
+
+export function districtDative(district: string): string {
+  return DISTRICT_DATIVE[district] ?? district;
+}
+
 export function districtHubUrl(district: string): string | null {
   const slug = DISTRICT_SLUGS[district];
   return slug ? `/minsk/bcminsk/raion/${slug}` : null;
