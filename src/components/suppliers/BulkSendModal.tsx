@@ -136,10 +136,10 @@ export function BulkSendModal({
           files: [],
         });
         onOrderCreated(order);
-        // Владелец, 2026-09-06: карточка организации — только к первому
-        // письму конкретному поставщику (не к каждой новой рассылке ему же).
-        // 2026-09-07: для российских поставщиков — карточка ИП, к каждому
-        // письму (см. companyCardAttachment в data/supplierOfferEmails.ts).
+        // Владелец, 2026-09-06: карточка организации (2026-09-07: и карточка
+        // ИП для российских поставщиков) — только к первому письму
+        // конкретному поставщику (не к каждой новой рассылке ему же), см.
+        // companyCardAttachment в data/supplierOfferEmails.ts.
         const companyCard = companyCardAttachment(offer.country, emails, offer.id);
         const attachments = [attachment, ...(companyCard ? [companyCard] : [])];
         const email = await sendSupplierOfferEmail({
@@ -200,7 +200,7 @@ export function BulkSendModal({
                         const companyCard = companyCardAttachment(o.country, emails, o.id);
                         if (!companyCard) return null;
                         return (
-                          <span className="text-ink-faint" title={`${companyCard.fileName}${o.country === 'Россия' ? '' : ' — первое письмо этому поставщику'}`}>
+                          <span className="text-ink-faint" title={`${companyCard.fileName} — первое письмо этому поставщику`}>
                             {' '}· + {o.country === 'Россия' ? 'карточка ИП' : 'карточка организации'}
                           </span>
                         );

@@ -384,12 +384,13 @@ export function EmailThread({
   const [ledgerModalOpen, setLedgerModalOpen] = useState(false);
   const [pendingLedger, setPendingLedger] = useState<LedgerAttachment | null>(null);
   // Владелец, 2026-09-06: "по умолчанию прикреплять карточку организации...
-  // но только к первому письму" (2026-09-07, для России — карточку ИП, на
-  // КАЖДОЕ письмо, см. companyCardAttachment в data/supplierOfferEmails.ts) —
-  // считает по ВСЕМ письмам поставщика (emails, не threadEmails — карточка
-  // организации нужна один раз на контрагента, не на тред), skipOrgCard даёт
-  // снять галочку на конкретное письмо, если вдруг не нужно (по аналогии с
-  // pendingLedger — можно убрать).
+  // но только к первому письму" (2026-09-07: то же самое — только к первому
+  // письму — и для карточки ИП, которая уходит российским поставщикам,
+  // см. companyCardAttachment в data/supplierOfferEmails.ts) — считает по
+  // ВСЕМ письмам поставщика (emails, не threadEmails — карточка нужна один
+  // раз на контрагента, не на тред), skipOrgCard даёт снять галочку на
+  // конкретное письмо, если вдруг не нужно (по аналогии с pendingLedger —
+  // можно убрать).
   const [skipOrgCard, setSkipOrgCard] = useState(false);
   const companyCard = companyCardAttachment(offer.country, emails, offer.id);
   const attachOrgCard = companyCard !== null && !skipOrgCard;
@@ -839,18 +840,17 @@ export function EmailThread({
 
           {/* Владелец, 2026-09-06: "пусть это будет видно в интерфейсе, что
               она прикреплена" — карточка организации/ИП прикладывается
-              автоматически (companyCardAttachment выше — организации к
-              первому письму, ИП для России к каждому), чип показывает это до
-              отправки и даёт снять галочку на конкретное письмо. Когда
-              companyCard уже null (не первое письмо небелорусскому/нероссийскому
-              поставщику), чип просто не появляется. */}
+              автоматически к первому письму поставщику (companyCardAttachment
+              выше — разное юрлицо в зависимости от страны, момент отправки
+              один и тот же), чип показывает это до отправки и даёт снять
+              галочку на конкретное письмо. Ко второму и последующим письмам
+              того же поставщика чип просто не появляется — companyCard уже
+              null. */}
           {companyCard && !skipOrgCard && (
             <div className="flex w-fit items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-1.5 text-sm text-ink">
               <Paperclip className="h-4 w-4 shrink-0 text-ink-faint" />
               {companyCard.fileName}
-              <span className="text-xs text-ink-faint">
-                {offer.country === 'Россия' ? '(прикрепится ко всем письмам)' : '(первое письмо — прикрепится автоматически)'}
-              </span>
+              <span className="text-xs text-ink-faint">(первое письмо — прикрепится автоматически)</span>
               <button
                 type="button"
                 onClick={() => setSkipOrgCard(true)}

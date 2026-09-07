@@ -76,21 +76,20 @@ export function isFirstOutgoingToOffer(emails: SupplierOfferEmail[], offerId: st
   return !emails.some((e) => e.offerId === offerId && e.direction === 'out');
 }
 
-// Владелец, 2026-09-07: "Добавь карточку ИП ко всем письмам поставщиков из
-// России" — в отличие от карточки организации (ЛАВЕ-ДРАЙВ, ООО, реквизиты
-// для расчётов с белорусскими поставщиками, прикладывается один раз — см.
-// isFirstOutgoingToOffer выше), карточка ИП (ИП Трэшмен Анатолий, российский
-// расчётный счёт) уходит российским поставщикам на КАЖДОЕ письмо — так
-// прямо попросил владелец, не тот же принцип "один раз на контрагента".
-// У разных стран — разное юрлицо в реквизитах, поэтому для России карточка
-// организации вообще не прикладывается, вместо неё всегда карточка ИП.
+// Владелец, 2026-09-07: сначала попросил карточку ИП "ко всем письмам"
+// поставщиков из России, затем поправил — "тоже нужна только к первому
+// письму", тот же принцип, что и у карточки организации (ЛАВЕ-ДРАЙВ, ООО,
+// для белорусских поставщиков). Разница между странами теперь только в
+// том, КАКАЯ карточка реквизитов уходит (разное юрлицо ведёт расчёты с
+// разными странами) — момент отправки (только первое письмо контрагенту)
+// один и тот же для обеих.
 export function companyCardAttachment(
   country: string,
   emails: SupplierOfferEmail[],
   offerId: string,
 ): { fileName: string; contentType: string; contentBase64: string } | null {
-  if (country === 'Россия') return IP_CARD_ATTACHMENT;
-  return isFirstOutgoingToOffer(emails, offerId) ? ORGANIZATION_CARD_ATTACHMENT : null;
+  if (!isFirstOutgoingToOffer(emails, offerId)) return null;
+  return country === 'Россия' ? IP_CARD_ATTACHMENT : ORGANIZATION_CARD_ATTACHMENT;
 }
 
 export interface SupplierOfferEmailRow {
