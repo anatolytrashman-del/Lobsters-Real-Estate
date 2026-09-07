@@ -82,3 +82,41 @@ export function classDistrictHubUrl(
   if (!districtSlug) return null;
   return `/minsk/bcminsk/class/${CLASS_SLUGS[businessClass]}/raion/${districtSlug}`;
 }
+
+// Хабы по неформальным микрорайонам ("Уручье", "Малиновка" — как люди сами
+// называют район, не официальный административный район), владелец,
+// 2026-09-07: "можем делать ещё страницы по типу «Бизнес-центры Уручье»...
+// от 1 БЦ". Список — не все микрорайоны, которые в принципе знает 2GIS
+// (см. таблицу `minsk_microdistricts` — там шире, для будущего), а только
+// те, где на сегодня есть хотя бы 1 БЦ (иначе хаб был бы пустой страницей,
+// тонкий контент) — см. journal 2026-09-07 про сам point-in-polygon матчинг.
+// Слаги — транслитерация вручную (конечный список, как и у DISTRICT_SLUGS).
+export const MICRODISTRICT_SLUGS: Record<string, string> = {
+  Комаровка: 'komarovka',
+  Чкаловский: 'chkalovsky',
+  'Каменная Горка': 'kamennaya-gorka',
+  Веснянка: 'vesnyanka',
+  'Зелёный Луг': 'zelenyy-lug',
+  Сухарево: 'suharevo',
+  'Золотая Горка': 'zolotaya-gorka',
+  Уручье: 'uruchye',
+  Степянка: 'stepyanka',
+  Барановщина: 'baranovschina',
+  Магистр: 'magistr',
+  Радужный: 'raduzhny',
+  'Раковское Шоссе-1': 'rakovskoe-shosse-1',
+  Лошица: 'loshitsa',
+  'Великий Лес': 'velikiy-les',
+  Грушевка: 'grushevka',
+  Слепянка: 'slepyanka',
+  'Михалово-2': 'mihalovo-2',
+};
+
+export const MICRODISTRICT_SLUG_TO_NAME: Record<string, string> = Object.fromEntries(
+  Object.entries(MICRODISTRICT_SLUGS).map(([name, slug]) => [slug, name]),
+);
+
+export function microdistrictHubUrl(microdistrict: string): string | null {
+  const slug = MICRODISTRICT_SLUGS[microdistrict];
+  return slug ? `/minsk/bcminsk/microrayon/${slug}` : null;
+}

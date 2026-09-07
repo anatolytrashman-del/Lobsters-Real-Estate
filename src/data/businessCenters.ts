@@ -21,6 +21,15 @@ export interface BusinessCenter {
   // — открытый список, растёт из AddableSelect в форме. "За городом" — для
   // объектов физически вне Минска (см. "Аден").
   district: string | null;
+  // Неформальный минский микрорайон ("Уручье", "Малиновка", ...) — не то же
+  // самое, что административный `district` ("Первомайский район"): люди
+  // ищут "БЦ Уручье", не "БЦ Первомайский район". Заполняется НЕ вручную —
+  // point-in-polygon матчинг координаты (2GIS) против границ в таблице
+  // `minsk_microdistricts` (тоже из 2GIS, см. journal 2026-09-07). Пусто —
+  // либо координаты нет, либо здание не попало ни в одну из известных
+  // границ (в основном это центр города/проспекты — там 2GIS не выделяет
+  // "спальные" микрорайоны вовсе, не пробел матчинга).
+  microdistrict: string | null;
   businessClass: 'A' | 'B+' | 'B' | 'C' | null;
   totalArea: number | null;
   // Для status='under_construction' — ожидаемый год сдачи, не факт постройки
@@ -203,6 +212,7 @@ export interface BusinessCenterRow {
   name: string;
   address: string;
   district: string | null;
+  microdistrict: string | null;
   business_class: string | null;
   total_area: number | null;
   year_built: number | null;
