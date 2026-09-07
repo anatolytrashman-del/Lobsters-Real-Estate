@@ -2,6 +2,23 @@ import { Clock, ExternalLink, Globe } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
+import { MINSK_MIR_TOPIC_SLUGS, MINSK_MIR_TOPIC_LABELS, minskMirTopicUrl } from '../data/minskMirTopics';
+import type { MinskMirTopicSlug } from '../data/minskMirTopics';
+
+// Что именно дорабатывать на каждой посадочной — заметки для владельца,
+// на публичные страницы не попадают.
+const MINSK_MIR_TOPIC_ADMIN_NOTES: Record<MinskMirTopicSlug, string> = {
+  'biznes-centr':
+    'Посадочная под запрос «бизнес-центр Минск Мир»: МФЦ, Dana Center (другой район), офисы на первых этажах, Red One. Доработать: фото, статус стройки МФЦ по мере новостей.',
+  kovorking:
+    'Посадочная под «коворкинг Минск Мир»: в районе один коворкинг по справочнику, альтернатива — рабочие места в Red One. Доработать: проверить список коворкингов вживую, фото рабочих мест.',
+  'kupit-ofis':
+    'Посадочная под «купить офис Минск Мир»: живые медианы вторички, первичка от застройщика, кабинеты Red One. Доработать: примеры конкретных лотов, расчёт рассрочки.',
+  'arenda-ofisa':
+    'Посадочная под «аренда офиса Минск Мир»: ставки за м², дефицит офисов с отделкой, покупка в рассрочку как альтернатива. Доработать: сравнение аренда vs рассрочка в цифрах.',
+  'kommercheskie-pomeshcheniya':
+    'Посадочная под «коммерческое помещение Минск Мир»: все форматы, продажа и аренда по типам, первичка. Доработать: ссылки на карту конкуренции по нишам, примеры помещений.',
+};
 
 // Пока просто информационный список действующих продающих страниц — без
 // редактирования (владелец: "без правок, пока только инфа"). Список
@@ -58,6 +75,17 @@ const LANDINGS: LandingEntry[] = [
     url: 'https://redevelopment.pro/minsk/bcminsk',
     status: 'in-progress',
   },
+  // Посадочные под подсказки Google по Минск Миру (аудит поиска 2026-09-07,
+  // см. data/minskMirTopics.ts и MinskMirTopicPage.tsx) — опубликованы
+  // первой версией, владелец: "нужно будет доработать" — все 'in-progress'.
+  ...MINSK_MIR_TOPIC_SLUGS.map(
+    (slug): LandingEntry => ({
+      title: MINSK_MIR_TOPIC_LABELS[slug],
+      description: MINSK_MIR_TOPIC_ADMIN_NOTES[slug],
+      url: `https://redevelopment.pro${minskMirTopicUrl(slug)}`,
+      status: 'in-progress',
+    }),
+  ),
 ];
 
 export function Landings() {
