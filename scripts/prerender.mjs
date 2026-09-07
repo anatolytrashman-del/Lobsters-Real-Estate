@@ -65,9 +65,15 @@ const DISTRICT_HUB_SLUGS = [
   'velikiy-kamen',
 ];
 
+// Посадочные под подсказки Google по Минск Миру — тот же список, что
+// MINSK_MIR_TOPIC_SLUGS в src/data/minskMirTopics.ts (продублирован plain-
+// массивом по той же причине, что и хабы каталога ниже).
+const MINSK_MIR_TOPIC_SLUGS = ['biznes-centr', 'kovorking', 'kupit-ofis', 'arenda-ofisa', 'kommercheskie-pomeshcheniya'];
+
 const STATIC_PATHS = [
   'minsk',
   'minsk/minsk-mir',
+  ...MINSK_MIR_TOPIC_SLUGS.map((s) => `minsk/minsk-mir/${s}`),
   'minsk/bcminsk',
   ...CLASS_HUB_SLUGS.map((s) => `minsk/bcminsk/class/${s}`),
   ...DISTRICT_HUB_SLUGS.map((s) => `minsk/bcminsk/raion/${s}`),

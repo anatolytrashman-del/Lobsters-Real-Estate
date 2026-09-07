@@ -7,6 +7,7 @@ import { useParams } from 'react-router-dom';
 import { PublicBuildingPlan } from './pages/PublicBuildingPlan';
 import { ObjectLandingPage } from './pages/ObjectLandingPage';
 import { DistrictGuidePage } from './pages/DistrictGuidePage';
+import { MinskMirTopicPage } from './pages/MinskMirTopicPage';
 import { BusinessCentersMinskPage } from './pages/BusinessCentersMinskPage';
 import { BusinessCenterDetailPage } from './pages/BusinessCenterDetailPage';
 import { MinskHub } from './pages/MinskHub';
@@ -186,6 +187,7 @@ export default function App() {
       <Route path="/" element={<Navigate to="/minsk" replace />} />
       <Route path="/minsk" element={<MinskHub />} />
       <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />
+      <Route path="/minsk/minsk-mir/:topic" element={<MinskMirTopicPage />} />
       <Route path="/minsk/bcminsk" element={<BusinessCentersMinskPage />} />
       {/* Хаб-страницы по классу/району (Fable-анализ, 2026-09-06) — тот же
           компонент, фильтр читается из useParams(), см. комментарий там же.

@@ -55,6 +55,7 @@ import { setGenericPageMeta, setArticleJsonLd, setFaqJsonLd, setBreadcrumbJsonLd
 import { HeroImageSlider } from '../components/objects/HeroImageSlider';
 import { FaqAccordion } from '../components/ui/FaqAccordion';
 import type { FaqItem } from '../components/ui/FaqAccordion';
+import { MINSK_MIR_TOPIC_SLUGS, MINSK_MIR_TOPIC_LABELS, minskMirTopicUrl } from '../data/minskMirTopics';
 import { ToggleGroup } from '../components/ui/ToggleGroup';
 import { fetchPublicMarketOffers } from '../lib/marketOffersApi';
 import { AREA_BUCKET_ORDER, areaBucket, MARKET_PROPERTY_TYPES, netSize, netPricePerSqm } from '../data/marketOffers';
@@ -1552,6 +1553,25 @@ export function DistrictGuidePage() {
             ))}
           </div>
         </div>
+
+        {/* Посадочные под подсказки Google (аудит 2026-09-07) — гид остаётся
+            хабом, каждая страница берёт свой срез: бизнес-центры, коворкинг,
+            купить/арендовать офис, коммерческие помещения. */}
+        <div className={cn('flex flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
+          <h2 className="text-lg font-bold text-ink">Подробнее по темам</h2>
+          <div className="flex flex-wrap gap-2">
+            {MINSK_MIR_TOPIC_SLUGS.map((s) => (
+              <Link
+                key={s}
+                to={minskMirTopicUrl(s)}
+                className="rounded-full border border-border px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:border-primary hover:text-primary-hover"
+              >
+                {MINSK_MIR_TOPIC_LABELS[s]}
+              </Link>
+            ))}
+          </div>
+        </div>
+
 
         <div id="developer" className={cn('flex scroll-mt-6 flex-col gap-4 p-6', glassCardClass)} style={glassCardShadow}>
           {/* Логотипы на одном уровне с заголовком, справа (owner: сначала
