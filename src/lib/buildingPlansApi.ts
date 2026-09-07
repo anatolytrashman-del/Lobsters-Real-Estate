@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
+import { queueImageCompression } from './tinypngCompress';
 import type {
   BuildingPlan,
   BuildingPlanRow,
@@ -69,6 +70,7 @@ export function uploadBuildingPlanImage(file: File): Promise<string> {
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from('building-plans').upload(path, file);
       if (error) throw error;
+      queueImageCompression('building-plans', path);
       const { data } = supabase.storage.from('building-plans').getPublicUrl(path);
       return data.publicUrl;
     },

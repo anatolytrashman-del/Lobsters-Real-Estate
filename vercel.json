@@ -1,11 +1,35 @@
 {
   "functions": {
-    "api/transcribe-start.js": { "maxDuration": 300 },
-    "api/transcribe-poll.js": { "maxDuration": 60 },
+    "api/transcribe.js": { "maxDuration": 300 },
     "api/meeting-ai.js": { "maxDuration": 300 },
-    "api/supplier-web-search.js": { "maxDuration": 300 }
+    "api/supplier-web-search.js": { "maxDuration": 300 },
+    "api/tinypng-compress.js": { "maxDuration": 30 }
   },
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/fonts/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/images/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=2592000" }]
+    },
+    {
+      "source": "/icons/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=2592000" }]
+    }
+  ],
   "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "www.redevelopment.pro" }],
+      "destination": "https://redevelopment.pro/$1",
+      "permanent": true
+    },
     { "source": "/", "destination": "/minsk", "permanent": false },
     { "source": "/one", "destination": "/minsk/one", "permanent": true },
     { "source": "/redstorage", "destination": "/minsk/redstorage", "permanent": true },

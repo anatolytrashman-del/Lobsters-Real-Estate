@@ -34,6 +34,17 @@ const CLOSED = [
   'people', 'pledges', 'supplier_research_offers', 'supplier_research_requests',
   'tasks', 'transaction_comments', 'transactions', 'purchases', 'purchase_emails',
   'supplier_offer_emails',
+  // market_offers: 2026-09-06, PAGESPEED_PLAN.md Э5-1 — раньше был в
+  // PUBLIC_SELECT_ALL с колоночным GRANT (P0.2, 2026-08-28), но
+  // `select=*` при column-level privileges Postgres проваливает ВСЮ
+  // выборку 42501, а не тихо прячет непозволенные колонки — из-за этого
+  // публичная страница месяцами показывала пустую таблицу, и этот же
+  // аудит-скрипт бага не ловил (см. новую проверку `expectSelect && !sel.ok`
+  // ниже — раньше её не было, отсюда и пробел). Грант снят полностью,
+  // безопасный публичный срез — отдельная вью `public_market_offers`
+  // (ниже, PUBLIC_SELECT_ALL) с зашитым WHERE reviewed=true AND
+  // rejected=false и только безопасными колонками.
+  'market_offers',
   // deploy_debounce: чисто служебная метка времени последней пересборки
   // прода (trigger-rebuild.js) — трогает только service_role, ни anon,
   // ни authenticated тут делать нечего (даже read).
@@ -49,7 +60,7 @@ const CLOSED = [
 
 // anon select ожидаемо разрешён (публичные лендинги/гид района), запись — нет.
 const PUBLIC_SELECT_ALL = [
-  'objects', 'building_plans', 'building_plan_zones', 'market_offers',
+  'objects', 'building_plans', 'building_plan_zones', 'public_market_offers',
   'primary_market_offers', 'exchange_rates',
 ];
 // select по токену (share_token) — сама выборка со стороны anon фильтром не
@@ -74,9 +85,13 @@ const PUBLIC_FULL_CRUD = ['district_business_points', 'district_house_flags', 'd
 // правке; таблица просто не участвует в автоматической insert-проверке.
 const PUBLIC_INSERT_ONLY = [];
 
-// Колонки, которых не должно быть в анонимном select market_offers —
-// внутренние заметки Светланы/владельца по обсуждению объявления.
-const MARKET_OFFERS_FORBIDDEN_COLUMNS = ['owner_note', 'discussion_note', 'rejected', 'flagged_for_discussion'];
+// Колонки, которых не должно быть в анонимном select public_market_offers —
+// внутренние заметки/статусы Светланы/владельца по обсуждению объявления
+// и служебные reviewed/rejected (сама вью их не отдаёт, но проверяем на
+// случай будущей неосторожной правки её определения).
+const MARKET_OFFERS_FORBIDDEN_COLUMNS = [
+  'owner_note', 'discussion_note', 'rejected', 'flagged_for_discussion', 'reviewed',
+];
 
 const ALL_TABLES = [...CLOSED, ...PUBLIC_SELECT_ALL, ...PUBLIC_TOKEN_SCOPED, ...PUBLIC_FULL_CRUD, ...PUBLIC_INSERT_ONLY];
 
@@ -165,6 +180,13 @@ async function main() {
     if (!expectSelect && selVisible) {
       problems.push(`SELECT: anon видит ${sel.total} строк(и), ожидалось 0`);
     }
+    // 2026-09-06, PAGESPEED_PLAN.md Э5-1 — раньше проверялось только "anon
+    // не видит лишнего", но не "anon реально видит то, что должен". Именно
+    // так пропустили публичный market_offers.select('*') с 42501 (Б2) —
+    // страница месяцами показывала пустую таблицу, а этот скрипт молчал.
+    if (expectSelect && !sel.ok) {
+      problems.push(`SELECT: ожидался разрешённым anon, но получил ${sel.status}`);
+    }
     if (!expectInsert && ins.allowed) {
       problems.push(`INSERT: прошёл (${ins.cleanedUp ? 'строка удалена после проверки' : 'НЕ УДАЛОСЬ УДАЛИТЬ, проверьте вручную'})`);
     }
@@ -174,7 +196,7 @@ async function main() {
     if (expectInsert && !ins.allowed && !ins.inconclusive) {
       problems.push(`INSERT: ожидался разрешённым, но получил ${ins.status}`);
     }
-    if (table === 'market_offers' && sel.sampleRow) {
+    if (table === 'public_market_offers' && sel.sampleRow) {
       const leaked = MARKET_OFFERS_FORBIDDEN_COLUMNS.filter((c) => c in sel.sampleRow);
       if (leaked.length) problems.push(`SELECT: анону видны админские колонки: ${leaked.join(', ')}`);
     }

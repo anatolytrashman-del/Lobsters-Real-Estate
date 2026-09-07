@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
 import { extractTelegramHandle } from './telegramHandle';
 import { fetchTelegramAvatarBlob } from './telegramAvatarApi';
+import { queueImageCompression } from './tinypngCompress';
 import type { Lead, LeadRow } from '../data/leads';
 
 const LEAD_PHOTOS_BUCKET = 'lead-photos';
@@ -176,6 +177,7 @@ export function uploadLeadPhoto(file: File): Promise<string> {
       const path = `${crypto.randomUUID()}.${ext}`;
       const { error } = await supabase.storage.from(LEAD_PHOTOS_BUCKET).upload(path, file);
       if (error) throw error;
+      queueImageCompression(LEAD_PHOTOS_BUCKET, path);
       return path;
     },
     1000,

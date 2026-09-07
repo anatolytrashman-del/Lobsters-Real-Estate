@@ -383,11 +383,14 @@ export function DistrictQuarterMap() {
           375px, каждый сжимался до нечитаемого. */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="flex flex-col gap-1">
-          <span className="text-xs font-semibold text-ink-faint">Категория бизнеса</span>
+          {/* text-ink-muted, не text-ink-faint — PAGESPEED_PLAN.md, Э8-1:
+              faint на белом даёт 2,77:1, ниже нормы WCAG 4,5:1 для мелкого
+              текста (аудит Accessibility PageSpeed это и поймал). */}
+          <span className="text-xs font-semibold text-ink-muted">Категория бизнеса</span>
           <CategoryToggle value={categoryKey} options={CATEGORY_OPTIONS} onChange={setCategoryKey} />
         </div>
         <div className="flex flex-col gap-1">
-          <span className="text-xs font-semibold text-ink-faint">Квартал</span>
+          <span className="text-xs font-semibold text-ink-muted">Квартал</span>
           <CategoryToggle value={quarterKey} options={QUARTER_OPTIONS} onChange={setQuarterKey} />
         </div>
       </div>
@@ -408,13 +411,13 @@ export function DistrictQuarterMap() {
       </div>
 
       <div className="flex items-center gap-3">
-        <span className="text-xs font-medium text-ink-faint">Меньше</span>
+        <span className="text-xs font-medium text-ink-muted">Меньше</span>
         <div className="h-2.5 flex-1 rounded-full" style={{ background: `linear-gradient(to right, ${heatColor(0.12)}, ${heatColor(1)})` }} />
-        <span className="text-xs font-medium text-ink-faint">Больше</span>
+        <span className="text-xs font-medium text-ink-muted">Больше</span>
       </div>
 
       {selectedQuarter ? (
-        <p className="text-xs text-ink-faint">
+        <p className="text-xs text-ink-muted">
           В квартале «{selectedQuarter.label}» — {counts[selectedQuarter.id] ?? 0}{' '}
           {categoryKey === LIVE_ALL_KEY
             ? pluralOrganizations(counts[selectedQuarter.id] ?? 0)
@@ -422,12 +425,12 @@ export function DistrictQuarterMap() {
           .
         </p>
       ) : categoryKey === LIVE_ALL_KEY ? (
-        <p className="text-xs text-ink-faint">
+        <p className="text-xs text-ink-muted">
           Учтено {matchedTotal} {pluralOrganizations(matchedTotal)} — исчерпывающий поквартирный сбор (вкладка "Дома"
           на /admin/market-offers), собирается постепенно, не все дома района ещё загружены.
         </p>
       ) : (
-        <p className="text-xs text-ink-faint">
+        <p className="text-xs text-ink-muted">
           Учтено {matchedTotal} из {categoryTotal} точек категории «{categoryLabel}» — справочник застройщика
           покрывает не все дома района (например, паркинги и часть коммерческих зданий вне жилых кварталов в него не
           входят).

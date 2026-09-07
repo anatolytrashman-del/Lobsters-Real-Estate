@@ -34,6 +34,74 @@ export function fetchMarketOffers(): Promise<MarketOffer[]> {
   });
 }
 
+// PAGESPEED_PLAN.md, Э5-1 — публичная страница (DistrictGuidePage.tsx) не
+// может читать market_offers напрямую: с P0.2 аудита безопасности
+// (2026-08-28) anon имел только колоночный GRANT, а `select=*` при
+// column-level privileges Postgres проваливает ВСЕМ запросом (не тихо
+// прячет непозволенные колонки) — 42501 на каждый заход, страница месяцами
+// показывала «Данные пока не собраны». 2026-09-06: колоночный грант на
+// anon снят совсем, вместо него — вью `public_market_offers`
+// (владелец/postgres-миграция через Management API), которая уже
+// фильтрует reviewed=true AND rejected=false и отдаёт только безопасные
+// для публики колонки — тот же контракт, что PublicMarketOffer ниже.
+// Внутренние поля (owner_note/discussion_note/flagged_for_discussion/
+// адрес/ссылка/source/ad_id) в неё не входят — на публичной странице они
+// и не использовались, буквально ничего не потеряно.
+export interface PublicMarketOfferRow {
+  id: number;
+  deal_type: string;
+  property_type: string;
+  size: number;
+  price_per_sqm: number;
+  finish_status: string;
+  has_terrace: boolean;
+  terrace_area: number | null;
+  updated_at: string;
+}
+
+// Форма MarketOffer (не PublicMarketOfferRow) — buildMarketPivot/
+// countSmallFinishedOffices/formatLatestUpdate в DistrictGuidePage.tsx
+// написаны против полного типа и сами проверяют reviewed/rejected; вью
+// уже гарантирует reviewed=true/rejected=false для каждой строки, поэтому
+// эти два поля здесь константы, а не выдумка — они отражают реальный
+// WHERE вью. Остальные внутренние поля (заметки/адрес/ссылка/источник),
+// которых у вью нет, странице не нужны — не подставляем фиктивные значения
+// туда, где их использование было бы ошибкой, просто честные пустые/нулевые.
+function fromPublicRow(row: PublicMarketOfferRow): MarketOffer {
+  return {
+    id: row.id,
+    source: '',
+    adId: '',
+    dealType: row.deal_type as MarketOffer['dealType'],
+    propertyType: row.property_type,
+    size: row.size,
+    pricePerSqm: row.price_per_sqm,
+    finishStatus: row.finish_status,
+    reviewed: true,
+    rejected: false,
+    flaggedForDiscussion: false,
+    discussionNote: null,
+    ownerNote: null,
+    floor: null,
+    hasTerrace: row.has_terrace,
+    terraceArea: row.terrace_area,
+    address: null,
+    adLink: null,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function fetchPublicMarketOffers(): Promise<MarketOffer[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase
+      .from('public_market_offers')
+      .select('id, deal_type, property_type, size, price_per_sqm, finish_status, has_terrace, terrace_area, updated_at')
+      .order('updated_at', { ascending: false });
+    if (error) throw error;
+    return (data as PublicMarketOfferRow[]).map(fromPublicRow);
+  });
+}
+
 // Узкая выборка только для фонового опроса "не появилась ли новая карточка
 // на обсуждение" (см. lib/marketOfferDiscussionWatcher.ts) — не весь
 // market_offers (сотни-тысячи строк), только id/адрес уже отфлагованных.

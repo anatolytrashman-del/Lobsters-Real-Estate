@@ -72,7 +72,11 @@ const INTRO_TEXT =
 // по мере присылки. HeroImageSlider (см. DistrictGuidePage.tsx/
 // ObjectLandingPage.tsx) при пустом массиве не рендерит ничего — плейсхолдер
 // ниже занимает его место, пока список пуст.
-const HERO_IMAGES: string[] = ['/images/business-centers-hero/hero-1.jpg'];
+// PAGESPEED_PLAN.md, Э9 — WebP (640×387, 43→25 КиБ), JPEG-оригинал рядом
+// оставлен как источник. Это LCP-картинка каталога.
+const HERO_IMAGES: string[] = ['/images/business-centers-hero/hero-1.webp'];
+const HERO_IMAGE_WIDTH = 640;
+const HERO_IMAGE_HEIGHT = 387;
 
 // Карта всех БЦ из списка (владелец, 2026-09-04) — тот же принцип, что и у
 // карты объекта в ObjectMapWidget.tsx: ссылка не из JS API/координат, а
@@ -131,13 +135,24 @@ const OUT_OF_TOWN_DISTRICT = 'Великий камень';
 // что на них надо нажимать"), не убиралась.
 function BusinessCenterCard({ center }: { center: BusinessCenter }) {
   return (
+    // PAGESPEED_PLAN.md, Э9 — content-visibility:auto: 143 карточек, каждая
+    // со «стеклом» (backdrop-blur) и 5 инлайн-SVG — без этого браузер
+    // раскладывал и красил ВСЕ разом до первого кадра (локальная реплика:
+    // первая отрисовка через 2,3 с после прихода HTML, TBT 550 мс при
+    // монтировании React). С content-visibility карточки вне экрана не
+    // раскладываются, пока не доскроллили: первый кадр ~180 мс, TBT 80 мс.
+    // contain-intrinsic-size — примерная высота карточки, чтобы полоса
+    // прокрутки не прыгала; реальная высота подставится при показе.
     <Link
       to={`/minsk/bcminsk/${center.slug}`}
-      className={cn('group flex flex-col overflow-hidden transition-transform hover:-translate-y-0.5', glassCardClass)}
+      className={cn(
+        'group flex flex-col overflow-hidden transition-transform hover:-translate-y-0.5 [contain-intrinsic-size:auto_420px] [content-visibility:auto]',
+        glassCardClass,
+      )}
       style={glassCardShadow}
     >
       <div className="relative aspect-[16/10] w-full shrink-0 overflow-hidden">
-        <PhotoBlock center={center} />
+        <PhotoBlock center={center} variant="card" />
         <div className="absolute right-2 top-2 flex flex-wrap justify-end gap-1.5">
           {center.status === 'under_construction' && <Badge tone="warning">Строится</Badge>}
           {center.businessClass && (
@@ -480,7 +495,7 @@ export function BusinessCentersMinskPage() {
     return (
       <div className="flex min-h-svh flex-col items-center justify-center gap-4 bg-bg px-4 text-center">
         <p className="text-base text-ink-muted">Такой раздел каталога не найден.</p>
-        <Link to="/minsk/bcminsk" className="text-sm font-semibold text-primary hover:underline">
+        <Link to="/minsk/bcminsk" className="text-sm font-semibold text-primary-hover hover:underline">
           ← Все бизнес-центры Минска
         </Link>
       </div>
@@ -516,7 +531,7 @@ export function BusinessCentersMinskPage() {
   // Мира, чтобы оно с мобилки скрывалось"), см. рендер обоих ниже.
   const filterContent = (
     <>
-      <span className="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">Район</span>
+      <span className="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">Район</span>
       {/* "Все районы" сбрасывает только район, класс (если выбран) сохраняется
           — владелец, 2026-09-06: пересечение класс×район, оси комбинируются,
           не сбрасывают друг друга при переключении. */}
@@ -525,7 +540,7 @@ export function BusinessCentersMinskPage() {
         onClick={() => setMobileNavOpen(false)}
         className={cn(
           'rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
-          districtFilter === null ? 'bg-primary/10 font-bold text-primary' : 'font-medium text-ink',
+          districtFilter === null ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
         )}
       >
         Все районы
@@ -540,11 +555,11 @@ export function BusinessCentersMinskPage() {
             onClick={() => setMobileNavOpen(false)}
             className={cn(
               'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
-              districtFilter === d ? 'bg-primary/10 font-bold text-primary' : 'font-medium text-ink',
+              districtFilter === d ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
             )}
           >
             <span>{d}</span>
-            <span className="text-xs text-ink-faint">{districtCounts[d]}</span>
+            <span className="text-xs text-ink-muted">{districtCounts[d]}</span>
           </Link>
         );
       })}
@@ -584,7 +599,7 @@ export function BusinessCentersMinskPage() {
         <>
           <div className="my-2 border-t border-border" />
 
-          <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Класс</span>
+          <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">Класс</span>
           {/* Компактные пилюли с одной буквой класса (владелец: "выбор класса
               слишком большой по размеру, хватит букв, А/В"). Раньше —
               flex-wrap, который на "Все"+4 класса ломался некрасиво (4+1
@@ -628,11 +643,11 @@ export function BusinessCentersMinskPage() {
 
       <div className="my-2 border-t border-border" />
 
-      <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">
+      <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
         Бизнес-центры
       </span>
       {sortedForNav.length === 0 ? (
-        <span className="px-2 py-1.5 text-xs text-ink-faint">Нет объектов в этом районе</span>
+        <span className="px-2 py-1.5 text-xs text-ink-muted">Нет объектов в этом районе</span>
       ) : (
         sortedForNav.map((c) => (
           <Link
@@ -662,7 +677,9 @@ export function BusinessCentersMinskPage() {
       <div className="sticky top-0 z-30 border-b border-border bg-bg/90 py-5 backdrop-blur-md">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 sm:px-8">
           <Link to="/minsk" className="text-lg font-extrabold tracking-wide text-ink">
-            <span className="font-black text-primary">RED</span>EVELOPMENT
+            {/* text-primary-hover — как на гиде района: базовый красный на
+                полупрозрачной шапке даёт контраст ниже 4,5:1 (Accessibility). */}
+            <span className="font-black text-primary-hover">RED</span>EVELOPMENT
           </Link>
         </div>
       </div>
@@ -695,7 +712,7 @@ export function BusinessCentersMinskPage() {
         )}
       >
         <div className="mb-2 flex items-center justify-between gap-3">
-          <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Фильтры</span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Фильтры</span>
           <button
             type="button"
             onClick={() => setMobileNavOpen(false)}
@@ -708,7 +725,9 @@ export function BusinessCentersMinskPage() {
         {filterContent}
       </aside>
 
-      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-8">
+      {/* <main> — единственный main-landmark (Accessibility «Document does
+          not have a main landmark»), шапка и мобильная шторка — вне него. */}
+      <main className="mx-auto max-w-6xl px-4 py-12 sm:px-8">
         <div className="lg:grid lg:grid-cols-[240px_1fr] lg:gap-10">
           <aside className="hidden lg:sticky lg:top-24 lg:block lg:h-fit lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto">
             <div className={cn('flex flex-col gap-1 p-3 text-sm', glassCardClass)} style={glassCardShadow}>
@@ -724,14 +743,20 @@ export function BusinessCentersMinskPage() {
               <div className="flex flex-col gap-3">
                 <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">{heroH1}</h1>
                 <p className="text-base text-ink-muted">{heroIntro}</p>
-                <span className="flex w-fit items-center gap-1.5 rounded-full border border-success/30 bg-success-bg px-3 py-1 text-xs font-semibold text-success">
+                <span className="flex w-fit items-center gap-1.5 rounded-full border border-success/30 bg-success-bg px-3 py-1 text-xs font-semibold text-[#0f6b3d]">
                   <BadgeCheck className="h-3.5 w-3.5 shrink-0" />
                   {UPDATED_BADGE_LABEL}
                 </span>
               </div>
               <div className="mx-auto w-full max-w-xs sm:max-w-none">
                 {HERO_IMAGES.length > 0 ? (
-                  <HeroImageSlider images={HERO_IMAGES} alt="Бизнес-центры Минска" aspectClassName="aspect-[4/5]" />
+                  <HeroImageSlider
+                    images={HERO_IMAGES}
+                    alt="Бизнес-центры Минска"
+                    aspectClassName="aspect-[4/5]"
+                    imageWidth={HERO_IMAGE_WIDTH}
+                    imageHeight={HERO_IMAGE_HEIGHT}
+                  />
                 ) : (
                   <div className="flex aspect-[4/5] w-full items-center justify-center rounded-3xl bg-gradient-to-br from-surface-muted to-border">
                     <span className="flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1 text-xs font-bold uppercase tracking-wide text-ink-muted shadow-sm">
@@ -743,7 +768,33 @@ export function BusinessCentersMinskPage() {
               </div>
             </div>
 
-            {centers !== null && marketStats.total > 0 && (
+            {/* Пока данные не пришли — та же карточка с невидимыми плитками
+                той же формы (PAGESPEED_PLAN.md, Э9): страница приходит
+                пререндер-снапшотом с готовой сводкой, React после
+                монтирования на ~полсекунды остаётся без данных, и без
+                заглушки блок исчезал целиком — карта и всё ниже прыгали
+                вверх, потом обратно. На десктопе карта в первом экране →
+                CLS 0,104 (третий пункт Agentic Browsing в PageSpeed), на
+                мобильном она ниже сгиба → 0. Число плиток — как у реальной
+                сводки: 4 общих (+4 по классам вне хаба класса). */}
+            {centers === null ? (
+              <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow} aria-hidden="true">
+                <h2 className="text-lg font-bold text-ink">Рынок в цифрах</h2>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {[
+                    'Всего бизнес-центров',
+                    'Суммарная площадь (по 000 из 000)',
+                    'Строится',
+                    'В шаговой доступности от метро',
+                    ...(classFilter ? [] : ['Класса A', 'Класса B+', 'Класса B', 'Класса C']),
+                  ].map((label) => (
+                    <div key={label} className="invisible">
+                      <FactTile icon={Building2} value="0" label={label} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : marketStats.total > 0 && (
               <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
                 <h2 className="text-lg font-bold text-ink">Рынок в цифрах</h2>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -779,12 +830,22 @@ export function BusinessCentersMinskPage() {
               </div>
             )}
 
-            <ObjectMapWidget address="Бизнес-центры Минска" mapEmbedUrl={MAP_EMBED_URL} aspectClassName="aspect-[21/9]" />
+            {/* facade — iframe Яндекс.Карт монтируется только по клику
+                «Показать карту» (PAGESPEED_PLAN.md, Э9): сам виджет тянет
+                ~0,5 МБ JS Яндекса, ставит сторонние куки и держит главный
+                поток — на проде это давало Best Practices 73 и добивало
+                мобильный Performance до 47, при том что карта на каталоге
+                вспомогательная. loading="lazy" на iframe не спасал: блок
+                стоит сразу под hero, в зоне предзагрузки. */}
+            <ObjectMapWidget address="Бизнес-центры Минска" mapEmbedUrl={MAP_EMBED_URL} aspectClassName="aspect-[21/9]" facade />
 
+            {/* text-ink, не text-ink-muted: эти два состояния лежат прямо на
+                фоне страницы (не на стеклянной карточке), а muted на #f0efed
+                даёт 4,48:1 — на волосок ниже порога 4,5 (Accessibility). */}
             {centers === null ? (
-              <p className="text-sm text-ink-faint">Загрузка…</p>
+              <p className="text-sm text-ink">Загрузка…</p>
             ) : visibleCenters.length === 0 ? (
-              <p className="text-sm text-ink-faint">Нет бизнес-центров по выбранным фильтрам.</p>
+              <p className="text-sm text-ink">Нет бизнес-центров по выбранным фильтрам.</p>
             ) : (
               <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
                 {visibleCenters.map((c) => (
@@ -919,7 +980,7 @@ export function BusinessCentersMinskPage() {
             )}
           </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

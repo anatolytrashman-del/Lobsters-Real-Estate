@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, BookOpen, Lock } from 'lucide-react';
+import { ArrowRight, BookOpen, Building2, Lock, Store } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { setGenericPageMeta } from '../lib/pageMeta';
@@ -18,6 +18,12 @@ import { DISTRICTS, DISTRICTS_WITH_GUIDE } from '../data/districts';
 // /minsk/analytics) — хаб теперь только про гиды по районам, сам объект
 // по-прежнему доступен напрямую по своей ссылке (/minsk/one), просто не
 // перечисляется здесь.
+// Аудит поиска 2026-09-07 вернул сюда две ссылки — на каталог БЦ и на Red
+// One: с /minsk не было ни одной входящей ссылки ни на /minsk/bcminsk, ни на
+// /minsk/one, каталог и все карточки БЦ оказались «островом» и не попали в
+// индекс ни Google, ни Яндекса. Это не прежняя секция «Комплексы» (список
+// всех объектов), а ровно две ссылки — каталог как справочник и Red One как
+// единственная продающая страница.
 const TITLE = 'Коммерческая недвижимость в Минске — Redevelopment';
 const DESCRIPTION = 'Гиды по районам Минска для арендаторов и собственников коммерческой недвижимости.';
 const PAGE_URL = 'https://redevelopment.pro/minsk';
@@ -32,16 +38,50 @@ export function MinskHub() {
       <div className="border-b border-border py-5">
         <div className="mx-auto flex max-w-5xl items-center justify-center px-4 sm:px-8">
           <span className="text-lg font-extrabold tracking-wide text-ink">
-            <span className="font-black text-primary">RED</span>EVELOPMENT
+            <span className="font-black text-primary-hover">RED</span>EVELOPMENT
           </span>
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-5xl flex-col gap-10 px-4 py-12 sm:px-8">
+      <main className="mx-auto flex max-w-5xl flex-col gap-10 px-4 py-12 sm:px-8">
         <div className="flex flex-col gap-2">
           <h1 className="text-2xl font-extrabold text-ink sm:text-3xl">Коммерческая недвижимость в Минске</h1>
           <p className="max-w-2xl text-ink-muted">Гиды по районам для арендаторов и собственников коммерческой недвижимости.</p>
         </div>
+
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-bold text-ink">Справочники и объекты</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Link
+              to="/minsk/bcminsk"
+              className={cn('flex items-center justify-between gap-2 p-4 transition-colors hover:border-primary/40', glassCardClass)}
+              style={glassCardShadow}
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2.5 font-medium text-ink">
+                  <Building2 className="h-4 w-4 shrink-0 text-ink-faint" />
+                  Бизнес-центры Минска
+                </span>
+                <span className="pl-6.5 text-xs text-ink-muted">Каталог: класс, площадь, метро, арендаторы, объявления</span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+            </Link>
+            <Link
+              to="/minsk/one"
+              className={cn('flex items-center justify-between gap-2 p-4 transition-colors hover:border-primary/40', glassCardClass)}
+              style={glassCardShadow}
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2.5 font-medium text-ink">
+                  <Store className="h-4 w-4 shrink-0 text-ink-faint" />
+                  Деловой центр Red One
+                </span>
+                <span className="pl-6.5 text-xs text-ink-muted">Кабинеты и рабочие места в собственность в Минск Мире</span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-ink-faint" />
+            </Link>
+          </div>
+        </section>
 
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-bold text-ink">Гиды по районам</h2>
@@ -79,7 +119,7 @@ export function MinskHub() {
             })}
           </div>
         </section>
-      </div>
+      </main>
     </div>
   );
 }

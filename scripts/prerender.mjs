@@ -209,23 +209,49 @@ async function waitForServer(timeoutMs = 20_000) {
 // возможная будущая разработка) используем уже готовый Chromium из
 // PLAYWRIGHT_BROWSERS_PATH напрямую по пути — тот же приём, что скилл `run`
 // советует для случаев с закреплённой версией браузера в окружении.
-async function launchBrowser() {
-  if (process.env.VERCEL) {
-    const sparticuzChromium = (await import('@sparticuz/chromium')).default;
-    return chromium.launch({
-      args: sparticuzChromium.args,
-      executablePath: await sparticuzChromium.executablePath(),
-      headless: true,
-    });
+//
+// `sparticuzChromium.executablePath()` при первом вызове РАСПАКОВЫВАЕТ
+// бинарник Chromium во временный файл — это не идемпотентное чтение
+// готового пути, а запись. Реальный сбой на проде (PAGESPEED_PLAN.md,
+// Э0-3): несколько воркеров стартуют параллельно и все разом зовут
+// `executablePath()` — один процесс ещё дописывает файл, другой в этот
+// момент пытается его запустить → `spawn ETXTBSY` ("text file busy"),
+// сборка падает целиком. Фикс — распаковка ровно один раз на всю сборку
+// (кэшируем ПРОМИС, не результат, иначе конкурентные вызовы до его
+// разрешения всё равно затеяли бы вторую параллельную распаковку);
+// `launchBrowser()` теперь зовётся на КАЖДЫЙ рендер (см. историю у
+// WORKER_COUNT ниже — переиспользование браузера между страницами в этой
+// сборке не работает), так что без этого кэша распаковка гонялась бы не
+// 4 раза, а сотни.
+let launchOptionsPromise = null;
+function resolveLaunchOptions() {
+  if (!launchOptionsPromise) {
+    launchOptionsPromise = (async () => {
+      if (process.env.VERCEL) {
+        const sparticuzChromium = (await import('@sparticuz/chromium')).default;
+        return {
+          args: sparticuzChromium.args,
+          executablePath: await sparticuzChromium.executablePath(),
+          headless: true,
+        };
+      }
+      return { executablePath: '/opt/pw-browsers/chromium', headless: true };
+    })();
   }
-  return chromium.launch({ executablePath: '/opt/pw-browsers/chromium', headless: true });
+  return launchOptionsPromise;
+}
+
+async function launchBrowser() {
+  const options = await resolveLaunchOptions();
+  return chromium.launch(options);
 }
 
 async function main() {
   if (!existsSync(DIST_DIR)) throw new Error('dist/ не найден — запускать после vite build');
 
+  const landingPaths = await fetchLandingPaths();
   const paths = [
-    ...(await fetchLandingPaths()),
+    ...landingPaths,
     ...(await fetchBusinessCenterPaths()),
     ...(await fetchClassDistrictComboPaths()),
     ...(await fetchMicrodistrictHubPaths()),
@@ -236,68 +262,67 @@ async function main() {
     return;
   }
 
-  // Владелец, 2026-09-06: "оптимизируй пайплайн" — с ростом каталога (145
-  // карточек БЦ + хабы класса/района + 32 новых хаба пересечений класс×район
-  // + лендинги объектов, 190+ страниц) старая схема "новый браузер на КАЖДУЮ
-  // страницу и КАЖДУЮ попытку" стала заметно давить на время сборки — запуск
-  // headless-браузера на порядок дороже, чем открытие вкладки в уже
-  // запущенном. Теперь браузер ОДИН на всю сборку, но с self-healing (см.
-  // ensureBrowser ниже) — если он всё же неожиданно умрёт (та самая
-  // нестабильность на билд-контейнере Vercel, из-за которой раньше и
-  // появилась схема "браузер на каждую попытку", см. историю в
-  // SEO_PLAN.md), следующая попытка перезапускает его заново, а не роняет
-  // всю сборку. Ключевое отличие от прежней (уже отклонённой) попытки
-  // переиспользовать браузер: каждая страница получает СВОЮ вкладку
-  // (browser.newPage()), которая гарантированно закрывается в finally —
-  // если раньше вкладки копились и не закрывались явно, это могло быть
-  // реальной причиной падения по памяти на длинной сборке, а не просто
-  // "браузер иногда падает сам по себе".
-  //
-  // Вторая часть оптимизации — ограниченный пул параллельных вкладок
-  // (WORKER_COUNT), не строго по одной странице за раз: основное время на
-  // страницу уходит не на сам рендер, а на ожидание ответа Supabase (один
-  // и тот же браузер прекрасно обслуживает несколько вкладок одновременно,
-  // сетевые запросы разных вкладок друг друга не блокируют). Число
-  // воркеров — умеренное (не разгонять сильно на build-контейнере с
-  // ограниченными CPU/RAM), тот же порядок величины, что и у пула в
-  // meetingTranscribeApi.ts (CHUNK_CONCURRENCY).
+  // Пути, без снапшота которых сборка не должна тихо проезжать (PAGESPEED_PLAN.md,
+  // Э0-2) — лендинги объектов (деньги) и все статические контентные страницы
+  // (в т.ч. /minsk/minsk-mir). Карточки БЦ и хабы класса×района сюда
+  // намеренно не входят — их 150+, единичный сбой не должен ронять весь
+  // деплой, но полный список пропущенных путей всё равно печатается ниже.
+  const criticalPaths = new Set([...landingPaths, ...STATIC_PATHS]);
+
+  // История (важно для будущих правок этого файла, четыре захода подряд):
+  // 1) Исходно — новый браузер на КАЖДУЮ страницу и КАЖДУЮ попытку. Со
+  //    182+ страницами в каталоге (145 карточек БЦ + хабы класса/района +
+  //    32 хаба пересечений класс×район + лендинги объектов) это стало
+  //    заметно давить на время сборки — запуск headless-браузера на
+  //    порядок дороже открытия вкладки в уже запущенном.
+  // 2) 2026-09-06, "оптимизируй пайплайн" — переехали на ОДИН браузер на
+  //    всю сборку + пул из WORKER_COUNT=4 параллельных вкладок
+  //    (`newPage()` в одном и том же браузере). На проде (Build Logs,
+  //    владелец прислал) это дало ~94 из ~194 путей потерянными
+  //    («page.content: Target page, context or browser has been closed»),
+  //    включая сам /minsk/minsk-mir. Причина — `@sparticuz/chromium` на
+  //    Vercel запускает Chromium с флагом `--single-process` (виден в
+  //    логах при релонче): один OS-процесс на весь браузер И все его
+  //    вкладки разом, без изоляции рендереров — крах рендерера ОДНОЙ
+  //    вкладки убивал процесс целиком, вместе с остальными вкладками ТОГО
+  //    ЖЕ браузера, открытыми в этот момент другими воркерами.
+  // 3) Первый фикс — WORKER_COUNT=1, строго последовательно: убрал потери,
+  //    но увеличил время пререндера примерно в 4 раза — неприемлемо долго.
+  // 4) Второй фикс — свой процесс браузера на каждый воркер (переиспользуем
+  //    его между страницами ОДНОГО воркера). Ловил `spawn ETXTBSY` при
+  //    параллельной распаковке (см. ниже, resolveLaunchOptions), но и
+  //    после фикса ETXTBSY на реальном деплое (Build Logs) вскрылось: у
+  //    ЭТОЙ СБОРКИ `--single-process`-браузер надёжно переживает ровно
+  //    ОДНУ страницу — на второй же `newPage()` того же процесса стабильно
+  //    падает с "Target page, context or browser has been closed", и
+  //    приходится закрывать/перезапускать процесс заново на каждой
+  //    странице всё равно, просто ценой одной гарантированно провальной
+  //    попытки перед этим (лишний relaunch + backoff на КАЖДУЮ страницу).
+  // 5) Настоящий фикс — раз переиспользование браузера между страницами в
+  //    этой сборке в принципе не работает, не пытаемся: свежий браузер
+  //    (свой OS-процесс) на КАЖДЫЙ рендер, без попытки его переживать между
+  //    страницами — это и есть исходная схема (п.1), просто с сохранённым
+  //    параллелизмом (WORKER_COUNT воркеров, каждый в своём цикле). Не
+  //    красивее, зато без единой лишней проваленной попытки на страницу.
   const WORKER_COUNT = 4;
 
   const serverProc = startPreviewServer();
-  let browser = null;
-  // Единственный "полёт" перезапуска браузера на все воркеры разом — при
-  // WORKER_COUNT>1 несколько вкладок могут словить "browser closed" от
-  // ОДНОГО и того же упавшего браузера одновременно (проверено локальным
-  // тестом пула перед деплоем: без этой блокировки 4 воркера гонялись за
-  // релончем разом и запускали браузер 5 раз вместо 1 — не падение сборки,
-  // но чистая трата времени, обратная всему смыслу оптимизации). Пока
-  // relaunchPromise не пуст — все параллельные вызовы просто ждут его
-  // результат, не плодя свои собственные launchBrowser().
-  let relaunchPromise = null;
 
-  async function ensureBrowser() {
-    if (browser && browser.isConnected()) return browser;
-    if (!relaunchPromise) {
-      relaunchPromise = (async () => {
-        try {
-          await browser?.close();
-        } catch {
-          // мог быть уже мёртв — не мешает перезапуску
-        }
-        browser = await launchBrowser();
-        relaunchPromise = null;
-        return browser;
-      })();
-    }
-    return relaunchPromise;
-  }
+  // Пути, которые не удалось снять снапшотом ни за одну попытку — собираем,
+  // чтобы в конце сборки явно провалиться, если среди них есть что-то
+  // критичное (см. criticalPaths выше), а не молча оставить старый/пустой
+  // HTML на проде.
+  const failedPaths = [];
+
+  const RENDER_ATTEMPTS = 3;
 
   async function renderPath(path) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    for (let attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++) {
+      let browser;
       let page;
       try {
-        const activeBrowser = await ensureBrowser();
-        page = await activeBrowser.newPage();
+        browser = await launchBrowser();
+        page = await browser.newPage();
         // ?prerender=1 — сигнал для инлайн-скрипта Яндекс.Метрики в
         // index.html не считать этот заход реальным визитом (см.
         // комментарий там же). В сохранённый HTML параметр не попадает —
@@ -319,7 +344,21 @@ async function main() {
         await page
           .waitForFunction(() => !document.body.innerText.includes('Загрузка…'), { timeout: 15_000 })
           .catch(() => console.warn(`[prerender] /${path}: «Загрузка…» не исчезла за 15с — снапшот с плейсхолдером`));
+        // scripts/defer-entry-script.mjs подключает главный JS не из <head>,
+        // а инлайн-лоадером после первого кадра — в живом DOM к этому
+        // моменту уже висят вставленные им <script type="module">/<link
+        // rel="modulepreload"> (помечены data-entry-injected). В снапшот они
+        // попасть не должны: иначе на проде модуль подключится напрямую из
+        // разметки, сразу (весь смысл отложенной загрузки пропадёт), а
+        // лоадер добавит его второй раз. Сам лоадер (data-entry-loader) —
+        // обычный инлайн-скрипт в конце body, остаётся как есть.
+        await page.evaluate(() => {
+          document.querySelectorAll('[data-entry-injected]').forEach((el) => el.remove());
+        });
         const html = await page.content();
+        if (!html.includes('data-entry-loader')) {
+          throw new Error('в снапшоте нет лоадера главного JS (data-entry-loader) — defer-entry-script.mjs не отработал?');
+        }
         const dir = join(DIST_DIR, path);
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, 'index.html'), html);
@@ -327,24 +366,16 @@ async function main() {
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (attempt === 2) {
+        if (attempt === RENDER_ATTEMPTS) {
           // Одна проблемная страница не должна ронять сборку остальных —
           // без снапшота роут просто останется на клиентском рендере, как
-          // и было раньше, до Э2-1 (не хуже текущего состояния).
-          console.error(`[prerender] /${path} пропущен после 2 попыток:`, message);
+          // и было раньше, до Э2-1 (не хуже текущего состояния). Критичность
+          // конкретно этого пути разбирается в конце main() (criticalPaths).
+          console.error(`[prerender] /${path} пропущен после ${RENDER_ATTEMPTS} попыток:`, message);
+          failedPaths.push(path);
         } else {
           console.warn(`[prerender] /${path}: попытка ${attempt} не удалась (${message}), повтор`);
-        }
-        // Ошибка похожа на "браузер умер" — форсируем переоткрытие на
-        // следующей попытке/следующем воркере, а не оставляем висеть мёртвый
-        // объект, который ensureBrowser() иначе продолжил бы считать живым.
-        if (message.includes('closed') || message.includes('crashed') || message.includes('disconnected')) {
-          try {
-            await browser?.close();
-          } catch {
-            // уже мёртв — и так сойдёт
-          }
-          browser = null;
+          await new Promise((r) => setTimeout(r, 300 * attempt));
         }
       } finally {
         if (page) {
@@ -354,13 +385,19 @@ async function main() {
             // страница могла умереть вместе с браузером — не роняем сборку
           }
         }
+        if (browser) {
+          try {
+            await browser.close();
+          } catch {
+            // мог быть уже мёртв — не мешает финалу
+          }
+        }
       }
     }
   }
 
   try {
     await waitForServer();
-    await ensureBrowser();
     let cursor = 0;
     async function worker() {
       while (cursor < paths.length) {
@@ -371,11 +408,26 @@ async function main() {
     await Promise.all(Array.from({ length: WORKER_COUNT }, worker));
   } finally {
     serverProc.kill();
-    try {
-      await browser?.close();
-    } catch {
-      // не мешаем финалу сборки из-за неудачного close()
-    }
+  }
+
+  // Э0-2 (PAGESPEED_PLAN.md) — раньше пропуск ЛЮБОГО пути (включая
+  // /minsk/minsk-mir и лендинги объектов) был тихим console.error, сборка
+  // всё равно завершалась успешно и на прод уезжал пустой SPA-шелл вместо
+  // контента. Теперь пропуск критичного пути валит сборку явно — Vercel
+  // покажет красный деплой и оставит прод на прошлой рабочей версии, а не
+  // тихо задеплоит регресс.
+  const failedCritical = failedPaths.filter((p) => criticalPaths.has(p));
+  if (failedCritical.length > 0) {
+    console.error(
+      `[prerender] СБОЙ: ${failedCritical.length} критичных путей остались без снапшота:\n` +
+        failedCritical.map((p) => `  - /${p}`).join('\n'),
+    );
+    process.exitCode = 1;
+  } else if (failedPaths.length > 0) {
+    console.warn(
+      `[prerender] ${failedPaths.length} некритичных путей (карточки БЦ/хабы) остались без снапшота — сборка продолжается:\n` +
+        failedPaths.map((p) => `  - /${p}`).join('\n'),
+    );
   }
 }
 

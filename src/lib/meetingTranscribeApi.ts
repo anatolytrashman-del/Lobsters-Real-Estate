@@ -16,9 +16,9 @@ const AI_CALL_TIMEOUT_MS = 60000;
 //
 //   файл целиком → в приватный бакет meeting-audio (anon может только
 //   insert — читать/удалять умеет лишь service role в функции)
-//        → api/transcribe-start.js: скачивает файл, отправляет
+//        → api/transcribe.js (POST): скачивает файл, отправляет
 //          speech2text.ru, получает id задачи, сразу удаляет файл из бакета
-//        → клиент опрашивает api/transcribe-poll.js по таймеру, пока
+//        → клиент опрашивает api/transcribe.js (GET) по таймеру, пока
 //          задача не завершится
 //        → результат приходит уже готовым текстом (сервер сам разбирает
 //          SRT-формат от speech2text.ru).
@@ -89,7 +89,7 @@ async function uploadFile(file: File): Promise<string> {
 }
 
 async function startTranscription(path: string): Promise<string> {
-  const resp = await authFetch('/api/transcribe-start', {
+  const resp = await authFetch('/api/transcribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
@@ -107,7 +107,7 @@ interface PollResult {
 }
 
 async function pollOnce(taskId: string): Promise<PollResult> {
-  const resp = await authFetch(`/api/transcribe-poll?taskId=${encodeURIComponent(taskId)}`);
+  const resp = await authFetch(`/api/transcribe?taskId=${encodeURIComponent(taskId)}`);
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(data.error || `Ошибка проверки статуса (${resp.status})`);
   return data;

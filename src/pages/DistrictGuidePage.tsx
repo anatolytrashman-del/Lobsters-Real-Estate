@@ -56,7 +56,7 @@ import { HeroImageSlider } from '../components/objects/HeroImageSlider';
 import { FaqAccordion } from '../components/ui/FaqAccordion';
 import type { FaqItem } from '../components/ui/FaqAccordion';
 import { ToggleGroup } from '../components/ui/ToggleGroup';
-import { fetchMarketOffers } from '../lib/marketOffersApi';
+import { fetchPublicMarketOffers } from '../lib/marketOffersApi';
 import { AREA_BUCKET_ORDER, areaBucket, MARKET_PROPERTY_TYPES, netSize, netPricePerSqm } from '../data/marketOffers';
 import type { MarketOffer } from '../data/marketOffers';
 import { fetchPrimaryMarketOffers } from '../lib/primaryMarketOffersApi';
@@ -68,15 +68,21 @@ import { currencySymbols } from '../data/transactions';
 import type { Currency } from '../data/transactions';
 import type { ExchangeRate } from '../data/exchangeRates';
 import { PrimaryMarketProModal } from '../components/district/PrimaryMarketProModal';
-import { DistrictMap } from '../components/district/DistrictMap';
-// lazy() — эта карта тянет за собой исчерпывающий снепшот организаций
-// (data/districtBusinessCategories.ts, 883 точки, ~80 КБ) для индекса
-// концентрации по нишам. Обычный статический импорт зашил бы этот вес в
-// главный чанк лендинга для КАЖДОГО посетителя, даже если он не долистает
-// до карты — тот же принцип, по которому в App.tsx лениво грузится вся
-// админка (см. комментарий там).
+import { useInView } from '../lib/useInView';
+// lazy() — обе карты тянут за собой отдельные снепшоты данных
+// (data/districtPlaces.ts ~60 КБ у DistrictMap, data/districtBusinessCategories.ts
+// 883 точки ~80 КБ у DistrictQuarterMap для индекса концентрации по нишам).
+// Обычный статический импорт зашил бы этот вес в главный чанк лендинга для
+// КАЖДОГО посетителя, даже если он не долистает до карт — тот же принцип, по
+// которому в App.tsx лениво грузится вся админка (см. комментарий там).
+// PAGESPEED_PLAN.md, Э2-3 — рендер обоих компонентов ниже (не только сам
+// chunk-импорт) дополнительно гейтится useInView, см. quarterMapInView/
+// districtMapInView.
 const DistrictQuarterMap = lazy(() =>
   import('../components/district/DistrictQuarterMap').then((m) => ({ default: m.DistrictQuarterMap })),
+);
+const DistrictMap = lazy(() =>
+  import('../components/district/DistrictMap').then((m) => ({ default: m.DistrictMap })),
 );
 
 // Переехала с /rayon-minsk-mir на /minsk/minsk-mir (см. CLAUDE.md, урл-
@@ -117,13 +123,18 @@ const OG_IMAGE = 'https://redevelopment.pro/images/district/og-minsk-mir.jpg';
 // нормальна (это открытая публикация автора, не тайком скопированная).
 // HeroImageSlider — тот же компонент, что и слайдер рендеров на /one
 // (components/objects/HeroImageSlider.tsx), просто переиспользован.
+// PAGESPEED_PLAN.md, Э4-3 — переупакованы в WebP (q80), те же кадры/
+// разрешение (512×640), −15…20% байт каждая. Оригинальные .jpg оставлены
+// на диске (og:image и подобное используют отдельный файл, эти конкретные
+// шесть больше нигде не подключены, но по WebP-водяному-знаку-и-т.п. риск
+// был минимальный — на всякий случай не удалялись).
 const HERO_IMAGES = [
-  '/images/district/hero-1.jpg',
-  '/images/district/hero-2.jpg',
-  '/images/district/hero-3.jpg',
-  '/images/district/hero-4.jpg',
-  '/images/district/hero-5.jpg',
-  '/images/district/hero-6.jpg',
+  '/images/district/hero-1.webp',
+  '/images/district/hero-2.webp',
+  '/images/district/hero-3.webp',
+  '/images/district/hero-4.webp',
+  '/images/district/hero-5.webp',
+  '/images/district/hero-6.webp',
 ];
 
 // Источник фактов: Википедия, статья "Минск Мир" (ru.wikipedia.org,
@@ -183,12 +194,22 @@ const statTiles: { icon: LucideIcon; value: string; label: string }[] = [
 // классический трюк "alpha = 255 − min(R,G,B)" с де-премультипликацией
 // цвета) — не смог найти логотип с уже прозрачным фоном официально,
 // пришлось вырезать вручную, как и просил владелец.
-const DEVELOPER_LOGO_URL = '/images/district/dana-holdings-logo.png';
+// PAGESPEED_PLAN.md, Э4-1 — пересохранён в WebP под фактический размер
+// показа. Изначально сделан 2× (retina-эвристика), но живой отчёт PageSpeed
+// (владелец, "если картинки тяжёлые, давай tinypng") показал реальный DPR
+// экрана теста — 1,75, не 2 — и явно назвал "displayed dimensions", по
+// которым и пересчитан точный размер (368×110, было 420×126 при 2×, было
+// 585×176 PNG до Э4-1). TinyPNG не подключали — тут не про более умный
+// алгоритм сжатия (WebP через Pillow уже близко к пределу для такой
+// графики), а про то, что файл был чуть крупнее реально нужного.
+const DEVELOPER_LOGO_URL = '/images/district/dana-holdings-logo.webp';
 // Тот же файл, что и MINSK_MIR_LOGO_URL в ObjectLandingPage.tsx (страница
 // Red One) — владелец попросил показать его рядом с логотипом застройщика
 // и тут же (см. комментарий там про перезаливку с ibb.co в собственное
-// хранилище — сделано заодно с этой правкой).
-const MINSK_MIR_LOGO_URL = '/images/district/minsk-mir-logo.png';
+// хранилище — сделано заодно с этой правкой). WebP 95×110 (см. комментарий
+// у DEVELOPER_LOGO_URL про уточнение размера под реальный DPR 1,75) —
+// ObjectLandingPage.tsx использует тот же путь.
+const MINSK_MIR_LOGO_URL = '/images/district/minsk-mir-logo.webp';
 const DEVELOPER_LINKS = [
   { label: 'minskworld.by', url: 'https://minskworld.by' },
   { label: 'bir.by', url: 'https://bir.by' },
@@ -210,7 +231,10 @@ const DEVELOPER_CONTACTS = {
 // (115) — короткий номер, работает только с мобильных трёх операторов
 // (владелец: "115 (A1, MTC, Life)"), это отражено в подписи, не в самом
 // номере (tel:115 одинаково валиден для всех).
-const MANAGEMENT_COMPANY_LOGO_URL = '/images/district/happy-planet-logo.png';
+// PAGESPEED_PLAN.md, Э4-1 — WebP, 149×147 (было 200×198 PNG; см. комментарий
+// у DEVELOPER_LOGO_URL — размер уточнён под реальный DPR теста, 1,75, а не
+// плоские 2×).
+const MANAGEMENT_COMPANY_LOGO_URL = '/images/district/happy-planet-logo.webp';
 const MANAGEMENT_COMPANY_DESCRIPTION =
   'Управляющая компания «Happy Planet» отвечает за эксплуатацию и управление недвижимостью в районе «Минск Мир». Организация обслуживает сданные объекты Dana Holdings, а её бэк-офис для работы с собственниками и арендаторами находится в границах района.';
 const MANAGEMENT_COMPANY = {
@@ -910,7 +934,7 @@ const PROPERTY_TYPE_OFFICE: DistrictPropertyType = {
     <>
       Классические офисные площади под кабинеты, представительства и небольшие команды. В районе особенно не
       хватает готовых компактных офисов с отделкой — этот дефицит закрывает{' '}
-      <Link to="/minsk/one" className="font-semibold text-primary hover:underline">
+      <Link to="/minsk/one" className="font-semibold text-primary-hover hover:underline">
         деловой центр Red One
       </Link>{' '}
       по соседству.
@@ -1209,7 +1233,10 @@ export function DistrictGuidePage() {
   }, []);
 
   useEffect(() => {
-    fetchMarketOffers()
+    // fetchPublicMarketOffers() — не fetchMarketOffers() (`select('*')` на
+    // market_offers, только для authenticated-админки, MarketOffersReview.tsx).
+    // См. PAGESPEED_PLAN.md, Э5-1/Б2.
+    fetchPublicMarketOffers()
       .then(setMarketOffers)
       .catch(() => setMarketOffers([]));
   }, []);
@@ -1256,6 +1283,13 @@ export function DistrictGuidePage() {
   // постоянно видимой колонки (для неё просто нет места на узком экране),
   // открывает панель поверх контента с затемнением фона.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // PAGESPEED_PLAN.md, Э2-2/Э2-3 — обе карты Яндекса ниже сгиба (689 КиБ +
+  // 2+ с CPU на главный поток, см. отчёт PageSpeed) грузятся только когда
+  // пользователь прокруткой приблизился к соответствующему блоку, а не сразу
+  // при открытии страницы.
+  const [quarterMapSectionRef, quarterMapInView] = useInView<HTMLDivElement>();
+  const [districtMapSectionRef, districtMapInView] = useInView<HTMLDivElement>();
 
   // Подсветка текущего раздела в боковом оглавлении при скролле (владелец,
   // со слов друга: "чтобы по мере скрола текущий пункт выделялся жирным").
@@ -1320,7 +1354,7 @@ export function DistrictGuidePage() {
         )}
       >
         <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Содержание гайда</span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Содержание гайда</span>
           <button
             type="button"
             onClick={() => setMobileNavOpen(false)}
@@ -1364,25 +1398,34 @@ export function DistrictGuidePage() {
           отдельным fixed-элементом, привязанным к той же navBox.left, что и
           сам `nav` ниже, а исходный логотип в шапке скрываем на lg+, чтобы
           не было двух логотипов одновременно (тот же приём, что и с пустой
-          первой колонкой-заглушкой под fixed-сайдбар в сетке контента ниже). */}
+          первой колонкой-заглушкой под fixed-сайдбар в сетке контента ниже).
+          text-primary-hover, не text-primary — PAGESPEED_PLAN.md, Э8-2:
+          "RED" в 18px (text-lg) недостаточно крупный для послабления WCAG
+          "крупный жирный текст" (нужно ≥19px), --color-primary даёт только
+          4,12:1 на bg — text-primary-hover 5,13:1. */}
       <Link
         to="/minsk"
         className="fixed top-6 z-40 hidden shrink-0 text-lg font-extrabold tracking-wide text-ink lg:block"
         style={navBox ? { left: navBox.left } : { visibility: 'hidden' }}
       >
-        <span className="font-black text-primary">RED</span>EVELOPMENT
+        <span className="font-black text-primary-hover">RED</span>EVELOPMENT
       </Link>
 
       <div className="border-b border-border py-5">
         <div className="mx-auto max-w-6xl px-4 sm:px-8">
           <div className="flex items-center justify-between lg:grid lg:grid-cols-[200px_1fr] lg:items-center lg:gap-10">
             <Link to="/minsk" className="shrink-0 text-lg font-extrabold tracking-wide text-ink lg:invisible">
-              <span className="font-black text-primary">RED</span>EVELOPMENT
+              <span className="font-black text-primary-hover">RED</span>EVELOPMENT
             </Link>
             <div className="lg:mx-auto lg:w-full lg:max-w-3xl">
               <nav className="hidden items-center gap-6 text-sm font-medium text-ink-muted sm:flex">
                 <Link to="/minsk/one" className="transition-colors hover:text-ink">
                   Деловой центр Red One
+                </Link>
+                {/* Аудит поиска 2026-09-07: гайд ссылался на Red One, но не на
+                    каталог БЦ — каталог был «островом» без входящих ссылок. */}
+                <Link to="/minsk/bcminsk" className="transition-colors hover:text-ink">
+                  Бизнес-центры Минска
                 </Link>
               </nav>
             </div>
@@ -1390,7 +1433,10 @@ export function DistrictGuidePage() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-8">
+      {/* <main> — единственный main-landmark страницы (PageSpeed
+          Accessibility «Document does not have a main landmark»): шапка с
+          логотипом/меню и hero выше остаются вне него, как и положено. */}
+      <main className="mx-auto max-w-6xl px-4 py-12 sm:px-8">
         <div className="lg:grid lg:grid-cols-[200px_1fr] lg:gap-10">
           <aside ref={navAsideRef} className="hidden lg:block">
             <nav
@@ -1400,7 +1446,7 @@ export function DistrictGuidePage() {
               )}
               style={navBox ? { ...glassCardShadow, left: navBox.left, width: navBox.width } : { visibility: 'hidden' }}
             >
-              <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">На странице</p>
+              <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">На странице</p>
               {SECTION_NAV.map(({ id, label, icon: Icon }) => (
                 <a
                   key={id}
@@ -1441,14 +1487,25 @@ export function DistrictGuidePage() {
             {/* Пометка свежести — владелец: "чтобы инфа выглядела супер-
                 актуальной", спокойный зелёный, не просто блёклый текст.
                 BadgeCheck вместо точки/иконки календаря — читается как
-                "проверено", не только "когда-то обновлено". */}
-            <span className="flex w-fit items-center gap-1.5 rounded-full border border-success/30 bg-success-bg px-3 py-1 text-xs font-semibold text-success">
+                "проверено", не только "когда-то обновлено". text-[#0f6b3d],
+                не text-success — PAGESPEED_PLAN.md, Э8-3: токен --color-success
+                на --color-success-bg даёт 3,03:1, ниже нормы WCAG 4,5:1 для
+                мелкого текста (аудит Accessibility PageSpeed это поймал);
+                глобальный токен не трогаем (задевает всё приложение), точечная
+                более тёмная версия только здесь — 5,9:1. */}
+            <span className="flex w-fit items-center gap-1.5 rounded-full border border-success/30 bg-success-bg px-3 py-1 text-xs font-semibold text-[#0f6b3d]">
               <BadgeCheck className="h-3.5 w-3.5 shrink-0" />
               {UPDATED_BADGE_LABEL}
             </span>
           </div>
           <div className="mx-auto w-full max-w-xs sm:max-w-none">
-            <HeroImageSlider images={HERO_IMAGES} alt="Аэрофото района Минск Мир" aspectClassName="aspect-[4/5]" />
+            <HeroImageSlider
+              images={HERO_IMAGES}
+              alt="Аэрофото района Минск Мир"
+              aspectClassName="aspect-[4/5]"
+              imageWidth={512}
+              imageHeight={640}
+            />
           </div>
         </div>
 
@@ -1488,8 +1545,13 @@ export function DistrictGuidePage() {
               <h2 className="text-lg font-bold text-ink">Застройщик района</h2>
             </div>
             <div className="flex items-center gap-4">
-              <img src={DEVELOPER_LOGO_URL} alt="Dana Holdings" className="h-9 w-auto object-contain" />
-              <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" className="h-9 w-auto object-contain" />
+              {/* loading="lazy" на логотипах и картинке аудитории ниже —
+                  все три блока на мобильном ниже первого экрана, а без
+                  lazy браузер запрашивал их сразу из разметки (preload-
+                  сканер), и они вставали в очередь рядом с LCP-картинкой
+                  и шрифтами (PAGESPEED_PLAN.md, Э7-4). */}
+              <img src={DEVELOPER_LOGO_URL} alt="Dana Holdings" width={368} height={110} loading="lazy" className="h-9 w-auto object-contain" />
+              <img src={MINSK_MIR_LOGO_URL} alt="Минск Мир" width={95} height={110} loading="lazy" className="h-9 w-auto object-contain" />
             </div>
           </div>
           <p className="text-sm text-ink-muted">
@@ -1544,6 +1606,9 @@ export function DistrictGuidePage() {
             <img
               src={MANAGEMENT_COMPANY_LOGO_URL}
               alt={MANAGEMENT_COMPANY.name}
+              width={149}
+              height={147}
+              loading="lazy"
               className="h-12 w-auto object-contain"
             />
           </div>
@@ -1600,6 +1665,7 @@ export function DistrictGuidePage() {
           <img
             src="/images/district/audience-target-audience.svg"
             alt=""
+            loading="lazy"
             className="hidden h-auto w-36 shrink-0 self-center sm:block"
           />
         </div>
@@ -1691,10 +1757,19 @@ export function DistrictGuidePage() {
           </div>
         </div>
 
-        <div id="quarter-map" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
-          <Suspense fallback={<div className="flex h-64 items-center justify-center text-sm text-ink-faint">Загрузка карты…</div>}>
-            <DistrictQuarterMap />
-          </Suspense>
+        <div
+          id="quarter-map"
+          ref={quarterMapSectionRef}
+          className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)}
+          style={glassCardShadow}
+        >
+          {quarterMapInView ? (
+            <Suspense fallback={<div className="flex h-64 items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
+              <DistrictQuarterMap />
+            </Suspense>
+          ) : (
+            <div className="flex h-64 items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
+          )}
         </div>
 
         <div id="property-types" className={cn('flex scroll-mt-6 flex-col', glassCardClass)} style={glassCardShadow}>
@@ -1743,7 +1818,7 @@ export function DistrictGuidePage() {
                   </ul>
                 </div>
                 <div className="flex flex-col gap-1 rounded-control border border-dashed border-border p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Минусы</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Минусы</p>
                   <ul className="flex flex-col gap-1.5">
                     {[
                       'Юридически нежилое помещение, не полноценное жильё',
@@ -1758,7 +1833,7 @@ export function DistrictGuidePage() {
                   </ul>
                 </div>
               </div>
-              <p className="text-xs text-ink-faint">
+              <p className="text-xs text-ink-muted">
                 Правовой режим — указ Президента № 456 от 22.09.2014 (тот же, что выделил землю под Минск Мир),
                 дополнен указом № 370 от 20.10.2020.
               </p>
@@ -1801,9 +1876,9 @@ export function DistrictGuidePage() {
             чистый м², без учёта террас.
           </p>
 
-          {primaryMarketOffers === null && <p className="text-sm text-ink-faint">Загрузка…</p>}
+          {primaryMarketOffers === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
           {primaryMarketOffers !== null && primaryMarketOffers.length === 0 && (
-            <p className="text-sm text-ink-faint">Данные пока не собраны.</p>
+            <p className="text-sm text-ink-muted">Данные пока не собраны.</p>
           )}
 
           {primaryMarketOffers && primaryMarketOffers.length > 0 && (
@@ -1817,7 +1892,7 @@ export function DistrictGuidePage() {
                   категориям (данные bir.by)
                 </caption>
                 <thead>
-                  <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                  <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
                     <th scope="col" className="py-2 pr-3 text-left">Категория</th>
                     <th scope="col" className="py-2 px-2 text-right font-semibold">Предложений</th>
                     <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь</th>
@@ -1837,16 +1912,16 @@ export function DistrictGuidePage() {
                     >
                       <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
                       <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
-                      <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-faint">
+                      <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">
                         {row.areaMin === row.areaMax ? `${row.areaMin}` : `${row.areaMin}–${row.areaMax}`} м²
                       </td>
-                      <td className="py-2.5 px-2 text-right tabular-nums text-ink-faint">
+                      <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
                         {formatPricePerM2(row.priceMinEur, primaryMarketCurrency, exchangeRate)}
                       </td>
                       <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
                         {formatPricePerM2(row.priceAvgEur, primaryMarketCurrency, exchangeRate)}
                       </td>
-                      <td className="py-2.5 pl-2 text-right tabular-nums text-ink-faint">
+                      <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
                         {formatPricePerM2(row.priceMaxEur, primaryMarketCurrency, exchangeRate)}
                       </td>
                     </tr>
@@ -1867,7 +1942,7 @@ export function DistrictGuidePage() {
               </span>
               <span className="flex flex-1 flex-col gap-0.5">
                 <span className="text-sm font-bold text-ink">Открыть Pro-аналитику</span>
-                <span className="text-xs text-ink-faint">
+                <span className="text-xs text-ink-muted">
                   Гистограмма цены, разбивка по домам и сравнение сдано/строится — по каждой категории отдельно
                 </span>
               </span>
@@ -1887,16 +1962,16 @@ export function DistrictGuidePage() {
             <CurrencyToggle value={marketCurrency} onChange={setMarketCurrency} />
           </div>
           {marketOffers && marketOffers.length > 0 && (
-            <span className="-mt-2 text-xs text-ink-faint">Kufar, Realt · {formatLatestUpdate(marketOffers)}</span>
+            <span className="-mt-2 text-xs text-ink-muted">Kufar, Realt · {formatLatestUpdate(marketOffers)}</span>
           )}
           <p className="text-sm text-ink-muted">
             Действующие предложения продажи и аренды коммерческих помещений в Минск Мире — количество и медианная
             цена за м² по типу помещения и площади. Обновляется раз в месяц.
           </p>
 
-          {marketOffers === null && <p className="text-sm text-ink-faint">Загрузка…</p>}
+          {marketOffers === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
           {marketOffers !== null && marketOffers.length === 0 && (
-            <p className="text-sm text-ink-faint">Данные пока не собраны.</p>
+            <p className="text-sm text-ink-muted">Данные пока не собраны.</p>
           )}
 
           {marketOffers && marketOffers.length > 0 && (
@@ -1914,7 +1989,7 @@ export function DistrictGuidePage() {
                   onChange={(value) => setMarketFinish(value as (typeof MARKET_FINISH_OPTIONS)[number])}
                 />
               </div>
-              <p className="text-xs text-ink-faint">
+              <p className="text-xs text-ink-muted">
                 Цена с отделкой и без — разные рынки, поэтому не смешиваем их в одной цифре.
               </p>
               <div className="overflow-x-auto">
@@ -1924,7 +1999,7 @@ export function DistrictGuidePage() {
                     за м² по типу помещения и площади (данные Kufar, Realt)
                   </caption>
                   <thead>
-                    <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                    <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
                       <th scope="col" className="py-2 pr-3 text-left">Тип помещения</th>
                       {AREA_BUCKET_ORDER.map((bucket) => (
                         <th scope="col" key={bucket} className="py-2 px-2 text-right font-semibold">
@@ -1946,7 +2021,7 @@ export function DistrictGuidePage() {
                             {cell ? (
                               <>
                                 <div className="font-semibold text-ink">{cell.count}</div>
-                                <div className="text-xs text-ink-faint">
+                                <div className="text-xs text-ink-muted">
                                   {formatMedianPriceLabel(cell.medianPrice, marketCurrency, exchangeRate, marketDealType === 'Аренда')}
                                 </div>
                               </>
@@ -1960,17 +2035,19 @@ export function DistrictGuidePage() {
                   </tbody>
                 </table>
               </div>
-              <p className="text-xs text-ink-faint">Сверху — количество предложений, снизу — медианная цена за м².</p>
+              <p className="text-xs text-ink-muted">Сверху — количество предложений, снизу — медианная цена за м².</p>
 
               <div className="flex items-start gap-2.5 rounded-control border border-success/30 bg-success-bg px-4 py-3">
                 <Sparkles className="h-4 w-4 shrink-0 translate-y-0.5 text-success" />
                 <p className="text-sm text-ink">
                   Небольших офисов (до 40 м²) с готовой отделкой в районе почти нет:{' '}
-                  <span className="font-semibold text-success">
+                  {/* text-[#0f6b3d] — тот же контраст-фикс, что и у бейджа
+                      "Обновлено" выше (PAGESPEED_PLAN.md, Э8-3). */}
+                  <span className="font-semibold text-[#0f6b3d]">
                     {countSmallFinishedOffices(marketOffers, 'sale')} предложение на продажу
                   </span>{' '}
                   и{' '}
-                  <span className="font-semibold text-success">
+                  <span className="font-semibold text-[#0f6b3d]">
                     {countSmallFinishedOffices(marketOffers, 'rent')} в аренду
                   </span>{' '}
                   на весь Минск Мир. Red One закрывает именно этот дефицит —{' '}
@@ -2088,7 +2165,7 @@ export function DistrictGuidePage() {
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1 rounded-control border border-dashed border-border p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">В самом районе</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">В самом районе</p>
               <p className="text-sm text-ink-muted">
                 Профильных точек почти нет — Минск Мир жилой, не под авто-бизнес.
               </p>
@@ -2116,7 +2193,7 @@ export function DistrictGuidePage() {
               салонов и студий — один из самых насыщенных сегментов района
             </span>
           </div>
-          <p className="text-xs text-ink-faint">
+          <p className="text-xs text-ink-muted">
             Лидируют парикмахерские и барбершопы (по {beautyBreakdown[0].count} каждая); также широко представлены
             ногтевые студии, косметология, брови и ресницы, стилисты.
           </p>
@@ -2160,7 +2237,7 @@ export function DistrictGuidePage() {
               точка Ozon и Wildberries — сильный спрос на маркетплейсы
             </span>
           </div>
-          <p className="text-xs text-ink-faint">
+          <p className="text-xs text-ink-muted">
             Wildberries — {pvzWildberriesCount}, Ozon — {pvzOzonCount}
           </p>
         </div>
@@ -2215,7 +2292,14 @@ export function DistrictGuidePage() {
           <div className="flex flex-col gap-2 pt-1">
             <div className="flex flex-wrap items-start gap-2">
               <span className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs font-semibold text-ink-muted">
-                <img src="/icons/minsk-metro-line3.png" alt="" className="h-4 w-auto" />
+                <img
+                  src="/icons/minsk-metro-line3.webp"
+                  alt=""
+                  width={68}
+                  height={32}
+                  loading="lazy"
+                  className="h-4 w-auto"
+                />
                 Метро:
               </span>
               <div className="flex flex-wrap gap-1.5">
@@ -2301,9 +2385,9 @@ export function DistrictGuidePage() {
                 <h3 className="text-sm font-bold text-ink">{title}</h3>
                 <div className="flex items-baseline gap-1.5">
                   <span className="text-lg font-extrabold text-ink">{count}</span>
-                  <span className="text-xs text-ink-faint">мест в продаже</span>
+                  <span className="text-xs text-ink-muted">мест в продаже</span>
                 </div>
-                <p className="text-xs text-ink-faint">
+                <p className="text-xs text-ink-muted">
                   {buildingsLabel} · {areaRange}
                 </p>
               </div>
@@ -2328,7 +2412,7 @@ export function DistrictGuidePage() {
             <div className="mt-2 flex flex-col gap-3">
               {(['Крытые', 'Подземные'] as const).map((category) => (
                 <div key={category} className="flex flex-col gap-1">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{category}</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">{category}</p>
                   <ul className="flex flex-col gap-1">
                     {parkingAddresses
                       .filter((p) => p.category === category)
@@ -2345,14 +2429,25 @@ export function DistrictGuidePage() {
             </div>
           </details>
 
-          <p className="text-xs text-ink-faint">
+          <p className="text-xs text-ink-muted">
             Источник — актуальный срез объявлений bir.by на продажу машиномест в Минск Мире, 2769 позиций (август
             2026).
           </p>
         </div>
 
-        <div id="map" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
-          <DistrictMap />
+        <div
+          id="map"
+          ref={districtMapSectionRef}
+          className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)}
+          style={glassCardShadow}
+        >
+          {districtMapInView ? (
+            <Suspense fallback={<div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
+              <DistrictMap />
+            </Suspense>
+          ) : (
+            <div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
+          )}
         </div>
 
         <FaqAccordion id="faq" title="Частые вопросы о районе" items={districtFaq} />
@@ -2364,13 +2459,17 @@ export function DistrictGuidePage() {
             дизайнерской отделкой, парковкой и онлайн-бронированием без предоплаты. Через дорогу — 5 детских садов
             и постоянный поток родителей утром и вечером, в районе — 3 школы и 4 детских сада (строится 5-й).
           </p>
-          <Link to="/minsk/one" className="w-fit text-sm font-semibold text-primary hover:underline">
+          {/* text-primary-hover вместо text-primary — тот же приём, что у
+              «RED» в шапке этой страницы: базовый красный на стеклянной
+              карточке даёт контраст 4,49:1 (порог 4,5 — PageSpeed
+              Accessibility «insufficient contrast ratio»), тёмный — 5,6:1. */}
+          <Link to="/minsk/one" className="w-fit text-sm font-semibold text-primary-hover hover:underline">
             Смотреть кабинеты в Red One →
           </Link>
         </div>
           </div>
         </div>
-      </div>
+      </main>
       </div>
       {primaryMarketProKey && primaryMarketOffers && (
         <PrimaryMarketProModal

@@ -5,6 +5,7 @@ import { cn } from '../../lib/cn';
 import { glassCardShadow } from '../../lib/glass';
 import { DISTRICT_PLACE_CATEGORIES, MAP_HIDDEN_CATEGORY_KEYS } from '../../data/districtPlaces';
 import { loadYmaps } from '../../lib/yandexMaps';
+import { useInView } from '../../lib/useInView';
 
 // Категории вроде 'auto' (см. комментарий у MAP_HIDDEN_CATEGORY_KEYS) есть
 // в данных, но не показываются на этой карте как слой/переключатель.
@@ -34,7 +35,20 @@ const DEFAULT_ZOOM = 15;
 // карта Яндекса и свой стейт переключателей (независимые, не синхронизированы
 // между компактным и полноэкранным видом — то же самое, что и у Pro-режима
 // "Первичного рынка": модалка открывается со своим дефолтным состоянием).
-function DistrictMapCanvas({ mapHeightClassName }: { mapHeightClassName: string }) {
+//
+// deferUntilVisible — PAGESPEED_PLAN.md, Э2-1: компактная карта (дефолт)
+// начинает грузить тяжёлый API Яндекса (689 КиБ, 2+ с CPU) только когда
+// пользователь прокруткой приблизился к ней, а не сразу при открытии
+// страницы. Карта в полноэкранной модалке (deferUntilVisible=false) —
+// пользователь только что сам нажал "Открыть на весь экран", ждать тут
+// нечего, грузим сразу.
+function DistrictMapCanvas({
+  mapHeightClassName,
+  deferUntilVisible = true,
+}: {
+  mapHeightClassName: string;
+  deferUntilVisible?: boolean;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const collectionsRef = useRef<Record<string, any>>({});
@@ -42,8 +56,11 @@ function DistrictMapCanvas({ mapHeightClassName }: { mapHeightClassName: string 
   const [activeKeys, setActiveKeys] = useState<Set<string>>(
     () => new Set(VISIBLE_CATEGORIES.map((c) => c.key)),
   );
+  const [viewportRef, inView] = useInView<HTMLDivElement>();
+  const shouldLoad = !deferUntilVisible || inView;
 
   useEffect(() => {
+    if (!shouldLoad) return;
     let cancelled = false;
 
     loadYmaps()
@@ -94,7 +111,7 @@ function DistrictMapCanvas({ mapHeightClassName }: { mapHeightClassName: string 
       mapRef.current = null;
       collectionsRef.current = {};
     };
-  }, []);
+  }, [shouldLoad]);
 
   function toggleCategory(key: string) {
     setActiveKeys((prev) => {
@@ -114,6 +131,7 @@ function DistrictMapCanvas({ mapHeightClassName }: { mapHeightClassName: string 
           страницы), но это же ломало щипок для зума самой карты. Атрибут —
           явное исключение из этого перехвата, см. комментарий в App.tsx. */}
       <div
+        ref={viewportRef}
         data-allow-pinch-zoom
         className={cn('relative overflow-hidden rounded-control border border-border', mapHeightClassName)}
       >
@@ -212,7 +230,7 @@ export function DistrictMap() {
                   Закрыть
                 </button>
               </div>
-              <DistrictMapCanvas mapHeightClassName="flex-1" />
+              <DistrictMapCanvas mapHeightClassName="flex-1" deferUntilVisible={false} />
             </div>
           </div>,
           document.body,
