@@ -96,6 +96,7 @@ export function setGenericPageMeta(meta: PageMeta & { url: string; image?: strin
 
   const objectLd = document.getElementById('object-json-ld');
   setOrganizationJsonLd(false);
+  setItemListJsonLd(null);
   if (objectLd) objectLd.textContent = '';
   // Страничные JSON-LD (крошки/Article/FAQ) страница задаёт сама ПОСЛЕ этого
   // вызова — здесь сбрасываем, чтобы при SPA-переходе на страницу без
@@ -172,6 +173,33 @@ export function setArticleJsonLd(article: {
 // страницы вызывают с false при монтировании (через setGenericPageMeta/
 // setObjectPageMeta/setBusinessCenterPageMeta), чтобы при SPA-переходе с
 // хаба разметка организации не оставалась на чужой странице.
+// ItemList — для рейтинговых/подборочных страниц (аудит поиска 2026-09-07,
+// «Лучшие бизнес-центры Минска — с методикой и датой»): каждый пункт —
+// ссылка на настоящую карточку БЦ с её позицией в списке. Единственный
+// потребитель — BusinessCentersRankingPage, но слот и чистка централизованы
+// здесь же, тем же паттерном, что и Organization (см. ниже) — на любой
+// другой странице (setGenericPageMeta/setObjectPageMeta/
+// setBusinessCenterPageMeta) слот принудительно очищается, чтобы при
+// SPA-переходе не осталась разметка чужого рейтинга.
+export function setItemListJsonLd(items: { name: string; url: string }[] | null) {
+  const ld = document.getElementById('itemlist-json-ld');
+  if (!ld) return;
+  if (!items || items.length === 0) {
+    ld.textContent = '';
+    return;
+  }
+  ld.textContent = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    itemListElement: items.map((item, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: item.name,
+      url: item.url,
+    })),
+  });
+}
+
 export function setOrganizationJsonLd(enabled: boolean) {
   const ld = document.getElementById('organization-json-ld');
   if (!ld) return;
@@ -272,6 +300,7 @@ export function setBusinessCenterPageMeta(
 
   const ld = document.getElementById('object-json-ld');
   setOrganizationJsonLd(false);
+  setItemListJsonLd(null);
   if (ld) {
     ld.textContent = JSON.stringify({
       '@context': 'https://schema.org',
@@ -324,6 +353,7 @@ export function setObjectPageMeta(
 
   const ld = document.getElementById('object-json-ld');
   setOrganizationJsonLd(false);
+  setItemListJsonLd(null);
   if (ld) {
     ld.textContent = JSON.stringify({
       '@context': 'https://schema.org',

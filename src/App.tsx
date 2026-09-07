@@ -9,6 +9,7 @@ import { ObjectLandingPage } from './pages/ObjectLandingPage';
 import { DistrictGuidePage } from './pages/DistrictGuidePage';
 import { MinskMirTopicPage } from './pages/MinskMirTopicPage';
 import { BusinessCentersMinskPage } from './pages/BusinessCentersMinskPage';
+import { BusinessCentersRankingPage } from './pages/BusinessCentersRankingPage';
 import { BusinessCenterDetailPage } from './pages/BusinessCenterDetailPage';
 import { MinskHub } from './pages/MinskHub';
 import { BriefPublicPage } from './pages/BriefPublicPage';
@@ -194,6 +195,8 @@ export default function App() {
           Регистрируются ДО ":slug", чтобы не конфликтовать с ним. */}
       {/* Ось «строящиеся» (аудит поиска 2026-09-07) — тот же компонент с пропом. */}
       <Route path="/minsk/bcminsk/stroyashchiesya" element={<BusinessCentersMinskPage underConstruction />} />
+      {/* Рейтинг «Лучшие бизнес-центры Минска» (аудит 2026-09-07) — отдельный компонент, не хаб-фильтр. */}
+      <Route path="/minsk/bcminsk/reyting" element={<BusinessCentersRankingPage />} />
       <Route path="/minsk/bcminsk/class/:classSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
       {/* Пересечение класс×район (владелец, 2026-09-06: "структура урлов...

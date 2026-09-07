@@ -839,6 +839,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
                 полупрозрачной шапке даёт контраст ниже 4,5:1 (Accessibility). */}
             <span className="font-black text-primary-hover">RED</span>EVELOPMENT
           </Link>
+          <Link to="/minsk/bcminsk/reyting" className="text-sm font-semibold text-ink-muted transition-colors hover:text-ink">
+            Рейтинг
+          </Link>
         </div>
       </div>
 
