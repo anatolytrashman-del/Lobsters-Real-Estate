@@ -968,6 +968,28 @@ const PROPERTY_TYPE_AVIA_MALL: DistrictPropertyType = {
     'Торговые площади в крупнейшем торговом центре Минска (138 200 м²) — Avia Mall уже открыт и работает, но продолжает заселяться арендаторами, часть площадей ещё доступна.',
 };
 
+// Секция «Бизнес-центры Минск Мира» (id="business-centers") — слаги и факты
+// ровно из каталога /minsk/bcminsk (таблица business_centers), не новые
+// данные. Ловушка, пойманная при написании: Dana Center того же
+// застройщика стоит на ул. Петра Мстиславца, 9 — но это «Маяк Минска»
+// (Первомайский район, метро «Восток»), НЕ Минск Мир, несмотря на общего
+// девелопера; аудит 2026-09-07 ошибочно причислил его к объектам района.
+// Поэтому в самом районе — один БЦ (МФЦ, строится), Dana Center показан
+// отдельно как «ближайший готовый БЦ того же застройщика». При появлении
+// в районе нового БЦ — добавить строку сюда после проверки адреса.
+const MINSK_MIR_BUSINESS_CENTERS: { slug: string; name: string; facts: string }[] = [
+  {
+    slug: 'mfc-minsk-mir',
+    name: 'Минский международный финансовый центр (МФЦ)',
+    facts: 'В Минск Мире · класс A · 97 000 м² · строится, сдача — 2027 г. · 42-этажная башня на проспекте Мира',
+  },
+  {
+    slug: 'dana-center',
+    name: 'Dana Center',
+    facts: 'Готовый БЦ того же застройщика, но в «Маяке Минска» у метро «Восток» · класс B+ · 23 000 м²',
+  },
+];
+
 const PROPERTY_TYPE_MFC: DistrictPropertyType = {
   icon: Landmark,
   title: 'Офисы в Минском международном финансовом центре',
@@ -1173,6 +1195,7 @@ const SECTION_NAV: { id: string; label: string; icon: LucideIcon }[] = [
   { id: 'business-density', label: 'Плотность бизнеса', icon: Grid2x2 },
   { id: 'quarter-map', label: 'Конкуренция по кварталам', icon: Grid2x2 },
   { id: 'property-types', label: 'Виды недвижимости', icon: Layers },
+  { id: 'business-centers', label: 'Бизнес-центры', icon: Building2 },
   { id: 'primary-market', label: 'Первичный рынок', icon: Banknote },
   { id: 'market', label: 'Вторичный рынок', icon: TrendingUp },
   { id: 'business-analytics', label: 'Аналитика по сферам бизнеса', icon: LayoutGrid },
@@ -1858,6 +1881,45 @@ export function DistrictGuidePage() {
             </div>
           </div>
         </div>
+
+        {/* Бизнес-центры Минск Мира — аудит поиска 2026-09-07: гайд ссылался
+            только на Red One, каталог БЦ и карточки МФЦ/Dana Center были
+            «островом» без входящих ссылок из самого релевантного контекста.
+            Факты — те же, что в карточках каталога (business_centers), без
+            новых цифр: класс, площадь, статус. Живой фетч не делаем — два
+            здания, данные меняются раз в год, а гид пререндерится. */}
+        <div id="business-centers" className={cn('flex scroll-mt-6 flex-col gap-4 p-6', glassCardClass)} style={glassCardShadow}>
+          <div className="flex items-center gap-3">
+            <Building2 className="h-5 w-5 shrink-0 text-ink" />
+            <h2 className="text-lg font-bold text-ink">Бизнес-центры Минск Мира</h2>
+          </div>
+          <p className="text-sm leading-relaxed text-ink-muted">
+            Классический бизнес-центр в самом районе пока один — МФЦ, и он ещё строится. Ближайший готовый БЦ
+            застройщика Dana Holdings стоит в другом районе, а офисный спрос в Минск Мире сегодня закрывают
+            помещения на первых этажах жилых домов и{' '}
+            <Link to="/minsk/one" className="font-semibold text-primary-hover hover:underline">
+              деловой центр Red One
+            </Link>{' '}
+            с небольшими кабинетами в собственность.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {MINSK_MIR_BUSINESS_CENTERS.map((bc) => (
+              <Link
+                key={bc.slug}
+                to={`/minsk/bcminsk/${bc.slug}`}
+                className="flex flex-col gap-1 rounded-control border border-border bg-surface p-4 transition-colors hover:border-primary/40"
+              >
+                <span className="text-sm font-bold text-ink">{bc.name}</span>
+                <span className="text-xs text-ink-muted">{bc.facts}</span>
+                <span className="mt-1 text-xs font-semibold text-primary-hover">Карточка бизнес-центра →</span>
+              </Link>
+            ))}
+          </div>
+          <Link to="/minsk/bcminsk" className="w-fit text-sm font-semibold text-primary-hover hover:underline">
+            Все бизнес-центры Минска — каталог с классом, площадью и объявлениями →
+          </Link>
+        </div>
+
 
         <div id="primary-market" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           {/* flex-col на мобильном — длинный заголовок + пилюля валюты в

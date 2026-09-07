@@ -95,6 +95,7 @@ export function setGenericPageMeta(meta: PageMeta & { url: string; image?: strin
   setMetaContent('meta[name="robots"]', 'index, follow');
 
   const objectLd = document.getElementById('object-json-ld');
+  setOrganizationJsonLd(false);
   if (objectLd) objectLd.textContent = '';
   // Страничные JSON-LD (крошки/Article/FAQ) страница задаёт сама ПОСЛЕ этого
   // вызова — здесь сбрасываем, чтобы при SPA-переходе на страницу без
@@ -162,6 +163,32 @@ export function setArticleJsonLd(article: {
     ...(article.image ? { image: [article.image] } : {}),
     author: org,
     publisher: org,
+  });
+}
+
+// Organization — только на хабе /minsk (аудит поиска 2026-09-07: «Organization
+// на главной»). Отдельный слот в index.html, не article-json-ld — у хаба
+// нет статьи, а у гидов/каталога Article нужен сам по себе. Остальные
+// страницы вызывают с false при монтировании (через setGenericPageMeta/
+// setObjectPageMeta/setBusinessCenterPageMeta), чтобы при SPA-переходе с
+// хаба разметка организации не оставалась на чужой странице.
+export function setOrganizationJsonLd(enabled: boolean) {
+  const ld = document.getElementById('organization-json-ld');
+  if (!ld) return;
+  if (!enabled) {
+    ld.textContent = '';
+    return;
+  }
+  ld.textContent = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    name: 'Redevelopment',
+    url: 'https://redevelopment.pro',
+    logo: 'https://redevelopment.pro/apple-touch-icon.png',
+    image: DEFAULT_OG_IMAGE,
+    description:
+      'Редевелопмент коммерческой недвижимости в Минске: справочник бизнес-центров, гиды по районам и деловой центр Red One в Минск Мире.',
+    areaServed: { '@type': 'City', name: 'Минск' },
   });
 }
 
@@ -244,6 +271,7 @@ export function setBusinessCenterPageMeta(
   setBreadcrumbJsonLd(null);
 
   const ld = document.getElementById('object-json-ld');
+  setOrganizationJsonLd(false);
   if (ld) {
     ld.textContent = JSON.stringify({
       '@context': 'https://schema.org',
@@ -295,6 +323,7 @@ export function setObjectPageMeta(
   setMetaContent('meta[name="robots"]', 'index, follow');
 
   const ld = document.getElementById('object-json-ld');
+  setOrganizationJsonLd(false);
   if (ld) {
     ld.textContent = JSON.stringify({
       '@context': 'https://schema.org',

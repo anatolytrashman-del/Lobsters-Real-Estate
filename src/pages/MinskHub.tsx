@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowRight, BookOpen, Building2, Lock, Store } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
-import { setGenericPageMeta } from '../lib/pageMeta';
+import { setGenericPageMeta, setOrganizationJsonLd } from '../lib/pageMeta';
 import { DISTRICTS, DISTRICTS_WITH_GUIDE } from '../data/districts';
 
 // Хаб раздела "Минск" (SEO_PLAN.md, урл-структура /minsk/...) — только
@@ -31,6 +31,7 @@ const PAGE_URL = 'https://redevelopment.pro/minsk';
 export function MinskHub() {
   useEffect(() => {
     setGenericPageMeta({ title: TITLE, description: DESCRIPTION, url: PAGE_URL });
+    setOrganizationJsonLd(true);
   }, []);
 
   return (
