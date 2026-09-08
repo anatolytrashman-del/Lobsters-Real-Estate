@@ -126,6 +126,31 @@ export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
       : 'Медианная цена продажи складских помещений в Минске по районам — по объявлениям Kufar и Realt.';
   const url = `https://redevelopment.pro/minsk/analytics/sklady/${deal === 'rent' ? 'arenda' : 'prodazha'}`;
 
+  // Вынесено из useEffect в useMemo — раньше собиралось только для JSON-LD,
+  // теперь тот же массив ещё и рендерится видимым блоком «Частые вопросы».
+  const faqItems = useMemo(() => {
+    if (!snapshots || snapshots.length === 0) return [];
+    const faq: { question: string; answer: string }[] = [];
+    if (city && city.n >= MIN_RELIABLE_N && city.median != null) {
+      faq.push({
+        question:
+          deal === 'rent' ? `Сколько стоит аренда склада в Минске в ${periodInLabel}?` : `Сколько стоит склад в Минске в ${periodInLabel}?`,
+        answer: `По медиане объявлений Kufar и Realt за ${periodLabel} — ${formatMoney(city.median, deal)} (по ${city.n} объявлениям).`,
+      });
+    }
+    faq.push({
+      question: 'Есть ли разбивка по классу склада (A/B/C) и направлению?',
+      answer:
+        'Пока нет — ни Kufar, ни Realt.by не публикуют класс склада, высоту потолков или направление шоссе как отдельные структурные поля объявления, а угадывать их по тексту описания мы не стали. Здесь только медиана по городу и по административному району.',
+    });
+    faq.push({
+      question: 'Откуда берутся данные?',
+      answer:
+        'Из активных объявлений Kufar и Realt.by по всему Минску, категория «Склады». Подробности — на странице методики.',
+    });
+    return faq;
+  }, [snapshots, city, deal, periodLabel, periodInLabel]);
+
   useEffect(() => {
     if (!snapshots) return;
     if (snapshots.length === 0) {
@@ -150,26 +175,8 @@ export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
       dateModified: modified,
       measurementTechnique: 'Медиана и перцентили цены за м² по активным объявлениям Kufar и Realt, срез по месяцу',
     });
-    const faq: { question: string; answer: string }[] = [];
-    if (city && city.n >= MIN_RELIABLE_N && city.median != null) {
-      faq.push({
-        question:
-          deal === 'rent' ? `Сколько стоит аренда склада в Минске в ${periodInLabel}?` : `Сколько стоит склад в Минске в ${periodInLabel}?`,
-        answer: `По медиане объявлений Kufar и Realt за ${periodLabel} — ${formatMoney(city.median, deal)} (по ${city.n} объявлениям).`,
-      });
-    }
-    faq.push({
-      question: 'Есть ли разбивка по классу склада (A/B/C) и направлению?',
-      answer:
-        'Пока нет — ни Kufar, ни Realt.by не публикуют класс склада, высоту потолков или направление шоссе как отдельные структурные поля объявления, а угадывать их по тексту описания мы не стали. Здесь только медиана по городу и по административному району.',
-    });
-    faq.push({
-      question: 'Откуда берутся данные?',
-      answer:
-        'Из активных объявлений Kufar и Realt.by по всему Минску, категория «Склады». Подробности — на странице методики.',
-    });
-    setFaqJsonLd(faq);
-  }, [snapshots, city, deal, fullTitle, description, url, periodLabel, periodInLabel, title]);
+    setFaqJsonLd(faqItems);
+  }, [snapshots, city, faqItems, fullTitle, description, url, title]);
 
   return (
     <div className="min-h-svh bg-bg">
@@ -192,6 +199,8 @@ export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
           <h1 className="text-2xl font-extrabold text-ink sm:text-3xl">{title}</h1>
           {periodLabel && <p className="text-sm text-ink-muted">Обновлено: {periodLabel}</p>}
         </div>
+
+        {!error && snapshots === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
 
         {error && (
           <div className={cn('p-6 text-ink-muted', glassCardClass)} style={glassCardShadow}>
@@ -345,6 +354,20 @@ export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
             {externalMetrics.length > 0 && ', Твоя столица (через prometr.by)'}.
           </p>
         </section>
+
+        {faqItems.length > 0 && (
+          <section className={cn('flex flex-col gap-4 p-6', glassCardClass)} style={glassCardShadow}>
+            <h2 className="text-lg font-bold text-ink">Частые вопросы</h2>
+            <div className="flex flex-col divide-y divide-border">
+              {faqItems.map((item) => (
+                <div key={item.question} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
+                  <p className="text-sm font-semibold text-ink">{item.question}</p>
+                  <p className="text-sm leading-relaxed text-ink-muted">{item.answer}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );

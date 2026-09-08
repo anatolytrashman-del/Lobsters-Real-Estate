@@ -104,30 +104,10 @@ export function ParkingAnalyticsPage({ deal }: ParkingAnalyticsPageProps) {
       : 'Медианная цена машиноместа в Минске по районам и типу парковки — по объявлениям Kufar.';
   const url = `https://redevelopment.pro/minsk/analytics/mashinomesta/${deal === 'rent' ? 'arenda' : 'prodazha'}`;
 
-  useEffect(() => {
-    if (!snapshots) return;
-    if (snapshots.length === 0) {
-      setNoIndex();
-      return;
-    }
-    clearNoIndex();
-    setGenericPageMeta({ title: fullTitle, description, url, ogType: 'article' });
-    setOrganizationJsonLd(false);
-    setBreadcrumbJsonLd([
-      { name: 'Минск', url: 'https://redevelopment.pro/minsk' },
-      { name: 'Аналитика рынка', url: 'https://redevelopment.pro/minsk/analytics' },
-      { name: title },
-    ]);
-    const modified = city ? `${city.period}` : new Date().toISOString().slice(0, 10);
-    setArticleJsonLd({ headline: fullTitle, description, url, datePublished: '2026-09-07', dateModified: modified });
-    setDatasetJsonLd({
-      name: fullTitle,
-      description,
-      url,
-      datePublished: '2026-09-07',
-      dateModified: modified,
-      measurementTechnique: 'Медиана и перцентили цены за машиноместо целиком по активным объявлениям Kufar, срез по месяцу',
-    });
+  // Вынесено из useEffect в useMemo — раньше собиралось только для JSON-LD,
+  // теперь тот же массив ещё и рендерится видимым блоком «Частые вопросы».
+  const faqItems = useMemo(() => {
+    if (!snapshots || snapshots.length === 0) return [];
     const faq: { question: string; answer: string }[] = [];
     if (city && city.n >= MIN_RELIABLE_N && city.median != null) {
       faq.push({
@@ -156,8 +136,35 @@ export function ParkingAnalyticsPage({ deal }: ParkingAnalyticsPageProps) {
       answer:
         'Из активных объявлений Kufar по всему Минску. Realt.by не подключён — на этой площадке нет поля, которое отличало бы машиноместо от гаража-бокса, риск смешать два разных товара выше пользы от второго источника. Подробности — на странице методики.',
     });
-    setFaqJsonLd(faq);
-  }, [snapshots, city, byParkingType, deal, fullTitle, description, url, periodLabel, periodInLabel, title]);
+    return faq;
+  }, [snapshots, city, byParkingType, deal, periodLabel, periodInLabel]);
+
+  useEffect(() => {
+    if (!snapshots) return;
+    if (snapshots.length === 0) {
+      setNoIndex();
+      return;
+    }
+    clearNoIndex();
+    setGenericPageMeta({ title: fullTitle, description, url, ogType: 'article' });
+    setOrganizationJsonLd(false);
+    setBreadcrumbJsonLd([
+      { name: 'Минск', url: 'https://redevelopment.pro/minsk' },
+      { name: 'Аналитика рынка', url: 'https://redevelopment.pro/minsk/analytics' },
+      { name: title },
+    ]);
+    const modified = city ? `${city.period}` : new Date().toISOString().slice(0, 10);
+    setArticleJsonLd({ headline: fullTitle, description, url, datePublished: '2026-09-07', dateModified: modified });
+    setDatasetJsonLd({
+      name: fullTitle,
+      description,
+      url,
+      datePublished: '2026-09-07',
+      dateModified: modified,
+      measurementTechnique: 'Медиана и перцентили цены за машиноместо целиком по активным объявлениям Kufar, срез по месяцу',
+    });
+    setFaqJsonLd(faqItems);
+  }, [snapshots, city, faqItems, fullTitle, description, url, title]);
 
   return (
     <div className="min-h-svh bg-bg">
@@ -180,6 +187,8 @@ export function ParkingAnalyticsPage({ deal }: ParkingAnalyticsPageProps) {
           <h1 className="text-2xl font-extrabold text-ink sm:text-3xl">{title}</h1>
           {periodLabel && <p className="text-sm text-ink-muted">Обновлено: {periodLabel}</p>}
         </div>
+
+        {!error && snapshots === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
 
         {error && (
           <div className={cn('p-6 text-ink-muted', glassCardClass)} style={glassCardShadow}>
@@ -310,6 +319,20 @@ export function ParkingAnalyticsPage({ deal }: ParkingAnalyticsPageProps) {
             . Источник: Kufar (re.kufar.by).
           </p>
         </section>
+
+        {faqItems.length > 0 && (
+          <section className={cn('flex flex-col gap-4 p-6', glassCardClass)} style={glassCardShadow}>
+            <h2 className="text-lg font-bold text-ink">Частые вопросы</h2>
+            <div className="flex flex-col divide-y divide-border">
+              {faqItems.map((item) => (
+                <div key={item.question} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
+                  <p className="text-sm font-semibold text-ink">{item.question}</p>
+                  <p className="text-sm leading-relaxed text-ink-muted">{item.answer}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
