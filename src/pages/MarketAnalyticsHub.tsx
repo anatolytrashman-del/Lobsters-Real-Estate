@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Award, FileBarChart, Lock } from 'lucide-react';
+import { ArrowRight, Award, FileBarChart, Landmark, Lock } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { setBreadcrumbJsonLd, setDatasetJsonLd, setGenericPageMeta, setOrganizationJsonLd } from '../lib/pageMeta';
-import { fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
-import { MIN_RELIABLE_N, type MarketSnapshot } from '../data/marketSnapshots';
+import { fetchExternalMetricsBySource, fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
+import { MIN_RELIABLE_N, type ExternalMetric, type MarketSnapshot } from '../data/marketSnapshots';
 
 const TITLE = 'Цены на коммерческую недвижимость в Минске — Redevelopment';
 const DESCRIPTION =
@@ -57,6 +57,7 @@ export function MarketAnalyticsHub() {
   const [retailSnapshots, setRetailSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [warehouseSnapshots, setWarehouseSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [parkingSnapshots, setParkingSnapshots] = useState<MarketSnapshot[] | null>(null);
+  const [goskomMetrics, setGoskomMetrics] = useState<ExternalMetric[] | null>(null);
 
   useEffect(() => {
     fetchLatestMarketSnapshots('ofisy_bc')
@@ -71,6 +72,9 @@ export function MarketAnalyticsHub() {
     fetchLatestMarketSnapshots('mashinomesta')
       .then(setParkingSnapshots)
       .catch(() => setParkingSnapshots([]));
+    fetchExternalMetricsBySource('goskomimushchestvo')
+      .then(setGoskomMetrics)
+      .catch(() => setGoskomMetrics([]));
   }, []);
 
   const cityRent = useMemo(
@@ -160,6 +164,20 @@ export function MarketAnalyticsHub() {
     [officeSnapshots],
   );
   const classARent = useMemo(() => officeByClass.find((r) => r.cls === 'A')?.rent, [officeByClass]);
+
+  // Реестр реальных сделок Госкомимущества (владелец, 2026-09-08: "был ещё
+  // какой-то гос. реестр, ты говорил, про него ни слова" — НКА/analytics.
+  // nca.by оказался заблокирован на уровне nginx даже для серверного
+  // web_fetch Anthropic, не только из песочницы; у него бесплатны только
+  // отчёты по рынку КВАРТИР, коммерческая недвижимость — платно. Реальные
+  // данные вместо этого нашлись у Госкомимущества — официальный реестр
+  // ЗАКРЫТЫХ сделок (не наша медиана по объявлениям), перепроверено двумя
+  // независимыми источниками, см. journal). goskomMetric — маленький
+  // хелпер поиска значения по metric+segment, чтобы не городить .find()
+  // в каждом месте разметки.
+  const goskomMetric = (segment: string, metric: string) =>
+    (goskomMetrics ?? []).find((m) => m.segment === segment && m.metric === metric);
+  const goskomUrl = goskomMetrics?.[0]?.url ?? null;
 
   useEffect(() => {
     setGenericPageMeta({ title: TITLE, description: DESCRIPTION, url: PAGE_URL, ogType: 'article' });
@@ -276,6 +294,93 @@ export function MarketAnalyticsHub() {
             <p className="text-xs text-ink-faint">
               Машиноместа — цена за объект целиком, не за м² (в объявлениях площадь не измеряется), поэтому напрямую
               с остальными строками по цифре не сравнить — только по наличию данных.
+            </p>
+          </section>
+        )}
+
+        {goskomMetrics && goskomMetrics.length > 0 && (
+          <section className="flex flex-col gap-3">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
+              <Landmark className="h-4 w-4 shrink-0 text-ink-faint" />
+              Реестр реальных сделок (Госкомимущество)
+            </h2>
+            <p className="text-sm text-ink-muted">
+              Отдельно от наших медиан по объявлениям — официальная статистика уже{' '}
+              <strong>закрытых</strong> сделок купли-продажи коммерческой недвижимости Минска, зарегистрированных
+              Госкомимуществом за 1-е полугодие 2026 года.
+            </p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className={cn('flex flex-col gap-1 p-4', glassCardClass)} style={glassCardShadow}>
+                <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Сделок всего</span>
+                <span className="text-xl font-extrabold text-ink">
+                  {goskomMetric('vse_segmenty', 'total_registered_deals')?.value ?? '—'}
+                </span>
+              </div>
+              <div className={cn('flex flex-col gap-1 p-4', glassCardClass)} style={glassCardShadow}>
+                <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Общий оборот</span>
+                <span className="text-xl font-extrabold text-ink">
+                  {goskomMetric('vse_segmenty', 'total_turnover')?.value != null
+                    ? `$${goskomMetric('vse_segmenty', 'total_turnover')!.value.toLocaleString('ru-RU')} млн`
+                    : '—'}
+                </span>
+              </div>
+              <div className={cn('flex flex-col gap-1 p-4', glassCardClass)} style={glassCardShadow}>
+                <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Доля офисов в обороте</span>
+                <span className="text-xl font-extrabold text-ink">
+                  {goskomMetric('ofisy_bc', 'turnover_share_pct')?.value != null
+                    ? `${goskomMetric('ofisy_bc', 'turnover_share_pct')!.value}%`
+                    : '—'}
+                </span>
+              </div>
+              <div className={cn('flex flex-col gap-1 p-4', glassCardClass)} style={glassCardShadow}>
+                <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Рекордная сделка</span>
+                <span className="text-xl font-extrabold text-ink">
+                  {goskomMetric('sklady', 'record_deal_price')?.value != null
+                    ? `${goskomMetric('sklady', 'record_deal_price')!.value.toLocaleString('ru-RU')} млн Br`
+                    : '—'}
+                </span>
+              </div>
+            </div>
+            <div className={cn('overflow-x-auto p-2', glassCardClass)} style={glassCardShadow}>
+              <table className="w-full min-w-[360px] text-sm">
+                <thead>
+                  <tr className="text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <th className="px-3 py-2">Сегмент</th>
+                    <th className="px-3 py-2 text-right">Зарегистрировано сделок</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-t border-border">
+                    <td className="px-3 py-2 font-medium text-ink">Офисы</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-ink">
+                      {goskomMetric('ofisy_bc', 'registered_deals')?.value ?? '—'}
+                    </td>
+                  </tr>
+                  <tr className="border-t border-border">
+                    <td className="px-3 py-2 font-medium text-ink">Торговые помещения</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-ink">
+                      {goskomMetric('torgovye', 'registered_deals')?.value ?? '—'}
+                    </td>
+                  </tr>
+                  <tr className="border-t border-border">
+                    <td className="px-3 py-2 font-medium text-ink">Склады и производство</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-ink">
+                      {goskomMetric('sklady', 'registered_deals')?.value ?? '—'}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-ink-faint">
+              Это <strong>сделки</strong>, а не наши медианы по активным объявлениям (те — ставка предложения, эти —
+              подтверждённая цена продажи). Рекордная сделка полугодия — производственное помещение 5,7 тыс. м² на
+              ул. Короля. Данные Госкомимущества, перепроверены по двум независимым публикациям (Минск-Новости,
+              BelRetail).{' '}
+              {goskomUrl && (
+                <a href={goskomUrl} target="_blank" rel="noopener noreferrer" className="text-primary-hover hover:underline">
+                  Источник
+                </a>
+              )}
             </p>
           </section>
         )}
