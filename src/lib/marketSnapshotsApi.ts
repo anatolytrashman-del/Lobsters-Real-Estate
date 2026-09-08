@@ -68,3 +68,14 @@ export async function fetchExternalMetrics(segment: string): Promise<ExternalMet
     return (data as ExternalMetricRow[]).map(fromExternalRow);
   });
 }
+
+// Для отчётов, покрывающих сразу несколько сегментов одним источником (см.
+// 'goskomimushchestvo' — реестр реальных сделок, не только офисы), фильтр
+// нужен по source, не по одному segment.
+export async function fetchExternalMetricsBySource(source: string): Promise<ExternalMetric[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase.from('external_metrics').select('*').eq('source', source);
+    if (error) throw error;
+    return (data as ExternalMetricRow[]).map(fromExternalRow);
+  });
+}

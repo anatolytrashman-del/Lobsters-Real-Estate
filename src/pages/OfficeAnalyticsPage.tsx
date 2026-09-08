@@ -131,9 +131,26 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
     [externalMetrics, deal],
   );
   const marketWide = useMemo(() => externalMetrics.filter((m) => m.deal === null), [externalMetrics]);
-  const vacancyOverall = marketWide.find((m) => m.metric === 'vacancy_rate' && m.sliceKey === null);
+  const vacancyOverall = marketWide.find((m) => m.source === 'colliers' && m.metric === 'vacancy_rate' && m.sliceKey === null);
   const totalStock = marketWide.find((m) => m.metric === 'total_stock');
   const newSupply = marketWide.find((m) => m.metric === 'new_supply');
+  // «Результативная недвижимость» (belretail.by, 2026-09-08) — свежее (H1
+  // 2026, не годовой отчёт), но по своей узкой классификации "качественных"
+  // БЦ классов B+/B- (НЕ то же самое, что наше A/B+/B/C или Colliers'
+  // A/B1/B2) — показываем рядом с Colliers, не вместо, с явной оговоркой.
+  const rnVacancy = marketWide.find((m) => m.source === 'rezultativnaya-nedvizhimost' && m.metric === 'vacancy_rate');
+  const rnNewSupplyForecast = marketWide.find(
+    (m) => m.source === 'rezultativnaya-nedvizhimost' && m.metric === 'new_supply_forecast_2026',
+  );
+  // rate_b_plus/rate_b_minus — ставки АРЕНДЫ конкретно (deal='rent', не
+  // null, как у остальных "рынок в целом" метрик), поэтому не из marketWide
+  // — ищем прямо в externalMetrics по текущей странице (deal==='rent').
+  const rnRateBPlus = externalMetrics.find(
+    (m) => m.source === 'rezultativnaya-nedvizhimost' && m.metric === 'rate_b_plus' && m.deal === 'rent',
+  );
+  const rnRateBMinus = externalMetrics.find(
+    (m) => m.source === 'rezultativnaya-nedvizhimost' && m.metric === 'rate_b_minus' && m.deal === 'rent',
+  );
 
   const title =
     deal === 'rent' ? 'Ставки аренды офисов в бизнес-центрах Минска' : 'Цены на офисы в бизнес-центрах Минска';
@@ -371,16 +388,24 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
           </section>
         )}
 
-        {(vacancyOverall || totalStock || newSupply) && (
+        {(vacancyOverall || totalStock || newSupply || rnVacancy || rnNewSupplyForecast) && (
           <section className="flex flex-col gap-3">
             <h2 className="text-lg font-bold text-ink">Рынок в целом</h2>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {vacancyOverall && (
                 <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
                   <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Вакантность офисов ({vacancyOverall.period})
+                    Вакантность офисов ({vacancyOverall.period}, Colliers)
                   </span>
                   <span className="text-2xl font-extrabold text-ink">{formatExternalValue(vacancyOverall)}</span>
+                </div>
+              )}
+              {rnVacancy && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Вакантность качественных БЦ ({rnVacancy.period}, Результ. недв.)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnVacancy)}</span>
                 </div>
               )}
               {totalStock && (
@@ -399,9 +424,33 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                   <span className="text-2xl font-extrabold text-ink">{formatExternalValue(newSupply)}</span>
                 </div>
               )}
+              {rnNewSupplyForecast && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Прогноз ввода до конца {rnNewSupplyForecast.period}
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnNewSupplyForecast)}</span>
+                </div>
+              )}
+              {deal === 'rent' && rnRateBPlus && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Ставка B+ ({rnRateBPlus.period}, Результ. недв.)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnRateBPlus)}</span>
+                </div>
+              )}
+              {deal === 'rent' && rnRateBMinus && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Ставка B- ({rnRateBMinus.period}, Результ. недв.)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnRateBMinus)}</span>
+                </div>
+              )}
             </div>
             <p className="text-xs text-ink-faint">
-              По данным {SOURCE_LABELS.colliers ?? 'Colliers International'}
+              Вакантность, сток и новое предложение — по данным {SOURCE_LABELS.colliers ?? 'Colliers International'}
               {vacancyOverall?.url && (
                 <>
                   {' '}
@@ -412,7 +461,20 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                   )
                 </>
               )}
-              , весь рынок офисов Минска, не только бизнес-центры из нашего каталога.
+              , весь рынок офисов Минска на конец 2025, не только бизнес-центры из нашего каталога. Свежая
+              вакантность и ставки B+/B- — по данным {SOURCE_LABELS['rezultativnaya-nedvizhimost']}
+              {rnVacancy?.url && (
+                <>
+                  {' '}
+                  (
+                  <a href={rnVacancy.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
+                    отчёт
+                  </a>
+                  )
+                </>
+              )}
+              , за 1-е полугодие 2026, только «качественные» БЦ — их деление на B+/B- не совпадает точно с нашим
+              A/B+/B/C или классификацией Colliers, сравнивать классы между источниками напрямую нельзя.
             </p>
           </section>
         )}
@@ -443,7 +505,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
               отдельной странице
             </Link>
             . Источники: Kufar (re.kufar.by), Realt.by
-            {externalMetrics.length > 0 && ', Твоя столица (t-s.by), Colliers International'}.
+            {externalMetrics.length > 0 && ', Твоя столица (t-s.by), Colliers International, Результативная недвижимость (belretail.by)'}.
           </p>
         </section>
 

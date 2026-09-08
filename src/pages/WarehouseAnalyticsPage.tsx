@@ -12,8 +12,18 @@ import {
   clearNoIndex,
   setOrganizationJsonLd,
 } from '../lib/pageMeta';
-import { fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
-import { MIN_RELIABLE_N, type MarketSnapshot } from '../data/marketSnapshots';
+import { fetchExternalMetrics, fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
+import { MIN_RELIABLE_N, SOURCE_LABELS, type ExternalMetric, type MarketSnapshot } from '../data/marketSnapshots';
+
+const EXTERNAL_UNIT_SUFFIX: Record<string, string> = {
+  thousand_sqm: ' тыс. м²',
+};
+
+function formatExternalMoney(m: ExternalMetric): string {
+  const rounded = Math.round(m.value * 10) / 10;
+  if (m.unit === 'usd_per_sqm_year') return `$${rounded.toLocaleString('ru-RU')}/м²/год`;
+  return `${rounded.toLocaleString('ru-RU')}${EXTERNAL_UNIT_SUFFIX[m.unit] ?? ` ${m.unit}`}`;
+}
 
 const MONTH_NAMES = [
   'январь',
@@ -67,6 +77,7 @@ interface WarehouseAnalyticsPageProps {
 export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
   const [snapshots, setSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [error, setError] = useState(false);
+  const [externalMetrics, setExternalMetrics] = useState<ExternalMetric[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,10 +88,27 @@ export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
       .catch(() => {
         if (!cancelled) setError(true);
       });
+    fetchExternalMetrics('sklady')
+      .then((rows) => {
+        if (!cancelled) setExternalMetrics(rows);
+      })
+      .catch(() => {
+        /* внешний бенчмарк — необязательный дополнительный блок */
+      });
     return () => {
       cancelled = true;
     };
   }, [deal]);
+
+  // «Твоя столица» через prometr.by (годовой отчёт 2025, не тот же
+  // ежемесячный мониторинг, что у офисов) — ставки только по аренде
+  // (deal='rent' в базе), сток/прогноз ввода — не привязаны к сделке.
+  const rateAMin = externalMetrics.find((m) => m.metric === 'class_a_rate_usd_min' && m.deal === 'rent');
+  const rateAMax = externalMetrics.find((m) => m.metric === 'class_a_rate_usd_max' && m.deal === 'rent');
+  const rateB = externalMetrics.find((m) => m.metric === 'class_b_rate_usd' && m.deal === 'rent');
+  const totalStock = externalMetrics.find((m) => m.metric === 'total_stock');
+  const newSupplyForecast = externalMetrics.find((m) => m.metric === 'new_supply_forecast_2026');
+  const showMarketWide = (deal === 'rent' && Boolean(rateAMin || rateAMax || rateB)) || Boolean(totalStock) || Boolean(newSupplyForecast);
 
   const city = useMemo(() => snapshots?.find((s) => s.sliceType === 'city'), [snapshots]);
   const periodInLabel = city ? formatPeriodIn(city.period) : null;
@@ -235,6 +263,64 @@ export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
           </section>
         )}
 
+        {showMarketWide && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-lg font-bold text-ink">Рынок в целом</h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {deal === 'rent' && rateAMin && rateAMax && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Ставка класс A ({rateAMin.period}, Твоя столица)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">
+                    ${rateAMin.value}–{rateAMax.value}/м²/год
+                  </span>
+                </div>
+              )}
+              {deal === 'rent' && rateB && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Ставка класс B ({rateB.period}, Твоя столица)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalMoney(rateB)}</span>
+                </div>
+              )}
+              {totalStock && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Сток региона ({totalStock.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalMoney(totalStock)}</span>
+                </div>
+              )}
+              {newSupplyForecast && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Прогноз ввода ({newSupplyForecast.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalMoney(newSupplyForecast)}</span>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-ink-faint">
+              По данным {SOURCE_LABELS['tvoya-stolitsa']}
+              {totalStock?.url && (
+                <>
+                  {' '}
+                  (
+                  <a href={totalStock.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
+                    отчёт
+                  </a>
+                  )
+                </>
+              )}
+              , годовой отчёт за 2025 — методология аналитика, не наш срез по объявлениям. Сток и прогноз ввода — по
+              Минскому <strong>региону</strong> (сам город плюс ~25 км от МКАД), это шире, чем наша выборка только по
+              Минску. Ставки — средневзвешенные запрашиваемые, на конец 2025, только аренда.
+            </p>
+          </section>
+        )}
+
         <section className={cn('flex flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           <h2 className="text-lg font-bold text-ink">Что это за цифры</h2>
           <p className="text-sm leading-relaxed text-ink-muted">
@@ -255,7 +341,8 @@ export function WarehouseAnalyticsPage({ deal }: WarehouseAnalyticsPageProps) {
             <Link to="/minsk/analytics/metodika" className="text-primary-hover hover:underline">
               отдельной странице
             </Link>
-            . Источники: Kufar (re.kufar.by), Realt.by.
+            . Источники: Kufar (re.kufar.by), Realt.by
+            {externalMetrics.length > 0 && ', Твоя столица (через prometr.by)'}.
           </p>
         </section>
       </main>
