@@ -76,4 +76,5 @@ export const SOURCE_LABELS: Record<string, string> = {
   'tvoya-stolitsa': 'Твоя столица',
   colliers: 'Colliers International',
   goskomimushchestvo: 'Госкомимущество',
+  'rezultativnaya-nedvizhimost': 'Результативная недвижимость',
 };

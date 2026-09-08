@@ -12,8 +12,18 @@ import {
   clearNoIndex,
   setOrganizationJsonLd,
 } from '../lib/pageMeta';
-import { fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
-import { MIN_RELIABLE_N, type MarketSnapshot } from '../data/marketSnapshots';
+import { fetchExternalMetrics, fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
+import { MIN_RELIABLE_N, SOURCE_LABELS, type ExternalMetric, type MarketSnapshot } from '../data/marketSnapshots';
+
+const UNIT_SUFFIX: Record<string, string> = {
+  percent: '%',
+  thousand_sqm: ' тыс. м²',
+};
+
+function formatExternalValue(m: ExternalMetric): string {
+  const rounded = Math.round(m.value * 10) / 10;
+  return `${rounded.toLocaleString('ru-RU')}${UNIT_SUFFIX[m.unit] ?? ` ${m.unit}`}`;
+}
 
 const MONTH_NAMES = [
   'январь',
@@ -67,6 +77,7 @@ interface RetailAnalyticsPageProps {
 export function RetailAnalyticsPage({ deal }: RetailAnalyticsPageProps) {
   const [snapshots, setSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [error, setError] = useState(false);
+  const [externalMetrics, setExternalMetrics] = useState<ExternalMetric[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,10 +88,26 @@ export function RetailAnalyticsPage({ deal }: RetailAnalyticsPageProps) {
       .catch(() => {
         if (!cancelled) setError(true);
       });
+    fetchExternalMetrics('torgovye')
+      .then((rows) => {
+        if (!cancelled) setExternalMetrics(rows);
+      })
+      .catch(() => {
+        /* внешний бенчмарк — необязательный дополнительный блок */
+      });
     return () => {
       cancelled = true;
     };
   }, [deal]);
+
+  // «Результативная недвижимость» (belretail.by, 2026-09-08) — первый
+  // внешний бенчмарк для торговых помещений вообще (раньше подходящего
+  // источника не было, см. методику). Только вакантность и прогноз ввода —
+  // конкретных цифр по ставкам источник не приводит (честно, не выдумано).
+  const rnVacancy = externalMetrics.find((m) => m.source === 'rezultativnaya-nedvizhimost' && m.metric === 'vacancy_rate');
+  const rnNewSupply = externalMetrics.find(
+    (m) => m.source === 'rezultativnaya-nedvizhimost' && m.metric === 'new_supply_forecast_2026',
+  );
 
   const city = useMemo(() => snapshots?.find((s) => s.sliceType === 'city'), [snapshots]);
   const periodInLabel = city ? formatPeriodIn(city.period) : null;
@@ -293,6 +320,45 @@ export function RetailAnalyticsPage({ deal }: RetailAnalyticsPageProps) {
           </section>
         )}
 
+        {(rnVacancy || rnNewSupply) && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-lg font-bold text-ink">Рынок в целом</h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {rnVacancy && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Вакантность крупноформатной торговли ({rnVacancy.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnVacancy)}</span>
+                </div>
+              )}
+              {rnNewSupply && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Прогноз ввода новых площадей ({rnNewSupply.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnNewSupply)}</span>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-ink-faint">
+              По данным {SOURCE_LABELS['rezultativnaya-nedvizhimost']}
+              {rnVacancy?.url && (
+                <>
+                  {' '}
+                  (
+                  <a href={rnVacancy.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
+                    отчёт
+                  </a>
+                  )
+                </>
+              )}
+              , крупноформатные торговые объекты Минска (ТЦ/ТРЦ), не весь рынок ПСН и стрит-ритейла из среза выше.
+              Конкретных цифр по ставкам аренды источник не публикует.
+            </p>
+          </section>
+        )}
+
         <section className={cn('flex flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           <h2 className="text-lg font-bold text-ink">Что это за цифры</h2>
           <p className="text-sm leading-relaxed text-ink-muted">
@@ -312,7 +378,8 @@ export function RetailAnalyticsPage({ deal }: RetailAnalyticsPageProps) {
             <Link to="/minsk/analytics/metodika" className="text-primary-hover hover:underline">
               отдельной странице
             </Link>
-            . Источники: Kufar (re.kufar.by), Realt.by.
+            . Источники: Kufar (re.kufar.by), Realt.by
+            {externalMetrics.length > 0 && ', Результативная недвижимость (belretail.by)'}.
           </p>
         </section>
       </main>
