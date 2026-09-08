@@ -219,6 +219,8 @@ export function MarketAnalyticsHub() {
           </p>
         </div>
 
+        {!loaded && <p className="text-sm text-ink-muted">Загрузка…</p>}
+
         {loaded && (
           <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>

@@ -137,17 +137,30 @@ async function main() {
 
   const { data: bcOffers, error: bcOffersError } = await supabase
     .from('business_center_offers')
-    .select('business_center_slug,deal_type,price_per_sqm');
+    .select('business_center_slug,deal_type,price_per_sqm,property_type');
   if (bcOffersError) throw bcOffersError;
 
+  // Сегмент называется "офисы в бизнес-центрах" — но само здание может
+  // сдавать/продавать не только офисные помещения (магазин на первом
+  // этаже, сфера услуг, кладовая и т.п.). Раньше в медиану шли ВСЕ строки
+  // business_center_offers без разбора property_type — на реальном срезе
+  // (2026-09-08, 618 объявлений по 70 зданиям) это оказалось не мелочью:
+  // 183 из 618 (30%) не "Офисы" — искажали медиану заметно. Фильтруем
+  // только здесь, для расчёта СНИМКА офисного сегмента; сама таблица
+  // business_center_offers не трогается — "Объявления с Kufar и Realt" на
+  // карточке конкретного БЦ по-прежнему показывает все помещения здания,
+  // не только офисные, там фильтр по типу не нужен.
+  const officeOnlyOffers = bcOffers.filter((o) => o.property_type === 'Офисы');
   const centerBySlug = new Map(centers.map((c) => [c.slug, c]));
-  const officeRows = bcOffers.map((o) => ({
+  const officeRows = officeOnlyOffers.map((o) => ({
     deal_type: o.deal_type,
     price_per_sqm: o.price_per_sqm,
     class: centerBySlug.get(o.business_center_slug)?.business_class ?? null,
     district: centerBySlug.get(o.business_center_slug)?.district ?? null,
   }));
-  console.log(`Загружено ${centers.length} БЦ, ${bcOffers.length} объявлений офисов в БЦ.`);
+  console.log(
+    `Загружено ${centers.length} БЦ, ${bcOffers.length} объявлений в БЦ (${officeOnlyOffers.length} из них — офисы, остальные отфильтрованы из снимка сегмента).`,
+  );
   snapshots.push(
     ...buildSnapshotsForSegment(officeRows, 'ofisy_bc', period, [
       { sliceType: 'class', field: 'class' },
