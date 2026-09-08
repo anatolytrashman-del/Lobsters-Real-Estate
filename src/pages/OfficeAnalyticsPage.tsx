@@ -93,27 +93,54 @@ interface OfficeAnalyticsPageProps {
 }
 
 export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
-  const [snapshots, setSnapshots] = useState<MarketSnapshot[] | null>(null);
-  const [error, setError] = useState(false);
+  // Основные (city-wide) данные — сегмент 'ofisy': ВСЕ офисные объявления
+  // Kufar/Realt по Минску, не только внутри каталога бизнес-центров (тот же
+  // принцип, что уже даёт торговля/склады/машиноместа). Владелец,
+  // 2026-09-08: "для этой страницы надо собирать полную статистику по
+  // всему Минску... и делать конкретные объявления уже по бизнес-центру" —
+  // раньше вся страница считалась только по 259 объявлениям внутри 143 БЦ
+  // (смещённая выборка, офисы вне каталога вообще не попадали в цифры).
+  const [cwSnapshots, setCwSnapshots] = useState<MarketSnapshot[] | null>(null);
+  const [cwError, setCwError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchLatestMarketSnapshots('ofisy')
+      .then((rows) => {
+        if (!cancelled) setCwSnapshots(rows.filter((r) => r.deal === deal));
+      })
+      .catch(() => {
+        if (!cancelled) setCwError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deal]);
+
+  // Узкий срез — сегмент 'ofisy_bc', только объявления внутри 143 зданий из
+  // нашего каталога бизнес-центров. Не заменяет city-wide данные выше, а
+  // дополняет их более глубокой детализацией (класс здания, конкретное
+  // здание, площадь/этаж/метро) — того, что для произвольного офиса вне
+  // каталога взять просто неоткуда (нет единого справочника таких зданий).
+  const [bcSnapshots, setBcSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [externalMetrics, setExternalMetrics] = useState<ExternalMetric[]>([]);
-  const [centers, setCenters] = useState<BusinessCenter[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     fetchLatestMarketSnapshots('ofisy_bc')
       .then((rows) => {
-        if (!cancelled) setSnapshots(rows.filter((r) => r.deal === deal));
+        if (!cancelled) setBcSnapshots(rows.filter((r) => r.deal === deal));
       })
       .catch(() => {
-        if (!cancelled) setError(true);
+        /* узкий срез по БЦ — необязательный дополнительный блок, страница
+           остаётся полезной и без него благодаря city-wide данным выше */
       });
     fetchExternalMetrics('ofisy_bc')
       .then((rows) => {
         if (!cancelled) setExternalMetrics(rows);
       })
       .catch(() => {
-        /* внешние бенчмарки — необязательный дополнительный блок, страница
-           остаётся полезной и без него, поэтому ошибку не показываем */
+        /* внешние бенчмарки — необязательный дополнительный блок */
       });
     return () => {
       cancelled = true;
@@ -124,6 +151,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
   // ДРУГОЙ датасет, чем снимок объявлений выше: справочник зданий сам по
   // себе (сколько их, сколько строится, площадь) не завязан на то, нашлись
   // ли по каждому активные объявления в этом месяце.
+  const [centers, setCenters] = useState<BusinessCenter[]>([]);
   useEffect(() => {
     let cancelled = false;
     fetchBusinessCenters()
@@ -149,7 +177,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
     return { total: centers.length, totalArea, byClass, underConstruction };
   }, [centers]);
 
-  // Сырые объявления по всему городу — нужны для срезов, которых нет в
+  // Сырые объявления внутри каталога БЦ — нужны для срезов, которых нет в
   // market_snapshots (площадь, этаж, метро, конкретное здание, сравнение
   // аренды и продажи). Загружаются один раз, не зависят от deal — оба типа
   // сделки нужны разом для блока "Аренда vs покупка".
@@ -269,28 +297,41 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
       .filter((row): row is NonNullable<typeof row> => row != null);
   }, [officeOffers, centerBySlug]);
 
-  const city = useMemo(() => snapshots?.find((s) => s.sliceType === 'city'), [snapshots]);
-  const periodInLabel = city ? formatPeriodIn(city.period) : null;
-  const byClass = useMemo(
-    () =>
-      (snapshots ?? [])
-        .filter((s) => s.sliceType === 'class')
-        .sort((a, b) => CLASS_ORDER.indexOf(a.sliceKey) - CLASS_ORDER.indexOf(b.sliceKey)),
-    [snapshots],
+  // --- City-wide (первичные) срезы ---
+  const cwCity = useMemo(() => cwSnapshots?.find((s) => s.sliceType === 'city'), [cwSnapshots]);
+  const periodInLabel = cwCity ? formatPeriodIn(cwCity.period) : null;
+  const periodLabel = cwCity ? formatPeriod(cwCity.period) : null;
+  const cwByDistrict = useMemo(
+    () => (cwSnapshots ?? []).filter((s) => s.sliceType === 'district').sort((a, b) => b.n - a.n),
+    [cwSnapshots],
   );
-  const byDistrict = useMemo(
-    () => (snapshots ?? []).filter((s) => s.sliceType === 'district').sort((a, b) => b.n - a.n),
-    [snapshots],
+  const cwByBuildingType = useMemo(
+    () => (cwSnapshots ?? []).filter((s) => s.sliceType === 'building_type').sort((a, b) => b.n - a.n),
+    [cwSnapshots],
   );
-  const reliableDistricts = useMemo(
+  const cwReliableDistricts = useMemo(
     () =>
-      byDistrict
+      cwByDistrict
         .filter((r) => r.n >= MIN_RELIABLE_N && r.median != null)
         .sort((a, b) => (b.median as number) - (a.median as number)),
-    [byDistrict],
+    [cwByDistrict],
   );
-  const priciestDistrict = reliableDistricts[0] ?? null;
-  const cheapestDistrict = reliableDistricts.length > 0 ? reliableDistricts[reliableDistricts.length - 1] : null;
+  const priciestDistrict = cwReliableDistricts[0] ?? null;
+  const cheapestDistrict = cwReliableDistricts.length > 0 ? cwReliableDistricts[cwReliableDistricts.length - 1] : null;
+
+  // --- Узкий срез по каталогу БЦ ---
+  const bcCity = useMemo(() => bcSnapshots?.find((s) => s.sliceType === 'city'), [bcSnapshots]);
+  const bcByClass = useMemo(
+    () =>
+      (bcSnapshots ?? [])
+        .filter((s) => s.sliceType === 'class')
+        .sort((a, b) => CLASS_ORDER.indexOf(a.sliceKey) - CLASS_ORDER.indexOf(b.sliceKey)),
+    [bcSnapshots],
+  );
+  const bcByDistrict = useMemo(
+    () => (bcSnapshots ?? []).filter((s) => s.sliceType === 'district').sort((a, b) => b.n - a.n),
+    [bcSnapshots],
+  );
 
   const tvoyaStolitsaByClass = useMemo(
     () =>
@@ -303,7 +344,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
   const vacancyOverall = marketWide.find((m) => m.source === 'colliers' && m.metric === 'vacancy_rate' && m.sliceKey === null);
   // Вакантность Colliers по ИХ собственным классам (A/B1/B2 — не то же
   // самое, что наши A/B+/B/C, см. методику) — отдельная мини-таблица, не
-  // смешиваем со своим срезом byClass выше.
+  // смешиваем со своим срезом bcByClass ниже.
   const colliersVacancyByClass = useMemo(
     () =>
       marketWide.filter((m) => m.source === 'colliers' && m.metric === 'vacancy_rate' && m.sliceKey != null),
@@ -329,41 +370,38 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
     (m) => m.source === 'rezultativnaya-nedvizhimost' && m.metric === 'rate_b_minus' && m.deal === 'rent',
   );
   // Реестр Госкомимущества — уже приходит вместе с остальными external
-  // metrics сегмента 'ofisy_bc' (та же fetchExternalMetrics), просто раньше
-  // рендерился только сводно на хабе /minsk/analytics, не на этой странице.
+  // metrics сегмента 'ofisy_bc' (та же fetchExternalMetrics).
   const goskomDeals = marketWide.find((m) => m.source === 'goskomimushchestvo' && m.metric === 'registered_deals');
   const goskomShare = marketWide.find((m) => m.source === 'goskomimushchestvo' && m.metric === 'turnover_share_pct');
 
-  const title =
-    deal === 'rent' ? 'Ставки аренды офисов в бизнес-центрах Минска' : 'Цены на офисы в бизнес-центрах Минска';
-  const periodLabel = city ? formatPeriod(city.period) : null;
+  const title = deal === 'rent' ? 'Ставки аренды офисов в Минске' : 'Цены на офисы в Минске';
   const fullTitle = periodLabel ? `${title} — ${periodLabel}` : title;
   const description =
     deal === 'rent'
-      ? 'Медианная ставка аренды офисов в бизнес-центрах Минска по классам A/B+/B/C и районам — по объявлениям Kufar и Realt.'
-      : 'Медианная цена продажи офисов в бизнес-центрах Минска по классам A/B+/B/C и районам — по объявлениям Kufar и Realt.';
+      ? 'Медианная ставка аренды офисов в Минске по районам и типу здания — по объявлениям Kufar и Realt, плюс детальный разбор по бизнес-центрам.'
+      : 'Медианная цена продажи офисов в Минске по районам и типу здания — по объявлениям Kufar и Realt, плюс детальный разбор по бизнес-центрам.';
   const url = `https://redevelopment.pro/minsk/analytics/ofisy/${deal === 'rent' ? 'arenda' : 'prodazha'}`;
 
   // Вынесено из useEffect в useMemo — раньше собиралось только для JSON-LD,
   // теперь тот же массив ещё и рендерится видимым блоком «Частые вопросы»
   // (см. BusinessCenterDetailPage.tsx — тот же паттерн).
   const faqItems = useMemo(() => {
-    if (!snapshots || snapshots.length === 0) return [];
+    if (!cwSnapshots || cwSnapshots.length === 0) return [];
     const faq: { question: string; answer: string }[] = [];
-    if (city && city.n >= MIN_RELIABLE_N && city.median != null) {
+    if (cwCity && cwCity.n >= MIN_RELIABLE_N && cwCity.median != null) {
       faq.push({
         question:
           deal === 'rent'
-            ? `Сколько стоит аренда офиса в бизнес-центре Минска в ${periodInLabel}?`
-            : `Сколько стоит офис в бизнес-центре Минска в ${periodInLabel}?`,
-        answer: `По медиане объявлений Kufar и Realt за ${periodLabel} — ${formatMoney(city.median, deal)} (по ${city.n} объявлениям, без разбивки по классу).`,
+            ? `Сколько стоит аренда офиса в Минске в ${periodInLabel}?`
+            : `Сколько стоит офис в Минске в ${periodInLabel}?`,
+        answer: `По медиане объявлений Kufar и Realt за ${periodLabel} — ${formatMoney(cwCity.median, deal)} (по ${cwCity.n} объявлениям по всему городу).`,
       });
     }
-    const classA = byClass.find((s) => s.sliceKey === 'A');
+    const classA = bcByClass.find((s) => s.sliceKey === 'A');
     if (classA && classA.n >= MIN_RELIABLE_N && classA.median != null) {
       faq.push({
         question: deal === 'rent' ? 'Сколько стоит аренда офиса класса A?' : 'Сколько стоит офис класса A?',
-        answer: `Медиана по классу A — ${formatMoney(classA.median, deal)} (${classA.n} объявлений за ${periodLabel}).`,
+        answer: `Медиана по классу A внутри нашего каталога бизнес-центров — ${formatMoney(classA.median, deal)} (${classA.n} объявлений за ${periodLabel}).`,
       });
     }
     faq.push({
@@ -379,14 +417,14 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
     faq.push({
       question: 'Откуда берутся данные?',
       answer:
-        'Из активных объявлений Kufar и Realt.by, привязанных к конкретным бизнес-центрам из нашего каталога. Подробности — на странице методики.',
+        'Из активных объявлений Kufar и Realt.by, категория «Офисы» по всему Минску. Отдельно — более глубокий разбор по 143 зданиям из нашего каталога бизнес-центров. Подробности — на странице методики.',
     });
     return faq;
-  }, [snapshots, city, byClass, deal, periodLabel, periodInLabel]);
+  }, [cwSnapshots, cwCity, bcByClass, deal, periodLabel, periodInLabel]);
 
   useEffect(() => {
-    if (!snapshots) return;
-    if (snapshots.length === 0) {
+    if (!cwSnapshots) return;
+    if (cwSnapshots.length === 0) {
       setNoIndex();
       return;
     }
@@ -398,7 +436,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
       { name: 'Аналитика рынка', url: 'https://redevelopment.pro/minsk/analytics' },
       { name: title },
     ]);
-    const modified = city ? `${city.period}` : new Date().toISOString().slice(0, 10);
+    const modified = cwCity ? `${cwCity.period}` : new Date().toISOString().slice(0, 10);
     setArticleJsonLd({
       headline: fullTitle,
       description,
@@ -415,7 +453,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
       measurementTechnique: 'Медиана и перцентили цены за м² по активным объявлениям Kufar и Realt, срез по месяцу',
     });
     setFaqJsonLd(faqItems);
-  }, [snapshots, city, faqItems, fullTitle, description, url, title]);
+  }, [cwSnapshots, cwCity, faqItems, fullTitle, description, url, title]);
 
   return (
     <div className="min-h-svh bg-bg">
@@ -433,48 +471,317 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
             <Link to="/minsk/analytics" className="hover:text-primary-hover">
               Аналитика рынка
             </Link>{' '}
-            / Офисы в бизнес-центрах / {deal === 'rent' ? 'Аренда' : 'Продажа'}
+            / Офисы / {deal === 'rent' ? 'Аренда' : 'Продажа'}
           </span>
           <h1 className="text-2xl font-extrabold text-ink sm:text-3xl">{title}</h1>
           {periodLabel && <p className="text-sm text-ink-muted">Обновлено: {periodLabel}</p>}
         </div>
 
-        {!error && snapshots === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
+        {!cwError && cwSnapshots === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
 
-        {error && (
+        {cwError && (
           <div className={cn('p-6 text-ink-muted', glassCardClass)} style={glassCardShadow}>
             Не удалось загрузить данные. Попробуйте обновить страницу.
           </div>
         )}
 
-        {!error && snapshots && snapshots.length === 0 && (
+        {!cwError && cwSnapshots && cwSnapshots.length === 0 && (
           <div className={cn('p-6 text-ink-muted', glassCardClass)} style={glassCardShadow}>
             Снимок за этот месяц ещё не построен — данные появятся после ближайшего автоматического сбора.
           </div>
         )}
 
-        {city && (
+        {cwCity && (
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
               <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Медиана по городу</span>
               <span className="text-2xl font-extrabold text-ink">
-                {city.median != null ? formatMoney(city.median, deal) : '—'}
+                {cwCity.median != null ? formatMoney(cwCity.median, deal) : '—'}
               </span>
             </div>
             <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
               <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Учтено объявлений</span>
-              <span className="text-2xl font-extrabold text-ink">{city.n}</span>
+              <span className="text-2xl font-extrabold text-ink">{cwCity.n}</span>
             </div>
             <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
               <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Разброс (25–75%)</span>
               <span className="text-2xl font-extrabold text-ink">
-                {city.p25 != null && city.p75 != null ? `${formatMoney(city.p25, deal)} – ${formatMoney(city.p75, deal)}` : '—'}
+                {cwCity.p25 != null && cwCity.p75 != null ? `${formatMoney(cwCity.p25, deal)} – ${formatMoney(cwCity.p75, deal)}` : '—'}
               </span>
             </div>
           </section>
         )}
 
-        {byClass.length > 0 && (
+        {cwByDistrict.length > 0 && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-lg font-bold text-ink">По районам</h2>
+            <div className={cn('overflow-x-auto p-2', glassCardClass)} style={glassCardShadow}>
+              <table className="w-full min-w-[360px] text-sm">
+                <thead>
+                  <tr className="text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <th className="px-3 py-2">Район</th>
+                    <th className="px-3 py-2">Медиана</th>
+                    <th className="px-3 py-2">Объявлений</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cwByDistrict.map((row) => {
+                    const reliable = row.n >= MIN_RELIABLE_N && row.median != null;
+                    return (
+                      <tr key={row.sliceKey} className="border-t border-border">
+                        <td className="px-3 py-2 font-medium text-ink">{row.sliceKey}</td>
+                        <td className="px-3 py-2 text-ink">
+                          {reliable ? (
+                            formatMoney(row.median as number, deal)
+                          ) : (
+                            <span className="text-ink-faint">
+                              {row.median != null ? `${formatMoney(row.median, deal)} (ориентировочно)` : 'недостаточно данных'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-ink-muted">{row.n}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {cwByBuildingType.length > 0 && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-lg font-bold text-ink">По типу здания</h2>
+            <div className={cn('overflow-x-auto p-2', glassCardClass)} style={glassCardShadow}>
+              <table className="w-full min-w-[360px] text-sm">
+                <thead>
+                  <tr className="text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <th className="px-3 py-2">Тип здания</th>
+                    <th className="px-3 py-2">Медиана</th>
+                    <th className="px-3 py-2">Объявлений</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cwByBuildingType.map((row) => {
+                    const reliable = row.n >= MIN_RELIABLE_N && row.median != null;
+                    return (
+                      <tr key={row.sliceKey} className="border-t border-border">
+                        <td className="px-3 py-2 font-medium text-ink">{row.sliceKey}</td>
+                        <td className="px-3 py-2 text-ink">
+                          {reliable ? (
+                            formatMoney(row.median as number, deal)
+                          ) : (
+                            <span className="text-ink-faint">
+                              {row.median != null ? `${formatMoney(row.median, deal)} (ориентировочно)` : 'недостаточно данных'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-ink-muted">{row.n}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-ink-faint">
+              Тип здания известен не для всех объявлений (структурное поле есть у Kufar, у Realt — эвристика по
+              тексту объявления, менее точная; часть объявлений без определённого типа в таблицу не попала, но
+              учтена в общей медиане по городу выше).
+            </p>
+          </section>
+        )}
+
+        {(vacancyOverall || totalStock || newSupply || rnVacancy || rnNewSupplyForecast) && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-lg font-bold text-ink">Рынок в целом</h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {vacancyOverall && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Вакантность офисов ({vacancyOverall.period}, Colliers)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(vacancyOverall)}</span>
+                </div>
+              )}
+              {rnVacancy && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Вакантность качественных БЦ ({rnVacancy.period}, Результ. недв.)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnVacancy)}</span>
+                </div>
+              )}
+              {totalStock && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Всего офисных площадей ({totalStock.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(totalStock)}</span>
+                </div>
+              )}
+              {newSupply && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Введено новых площадей ({newSupply.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(newSupply)}</span>
+                </div>
+              )}
+              {rnNewSupplyForecast && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Прогноз ввода до конца {rnNewSupplyForecast.period}
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnNewSupplyForecast)}</span>
+                </div>
+              )}
+              {deal === 'rent' && rnRateBPlus && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Ставка B+ ({rnRateBPlus.period}, Результ. недв.)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnRateBPlus)}</span>
+                </div>
+              )}
+              {deal === 'rent' && rnRateBMinus && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Ставка B- ({rnRateBMinus.period}, Результ. недв.)
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnRateBMinus)}</span>
+                </div>
+              )}
+            </div>
+            {colliersVacancyByClass.length > 0 && (
+              <div className={cn('overflow-x-auto p-2', glassCardClass)} style={glassCardShadow}>
+                <table className="w-full min-w-[280px] text-sm">
+                  <thead>
+                    <tr className="text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                      <th className="px-3 py-2">Класс (по Colliers)</th>
+                      <th className="px-3 py-2 text-right">Вакантность</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {colliersVacancyByClass.map((m) => (
+                      <tr key={m.sliceKey} className="border-t border-border">
+                        <td className="px-3 py-2 font-medium text-ink">Класс {m.sliceKey}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-ink">{formatExternalValue(m)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-xs text-ink-faint">
+              Вакантность, сток и новое предложение — по данным {SOURCE_LABELS.colliers ?? 'Colliers International'}
+              {vacancyOverall?.url && (
+                <>
+                  {' '}
+                  (
+                  <a href={vacancyOverall.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
+                    отчёт
+                  </a>
+                  )
+                </>
+              )}
+              , весь рынок офисов Минска на конец 2025, не только бизнес-центры из нашего каталога. Свежая
+              вакантность и ставки B+/B- — по данным {SOURCE_LABELS['rezultativnaya-nedvizhimost']}
+              {rnVacancy?.url && (
+                <>
+                  {' '}
+                  (
+                  <a href={rnVacancy.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
+                    отчёт
+                  </a>
+                  )
+                </>
+              )}
+              , за 1-е полугодие 2026, только «качественные» БЦ — их деление на B+/B- не совпадает точно с нашим
+              A/B+/B/C или классификацией Colliers, сравнивать классы между источниками напрямую нельзя.
+            </p>
+          </section>
+        )}
+
+        {(goskomDeals || goskomShare) && (
+          <section className="flex flex-col gap-3">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
+              <Landmark className="h-4 w-4 shrink-0 text-ink-faint" />
+              Реестр реальных сделок (Госкомимущество)
+            </h2>
+            <p className="text-sm text-ink-muted">
+              Отдельно от нашей медианы по объявлениям — официальная статистика уже <strong>закрытых</strong> сделок
+              купли-продажи офисов в Минске, зарегистрированных Госкомимуществом за 1-е полугодие 2026 года.
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {goskomDeals && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Зарегистрировано сделок ({goskomDeals.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{goskomDeals.value}</span>
+                </div>
+              )}
+              {goskomShare && (
+                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    Доля офисов в обороте рынка ({goskomShare.period})
+                  </span>
+                  <span className="text-2xl font-extrabold text-ink">{goskomShare.value}%</span>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-ink-faint">
+              Это <strong>сделки</strong>, а не наши медианы по активным объявлениям (те — ставка предложения, эти —
+              подтверждённая цена продажи). Данные Госкомимущества, перепроверены по двум независимым публикациям
+              (Минск-Новости, BelRetail).{' '}
+              {goskomDeals?.url && (
+                <a href={goskomDeals.url} target="_blank" rel="noopener noreferrer" className="text-primary-hover hover:underline">
+                  Источник
+                </a>
+              )}
+              {' · '}
+              <Link to="/minsk/analytics" className="text-primary-hover hover:underline">
+                Реестр по всем сегментам
+              </Link>
+            </p>
+          </section>
+        )}
+
+        {/* ---- Узкий срез: офисы внутри каталога бизнес-центров ---- */}
+        <section className="flex flex-col gap-2 border-t border-border pt-8">
+          <h2 className="text-xl font-extrabold text-ink">Офисы в бизнес-центрах: подробный разбор</h2>
+          <p className="text-sm leading-relaxed text-ink-muted">
+            Отдельный, более глубокий срез — только по 143 зданиям из нашего{' '}
+            <Link to="/minsk/bcminsk" className="text-primary-hover hover:underline">
+              каталога бизнес-центров Минска
+            </Link>
+            . Это подмножество city-wide цифр выше — для него мы знаем класс здания, конкретный адрес и другие
+            детали, которых для произвольного офиса вне каталога взять неоткуда.
+          </p>
+        </section>
+
+        {bcCity && (
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+              <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Медиана по каталогу БЦ</span>
+              <span className="text-2xl font-extrabold text-ink">
+                {bcCity.median != null ? formatMoney(bcCity.median, deal) : '—'}
+              </span>
+            </div>
+            <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+              <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Учтено объявлений</span>
+              <span className="text-2xl font-extrabold text-ink">{bcCity.n}</span>
+            </div>
+            <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
+              <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">Разброс (25–75%)</span>
+              <span className="text-2xl font-extrabold text-ink">
+                {bcCity.p25 != null && bcCity.p75 != null ? `${formatMoney(bcCity.p25, deal)} – ${formatMoney(bcCity.p75, deal)}` : '—'}
+              </span>
+            </div>
+          </section>
+        )}
+
+        {bcByClass.length > 0 && (
           <section className="flex flex-col gap-3">
             <h2 className="text-lg font-bold text-ink">По классу здания</h2>
             <div className={cn('overflow-x-auto p-2', glassCardClass)} style={glassCardShadow}>
@@ -489,7 +796,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {byClass.map((row) => {
+                  {bcByClass.map((row) => {
                     const reliable = row.n >= MIN_RELIABLE_N && row.median != null;
                     const external = tvoyaStolitsaByClass.filter((m) => m.sliceKey === row.sliceKey);
                     return (
@@ -536,7 +843,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
           </section>
         )}
 
-        {deal === 'rent' && byClass.some((r) => r.n >= MIN_RELIABLE_N && r.median != null) && (
+        {deal === 'rent' && bcByClass.some((r) => r.n >= MIN_RELIABLE_N && r.median != null) && (
           <section className="flex flex-col gap-3">
             <h2 className="text-lg font-bold text-ink">Сколько это в реальных деньгах в месяц</h2>
             <p className="text-sm text-ink-muted">
@@ -555,7 +862,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {byClass
+                  {bcByClass
                     .filter((row) => row.n >= MIN_RELIABLE_N && row.median != null)
                     .map((row) => (
                       <tr key={row.sliceKey} className="border-t border-border">
@@ -576,9 +883,9 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
           </section>
         )}
 
-        {byDistrict.length > 0 && (
+        {bcByDistrict.length > 0 && (
           <section className="flex flex-col gap-3">
-            <h2 className="text-lg font-bold text-ink">По районам</h2>
+            <h2 className="text-lg font-bold text-ink">По районам (только каталог БЦ)</h2>
             <div className={cn('overflow-x-auto p-2', glassCardClass)} style={glassCardShadow}>
               <table className="w-full min-w-[420px] text-sm">
                 <thead>
@@ -590,7 +897,7 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {byDistrict.map((row) => {
+                  {bcByDistrict.map((row) => {
                     const reliable = row.n >= MIN_RELIABLE_N && row.median != null;
                     const hubUrl = districtHubUrl(row.sliceKey);
                     return (
@@ -849,181 +1156,27 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
           </section>
         )}
 
-        {(vacancyOverall || totalStock || newSupply || rnVacancy || rnNewSupplyForecast) && (
-          <section className="flex flex-col gap-3">
-            <h2 className="text-lg font-bold text-ink">Рынок в целом</h2>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              {vacancyOverall && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Вакантность офисов ({vacancyOverall.period}, Colliers)
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(vacancyOverall)}</span>
-                </div>
-              )}
-              {rnVacancy && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Вакантность качественных БЦ ({rnVacancy.period}, Результ. недв.)
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnVacancy)}</span>
-                </div>
-              )}
-              {totalStock && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Всего офисных площадей ({totalStock.period})
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(totalStock)}</span>
-                </div>
-              )}
-              {newSupply && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Введено новых площадей ({newSupply.period})
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(newSupply)}</span>
-                </div>
-              )}
-              {rnNewSupplyForecast && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Прогноз ввода до конца {rnNewSupplyForecast.period}
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnNewSupplyForecast)}</span>
-                </div>
-              )}
-              {deal === 'rent' && rnRateBPlus && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Ставка B+ ({rnRateBPlus.period}, Результ. недв.)
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnRateBPlus)}</span>
-                </div>
-              )}
-              {deal === 'rent' && rnRateBMinus && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Ставка B- ({rnRateBMinus.period}, Результ. недв.)
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{formatExternalValue(rnRateBMinus)}</span>
-                </div>
-              )}
-            </div>
-            {colliersVacancyByClass.length > 0 && (
-              <div className={cn('overflow-x-auto p-2', glassCardClass)} style={glassCardShadow}>
-                <table className="w-full min-w-[280px] text-sm">
-                  <thead>
-                    <tr className="text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
-                      <th className="px-3 py-2">Класс (по Colliers)</th>
-                      <th className="px-3 py-2 text-right">Вакантность</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {colliersVacancyByClass.map((m) => (
-                      <tr key={m.sliceKey} className="border-t border-border">
-                        <td className="px-3 py-2 font-medium text-ink">Класс {m.sliceKey}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-ink">{formatExternalValue(m)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <p className="text-xs text-ink-faint">
-              Вакантность, сток и новое предложение — по данным {SOURCE_LABELS.colliers ?? 'Colliers International'}
-              {vacancyOverall?.url && (
-                <>
-                  {' '}
-                  (
-                  <a href={vacancyOverall.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
-                    отчёт
-                  </a>
-                  )
-                </>
-              )}
-              , весь рынок офисов Минска на конец 2025, не только бизнес-центры из нашего каталога. Свежая
-              вакантность и ставки B+/B- — по данным {SOURCE_LABELS['rezultativnaya-nedvizhimost']}
-              {rnVacancy?.url && (
-                <>
-                  {' '}
-                  (
-                  <a href={rnVacancy.url} target="_blank" rel="noreferrer" className="text-primary-hover hover:underline">
-                    отчёт
-                  </a>
-                  )
-                </>
-              )}
-              , за 1-е полугодие 2026, только «качественные» БЦ — их деление на B+/B- не совпадает точно с нашим
-              A/B+/B/C или классификацией Colliers, сравнивать классы между источниками напрямую нельзя.
-            </p>
-          </section>
-        )}
-
-        {(goskomDeals || goskomShare) && (
-          <section className="flex flex-col gap-3">
-            <h2 className="flex items-center gap-2 text-lg font-bold text-ink">
-              <Landmark className="h-4 w-4 shrink-0 text-ink-faint" />
-              Реестр реальных сделок (Госкомимущество)
-            </h2>
-            <p className="text-sm text-ink-muted">
-              Отдельно от нашей медианы по объявлениям — официальная статистика уже <strong>закрытых</strong> сделок
-              купли-продажи офисов в Минске, зарегистрированных Госкомимуществом за 1-е полугодие 2026 года.
-            </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {goskomDeals && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Зарегистрировано сделок ({goskomDeals.period})
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{goskomDeals.value}</span>
-                </div>
-              )}
-              {goskomShare && (
-                <div className={cn('flex flex-col gap-1 p-5', glassCardClass)} style={glassCardShadow}>
-                  <span className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Доля офисов в обороте рынка ({goskomShare.period})
-                  </span>
-                  <span className="text-2xl font-extrabold text-ink">{goskomShare.value}%</span>
-                </div>
-              )}
-            </div>
-            <p className="text-xs text-ink-faint">
-              Это <strong>сделки</strong>, а не наши медианы по активным объявлениям (те — ставка предложения, эти —
-              подтверждённая цена продажи). Данные Госкомимущества, перепроверены по двум независимым публикациям
-              (Минск-Новости, BelRetail).{' '}
-              {goskomDeals?.url && (
-                <a href={goskomDeals.url} target="_blank" rel="noopener noreferrer" className="text-primary-hover hover:underline">
-                  Источник
-                </a>
-              )}
-              {' · '}
-              <Link to="/minsk/analytics" className="text-primary-hover hover:underline">
-                Реестр по всем сегментам
-              </Link>
-            </p>
-          </section>
-        )}
-
         <section className={cn('flex flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           <h2 className="text-lg font-bold text-ink">Что это за цифры</h2>
           <p className="text-sm leading-relaxed text-ink-muted">
-            Это медиана и 25–75-й перцентили цены за м² по активным объявлениям аренды{deal === 'sale' ? ' и продажи' : ''}{' '}
-            офисных помещений внутри зданий из нашего{' '}
+            Верхняя часть страницы — медиана и 25–75-й перцентили цены за м² по активным объявлениям аренды
+            {deal === 'sale' ? ' и продажи' : ''} офисных помещений по всему Минску (категория «Офисы» на Kufar и
+            Realt.by), без привязки к конкретному зданию. Нижняя часть — тот же принцип, но только для 143 зданий из
+            нашего{' '}
             <Link to="/minsk/bcminsk" className="text-primary-hover hover:underline">
               каталога бизнес-центров Минска
             </Link>{' '}
-            (сейчас 143 здания). Данные собираются с Kufar и Realt.by и обновляются раз в месяц — это{' '}
-            <strong>ставка предложения</strong>, то, что собственники просят прямо сейчас, а не подтверждённая цена
-            сделки. Срез по классу или району публикуется только при не менее {MIN_RELIABLE_N} объявлениях —
-            меньшая выборка помечена как ориентировочная или скрыта вовсе, чтобы не выдавать случайный разброс
-            нескольких объявлений за рыночную цену.
+            — там мы дополнительно знаем класс здания и конкретный адрес. Данные собираются с Kufar и Realt.by и
+            обновляются раз в месяц — это <strong>ставка предложения</strong>, то, что собственники просят прямо
+            сейчас, а не подтверждённая цена сделки. Срез публикуется только при не менее {MIN_RELIABLE_N}{' '}
+            объявлениях — меньшая выборка помечена как ориентировочная или скрыта вовсе, чтобы не выдавать случайный
+            разброс нескольких объявлений за рыночную цену.
           </p>
           <p className="text-sm leading-relaxed text-ink-muted">
-            За пределами каталога бизнес-центров в Минске сдаётся и продаётся заметно больше офисов — во
-            встроенных помещениях жилых домов, административных зданиях, бывших НИИ. Эта часть рынка пока не
-            попадает в срезы ниже: у неё нет единого справочника зданий, к которому можно привязать объявления.
-            Планируем добавить такой срез отдельно.
+            Дедупликации между Kufar и Realt.by в узком срезе по каталогу БЦ нет (известное ограничение — там нет
+            общего ключа для сопоставления дублей между площадками); в city-wide срезе выше дедупликация есть
+            (совпадающие по улице, дому, площади, этажу и типу сделки объявления с обеих площадок считаются один
+            раз).
           </p>
           <p className="text-sm text-ink-muted">
             Подробная методика — на{' '}
@@ -1040,11 +1193,11 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
           <div className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold text-ink">Что влияет на ставку</h3>
             <p className="text-sm leading-relaxed text-ink-muted">
-              Класс здания — самый заметный фактор (см. таблицу выше), но внутри одного класса ставка ещё зависит от
-              района (см. «По районам»), этажа (нижние этажи и стрит-ритейл дороже офисных верхних), близости к
-              станции метро, площади помещения (мелкая нарезка обычно дороже за м², чем крупные блоки) и состояния
-              отделки. Наличие своей парковки и репутация управляющей компании тоже сказываются, но эти данные
-              структурно не публикуются площадками — их приходится узнавать напрямую у арендодателя или на{' '}
+              Класс здания — самый заметный фактор внутри каталога бизнес-центров (см. таблицу выше), но ставка ещё
+              зависит от района (см. «По районам»), типа здания (офис в бизнес-центре обычно дороже, чем встройка в
+              жилой дом), этажа, площади помещения (мелкая нарезка обычно дороже за м², чем крупные блоки) и
+              состояния отделки. Наличие своей парковки и репутация управляющей компании тоже сказываются, но эти
+              данные структурно не публикуются площадками — их приходится узнавать напрямую у арендодателя или на{' '}
               <Link to="/minsk/bcminsk" className="text-primary-hover hover:underline">
                 карточке конкретного здания
               </Link>
@@ -1066,8 +1219,8 @@ export function OfficeAnalyticsPage({ deal }: OfficeAnalyticsPageProps) {
                     Доступнее всего — {cheapestDistrict.sliceKey} район, {formatMoney(cheapestDistrict.median as number, deal)}.{' '}
                   </>
                 )}
-                Разница между районами обычно объясняется не столько удалённостью от центра, сколько тем, какого
-                класса здания там сосредоточены — см. таблицу «По классу здания» выше.
+                Разница между районами обычно объясняется не столько удалённостью от центра, сколько тем, какие
+                здания там сосредоточены — старые встройки в жилые дома или современные бизнес-центры.
               </p>
             </div>
           )}

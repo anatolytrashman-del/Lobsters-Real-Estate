@@ -53,6 +53,12 @@ function formatByUnit(n: number, deal: 'rent' | 'sale', unit: 'sqm' | 'total'): 
 const UPCOMING_SEGMENTS = ['Первичный рынок', 'Готовый арендный бизнес'];
 
 export function MarketAnalyticsHub() {
+  // 'ofisy' — city-wide офисы по всему Минску (не только каталог БЦ), тот же
+  // принцип, что и у остальных трёх сегментов ниже — используется для
+  // сводной строки "Все сегменты одним взглядом". 'ofisy_bc' остался только
+  // для более узкой и глубокой таблицы "Офисы в БЦ по классам" ниже —
+  // сохранён отдельно, не смешивается с city-wide данными.
+  const [officeCitywideSnapshots, setOfficeCitywideSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [officeSnapshots, setOfficeSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [retailSnapshots, setRetailSnapshots] = useState<MarketSnapshot[] | null>(null);
   const [warehouseSnapshots, setWarehouseSnapshots] = useState<MarketSnapshot[] | null>(null);
@@ -60,6 +66,9 @@ export function MarketAnalyticsHub() {
   const [goskomMetrics, setGoskomMetrics] = useState<ExternalMetric[] | null>(null);
 
   useEffect(() => {
+    fetchLatestMarketSnapshots('ofisy')
+      .then(setOfficeCitywideSnapshots)
+      .catch(() => setOfficeCitywideSnapshots([]));
     fetchLatestMarketSnapshots('ofisy_bc')
       .then(setOfficeSnapshots)
       .catch(() => setOfficeSnapshots([]));
@@ -78,12 +87,12 @@ export function MarketAnalyticsHub() {
   }, []);
 
   const cityRent = useMemo(
-    () => officeSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'rent'),
-    [officeSnapshots],
+    () => officeCitywideSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'rent'),
+    [officeCitywideSnapshots],
   );
   const citySale = useMemo(
-    () => officeSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'sale'),
-    [officeSnapshots],
+    () => officeCitywideSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'sale'),
+    [officeCitywideSnapshots],
   );
   const retailCityRent = useMemo(
     () => retailSnapshots?.find((s) => s.sliceType === 'city' && s.deal === 'rent'),
@@ -124,10 +133,15 @@ export function MarketAnalyticsHub() {
   // вау, где много полезной инфы" — узкие страницы под конкретный запрос
   // остаются как есть, для SEO это правильно, а хаб становится тем самым
   // "вау"-обзором: реальные цифры сразу на странице, не только ссылки).
-  const loaded = officeSnapshots !== null && retailSnapshots !== null && warehouseSnapshots !== null && parkingSnapshots !== null;
+  const loaded =
+    officeCitywideSnapshots !== null &&
+    officeSnapshots !== null &&
+    retailSnapshots !== null &&
+    warehouseSnapshots !== null &&
+    parkingSnapshots !== null;
   const segmentRows = useMemo(
     () => [
-      { key: 'ofisy_bc', label: 'Офисы в бизнес-центрах', url: '/minsk/analytics/ofisy', rent: cityRent, sale: citySale, unit: 'sqm' as const },
+      { key: 'ofisy', label: 'Офисы', url: '/minsk/analytics/ofisy', rent: cityRent, sale: citySale, unit: 'sqm' as const },
       {
         key: 'torgovye',
         label: 'Торговые помещения и ПСН',

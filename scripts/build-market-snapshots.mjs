@@ -200,6 +200,22 @@ async function main() {
     );
   }
 
+  // 'ofisy' — city-wide офисы (sync-citywide-office-offers.mjs), НЕ то же
+  // самое, что 'ofisy_bc' выше (тот — только объявления внутри 143 БЦ из
+  // нашего каталога). Оба сегмента сосуществуют: этот даёт непредвзятую
+  // картину по всему рынку офисов Минска, 'ofisy_bc' — более узкий и
+  // глубокий срез именно по каталогизированным бизнес-центрам.
+  const officeCitywideOffers = await fetchCitywideOffers('ofisy');
+  console.log(`Загружено ${officeCitywideOffers.length} объявлений офисов по всему городу (citywide_offers).`);
+  if (officeCitywideOffers.length > 0) {
+    snapshots.push(
+      ...buildSnapshotsForSegment(officeCitywideOffers, 'ofisy', period, [
+        { sliceType: 'district', field: 'district' },
+        { sliceType: 'building_type', field: 'building_type' },
+      ]),
+    );
+  }
+
   const warehouseOffers = await fetchCitywideOffers('sklady');
   console.log(`Загружено ${warehouseOffers.length} объявлений складов (citywide_offers).`);
   if (warehouseOffers.length > 0) {
