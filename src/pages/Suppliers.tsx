@@ -1166,6 +1166,13 @@ export function Suppliers() {
   const [offerUploadingFile, setOfferUploadingFile] = useState(false);
   const [offerExtractionBusy, setOfferExtractionBusy] = useState(false);
   const [offerExtractionError, setOfferExtractionError] = useState<string | null>(null);
+  // Владелец, 2026-09-09 (живой баг на проде — «Глассвэй»): успешное
+  // распознавание с ответом isInvoice:false раньше было ПОЛНОСТЬЮ молчаливым
+  // — ни карточки подтверждения, ни ошибки, файл просто прикреплялся, и
+  // цена оставалась незаполненной без единого объяснения почему. Теперь
+  // такой исход тоже виден на экране (имя файла, которое не распозналось
+  // как счёт), а не только два прежних состояния busy/error.
+  const [offerNotInvoiceFile, setOfferNotInvoiceFile] = useState<string | null>(null);
   const [offerExtraction, setOfferExtraction] = useState<{
     price: number | null;
     currency: string | null;
@@ -1674,6 +1681,7 @@ export function Suppliers() {
     setOfferManualItemName('');
     setOfferExtraction(null);
     setOfferExtractionError(null);
+    setOfferNotInvoiceFile(null);
     setOfferError(null);
     setOfferModalOpen(true);
   }
@@ -1837,6 +1845,7 @@ export function Suppliers() {
     setOfferManualItemName('');
     setOfferExtraction(null);
     setOfferExtractionError(null);
+    setOfferNotInvoiceFile(null);
     setOfferError(null);
     setOfferModalOpen(true);
     setDetailOfferId(null);
@@ -1902,10 +1911,13 @@ export function Suppliers() {
   async function tryRecognizeOfferFile(fileUrl: string, fileName: string) {
     setOfferExtractionBusy(true);
     setOfferExtractionError(null);
+    setOfferNotInvoiceFile(null);
     try {
       const result = await recognizeInvoiceFile(fileUrl, fileName);
       if (result.isInvoice) {
         setOfferExtraction({ price: result.price, currency: result.currency, items: result.items, fileName });
+      } else {
+        setOfferNotInvoiceFile(fileName);
       }
     } catch (err) {
       setOfferExtractionError(errorMessage(err, 'Не удалось распознать документ'));
@@ -2684,6 +2696,22 @@ export function Suppliers() {
                 className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm text-ink"
               >
                 <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
+                {/* Владелец, 2026-09-09 (баг «Глассвэй» на проде): автораспознавание
+                    при загрузке — одноразовая попытка, без видимого способа
+                    повторить, если она молча не сработала (сетевая икота,
+                    временная ошибка ProxyAPI) или файл добавлен раньше этой
+                    возможности. Кнопка позволяет вызвать распознавание заново по
+                    уже прикреплённому файлу в любой момент. */}
+                {isRecognizableFileName(file.fileName) && (
+                  <button
+                    type="button"
+                    onClick={() => tryRecognizeOfferFile(file.url, file.fileName)}
+                    disabled={offerExtractionBusy}
+                    className="shrink-0 text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                  >
+                    Распознать
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() =>
@@ -2709,6 +2737,12 @@ export function Suppliers() {
             </label>
             {offerExtractionBusy && <p className="text-xs text-ink-faint">Распознаём документ...</p>}
             {offerExtractionError && <p className="text-xs text-danger">{offerExtractionError}</p>}
+            {offerNotInvoiceFile && (
+              <p className="text-xs text-ink-faint">
+                «{offerNotInvoiceFile}» не похож на счёт с итоговой суммой — цену и позиции придётся внести
+                вручную, либо нажать «Распознать» ещё раз, если это ошибка.
+              </p>
+            )}
             {offerExtraction && (
               <div className="flex flex-col gap-2 rounded-control border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">
                 <span className="font-medium text-ink">
