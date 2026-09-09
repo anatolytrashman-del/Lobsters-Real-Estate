@@ -143,7 +143,7 @@ async function fetchDocumentFileAsBase64(file) {
   return { fileName: file.fileName, contentType, contentBase64: buf.toString('base64') };
 }
 
-async function sendOneEmail({ offer, request, legalEntity, job, order }) {
+async function sendOneEmail({ offer, request, legalEntity, job }) {
   const rendered = {
     subject: renderTemplate(job.subject, { offer, request }).trim(),
     body: renderTemplate(job.body, { offer, request }),
@@ -181,7 +181,19 @@ async function sendOneEmail({ offer, request, legalEntity, job, order }) {
     }
   }
 
-  const fromAddress = emailAddress(order.short_code);
+  // Реальный баг, найденный владельцем 2026-09-09 на живой рассылке (сразу
+  // после запуска этой фичи): каждому получателю создавалась своя
+  // одноразовая "заявка" (supplier_orders, title "Рассылка: ...") и письмо
+  // цеплялось к НЕЙ (order_id != null) — в интерфейсе "Письма" по умолчанию
+  // открыта вкладка "Основная" (order_id = null), поэтому реально
+  // отправленные письма были не видны без клика в скрытую вкладку "Заявка".
+  // Тот же паттерн, что и у обычной одиночной отправки одного письма
+  // (api/purchase-send-email.js — там orderId вообще не передаётся для
+  // обычного письма, шлётся с order_id:null и адресом-плюс от short_code
+  // самого offer, не заявки) — синхронизировано с этим поведением: заявка
+  // (SupplierOrder) — это то, что человек явно создаёт кнопкой "+ Новая
+  // заявка", массовая рассылка не должна заводить её сама.
+  const fromAddress = emailAddress(offer.short_code);
 
   const resendResp = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -202,7 +214,7 @@ async function sendOneEmail({ offer, request, legalEntity, job, order }) {
 
   const { error: insertEmailError } = await supabase.from('supplier_offer_emails').insert({
     offer_id: offer.id,
-    order_id: order.id,
+    order_id: null,
     direction: 'out',
     from_address: fromAddress,
     to_address: offer.email,
@@ -273,34 +285,16 @@ async function processItem({ job, item, request, legalEntity }) {
   }
 
   try {
-    const { data: order, error: orderError } = await supabase
-      .from('supplier_orders')
-      .insert({
-        offer_id: offer.id,
-        title: request.title ? `Рассылка: ${request.title}` : 'Массовая рассылка',
-        communication_status: '',
-        price: 0,
-        currency: 'USD',
-        deadline: '',
-        requirements: '',
-        items: [],
-        files: [],
-      })
-      .select()
-      .single();
-    if (orderError) throw orderError;
-
     await sendOneEmail({
-      offer: { id: offer.id, name: offer.name, contact: offer.contact, email: offer.email },
+      offer: { id: offer.id, name: offer.name, contact: offer.contact, email: offer.email, short_code: offer.short_code },
       request: { title: request.title, items: request.items ?? [] },
       legalEntity,
       job,
-      order,
     });
 
     await supabase
       .from('bulk_send_job_items')
-      .update({ status: 'sent', order_id: order.id, sent_at: new Date().toISOString() })
+      .update({ status: 'sent', sent_at: new Date().toISOString() })
       .eq('id', item.id);
     console.log(`  ✓ ${offer.name} <${offer.email}>`);
   } catch (err) {
