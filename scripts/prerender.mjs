@@ -19,9 +19,41 @@
 // секретностью ключа) за всеми объектами с непустым landing_slug — новые
 // объекты с продающей страницей подхватываются сами, без правки скрипта.
 //
-// Один HTML-снапшот на слаг не протухнет молча: рабочий процесс — трекнуть
-// сборку с Vercel Deploy Hook при сохранении объекта в админке (см.
-// lib/objectsApi.ts, api/trigger-rebuild.js), не расписание.
+// 2026-09-09 — БЫСТРЫЙ/ПОЛНЫЙ режим (владелец: "разделим маркетинговые
+// страницы и платформу... чтобы можно было быстро править платформу, не
+// ожидая полного рендера всего сервака на 250+ страниц"). Полный рендер
+// (headless-браузер на каждый путь) — единственная по-настоящему долгая
+// часть всей сборки (минуты, не секунды — запуск браузера на страницу,
+// см. историю WORKER_COUNT ниже), и раньше выполнялся на КАЖДЫЙ пуш,
+// включая пуши, не трогающие ни одну публичную страницу (правки CRM/API).
+//
+// Теперь по умолчанию (обычный пуш кода) — БЫСТРЫЙ режим: вместо рендера
+// каждый путь просто СКАЧИВАЕТСЯ с уже живого прода (redevelopment.pro) —
+// на порядок быстрее (голый HTTP, без браузера) и не оставляет ни одну
+// страницу без снапшота (копируется актуальный на данный момент прод, не
+// пусто). Если для конкретного пути живой копии нет/она невалидна (совсем
+// новая страница, сетевая ошибка) — для НЕЁ ОДНОЙ делается настоящий
+// рендер (fetchPathLive → renderPath как fallback), не всей сборки целиком.
+//
+// ПОЛНЫЙ режим (настоящий рендер каждого пути свежими данными) включается
+// автоматически, когда сборку запустил Vercel Deploy Hook по сохранению
+// объекта в админке (lib/objectsApi.ts → api/trigger-rebuild.js) — та же
+// таблица deploy_debounce, что и debounce хука, служит вторым сигналом:
+// свежий triggered_at (< FORCE_FULL_RECENT_MS) означает "эту сборку
+// запустило реальное изменение данных, нужен настоящий рендер", а не
+// просто пуш кода. Дополнительно — явный env `PRERENDER_FORCE_FULL=1` (для
+// ручного полного прогона) и локальные/дев-запуски (без process.env.VERCEL)
+// — там всегда полный режим, как и было. Любая ошибка при проверке флага
+// (нет SUPABASE_SERVICE_ROLE_KEY, сеть подвела) — безопасный дефолт: полный
+// рендер, не быстрый (чтобы баг в этой логике никогда не стал тихой SEO-
+// регрессией).
+//
+// Важное следствие: страницы БЕЗ своего триггера обновления (каталог БЦ,
+// хабы, аналитика — только лендинги объектов дёргают хук) больше не
+// освежаются попутно от каждого пуша кода, как раньше — держать в голове,
+// если понадобится гарантированная свежесть для них: либо завести им
+// такой же вызов trigger-rebuild.js, либо гонять полный прогон по
+// расписанию (см. вариант с крон-воркфлоу, ещё не заведён).
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -36,6 +68,18 @@ const BASE_URL = `http://localhost:${PORT}`;
 // клиентский бандл, отдельного секрета для сборки не требует.
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL ?? 'https://iohcdylttyuhwovztrbk.supabase.co';
 const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_EQwXLOy5TmSPj5tzKjbSeg_xj6SM2Iz';
+// Только для проверки deploy_debounce (см. быстрый/полный режим ниже) —
+// эта таблица закрыта RLS даже на select для anon (P0.2 аудита
+// безопасности), нужен сервисный ключ. Он уже есть в Vercel env (используют
+// api/*.js) — новый секрет от владельца не требуется.
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+const SITE_ORIGIN = 'https://redevelopment.pro';
+// Сборка, запущенная Deploy Hook'ом (реальное изменение данных), должна
+// успеть дойти до этой проверки, пока triggered_at ещё «свежий» — щедрый
+// запас на очередь Vercel + предыдущие шаги сборки (tsc/vite build/сгенери-
+// рованные html/sitemap), которые все идут ДО prerender.mjs.
+const FORCE_FULL_RECENT_MS = 15 * 60_000;
 
 // Все публичные страницы теперь под /minsk/... (см. CLAUDE.md, урл-
 // структура) — переменная переименована из STATIC_SLUGS в STATIC_PATHS:
@@ -393,6 +437,53 @@ async function launchBrowser() {
   return chromium.launch(options);
 }
 
+// true — полный рендер headless-браузером (см. комментарий про быстрый/
+// полный режим в шапке файла), false — быстрое скачивание с живого прода.
+async function shouldForceFullPrerender() {
+  if (process.env.PRERENDER_FORCE_FULL === '1') return true;
+  if (!process.env.VERCEL) return true; // локальный/ручной прогон — как и раньше, всегда полный
+  if (!SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn('[prerender] SUPABASE_SERVICE_ROLE_KEY не задан — не могу проверить deploy_debounce, полный режим');
+    return true;
+  }
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&select=triggered_at`, {
+      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return true;
+    const rows = await res.json();
+    const triggeredAt = rows[0]?.triggered_at;
+    if (!triggeredAt) return false; // хук по данным ещё ни разу не срабатывал — обычный пуш, быстрый режим
+    return Date.now() - new Date(triggeredAt).getTime() < FORCE_FULL_RECENT_MS;
+  } catch (err) {
+    console.warn('[prerender] не удалось проверить deploy_debounce — полный режим на всякий случай:', err);
+    return true;
+  }
+}
+
+// Быстрый путь: вместо рендера — скачать уже готовый снапшот с прода как
+// есть. Валидным считаем только страницу с реальным <h1> (то же условие,
+// что renderPath ждёт от headless-рендера) — «голый» SPA-шелл (например,
+// если путь на проде почему-то ещё не был пререндерен) не проходит, и
+// вызывающий код делает настоящий рендер именно для этого пути.
+async function fetchPathLive(path) {
+  try {
+    const res = await fetch(`${SITE_ORIGIN}/${path}`, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return false;
+    const html = await res.text();
+    if (!/<h1[\s>]/i.test(html)) return false;
+    const dir = join(DIST_DIR, path);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'index.html'), html);
+    console.log(`[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(html.length / 1024)} КБ)`);
+    return true;
+  } catch (err) {
+    console.warn(`[prerender] /${path}: не удалось скачать живую копию (${err instanceof Error ? err.message : err}), рендерю`);
+    return false;
+  }
+}
+
 async function main() {
   if (!existsSync(DIST_DIR)) throw new Error('dist/ не найден — запускать после vite build');
 
@@ -454,6 +545,16 @@ async function main() {
   //    параллелизмом (WORKER_COUNT воркеров, каждый в своём цикле). Не
   //    красивее, зато без единой лишней проваленной попытки на страницу.
   const WORKER_COUNT = 4;
+  // Быстрый режим — просто HTTP GET, без единого браузера: constraint выше
+  // (single-process Chromium) тут ни при чём, можно куда больше параллелизма.
+  const FAST_WORKER_COUNT = 16;
+
+  const fullMode = await shouldForceFullPrerender();
+  console.log(
+    fullMode
+      ? '[prerender] ПОЛНЫЙ режим — рендерю каждый путь headless-браузером (реальное изменение данных или ручной прогон)'
+      : '[prerender] БЫСТРЫЙ режим — копирую уже живые страницы с прода, рендерю только то, чего там ещё нет',
+  );
 
   const serverProc = startPreviewServer();
 
@@ -545,16 +646,24 @@ async function main() {
     }
   }
 
+  // Быстрый режим: сперва пробуем скачать живую копию с прода, и только если
+  // её нет/не прошла проверку — настоящий рендер именно для этого пути
+  // (тот же renderPath, что и в полном режиме, с его же ретраями/failedPaths).
+  async function processPathFast(path) {
+    const ok = await fetchPathLive(path);
+    if (!ok) await renderPath(path);
+  }
+
   try {
     await waitForServer();
     let cursor = 0;
     async function worker() {
       while (cursor < paths.length) {
         const path = paths[cursor++];
-        await renderPath(path);
+        await (fullMode ? renderPath(path) : processPathFast(path));
       }
     }
-    await Promise.all(Array.from({ length: WORKER_COUNT }, worker));
+    await Promise.all(Array.from({ length: fullMode ? WORKER_COUNT : FAST_WORKER_COUNT }, worker));
   } finally {
     serverProc.kill();
   }
