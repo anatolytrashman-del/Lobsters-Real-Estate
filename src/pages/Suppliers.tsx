@@ -439,6 +439,184 @@ function PriceComparisonBlock({
   );
 }
 
+// Владелец, 2026-09-09: "В сравнении цен нужно добавлять только тех, кто
+// уже прислал КП" + "не списки поставщиков, а материал — КП по убыванию" —
+// вкладка "Сравнение цен" перестроена целиком под этот принцип, отдельно от
+// PriceComparisonBlock (тот остаётся как был для вкладки "Поставщики" — там
+// нужен весь список, включая ещё не ответивших, это управление запросом, а
+// не сравнение готовых цен). Здесь: (1) только offerCommunicationStatus ===
+// 'confirmed' — offer.items или offer.price уже зафиксированы, счёт реально
+// получен, не просто отправлено письмо; (2) единица сравнения — не
+// поставщик, а МАТЕРИАЛ: позиция самого запроса (request.items[0]) плюс
+// любые доп. компоненты, обнаруженные в разбивке присланных счетов (см.
+// точку 3 из истории про Грильято — сложное КП это не 1 цена, а много
+// строк). Под каждым материалом — список полученных КП по убыванию (не по
+// возрастанию, как у лучшей цены выше — тут задача увидеть весь диапазон
+// сверху вниз), самая низкая цена всё равно подсвечена зелёным, где бы она
+// ни оказалась в списке.
+interface MaterialQuote {
+  offerId: string;
+  offerName: string;
+  verified: boolean;
+  amount: number;
+  currency: Currency;
+  usd: number | null;
+}
+
+interface MaterialGroup {
+  key: string;
+  name: string;
+  unit: string;
+  quotes: MaterialQuote[];
+  cheapestOfferIds: Set<string>;
+}
+
+function buildMaterialQuotes(request: SupplierRequest, confirmedOffers: SupplierOffer[], rate: ExchangeRate | undefined): MaterialGroup[] {
+  const groups = new Map<string, MaterialGroup>();
+
+  function addQuote(name: string, unit: string, offer: SupplierOffer, amount: number) {
+    const key = name.trim().toLowerCase();
+    if (!key) return;
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, name: name.trim(), unit, quotes: [], cheapestOfferIds: new Set() };
+      groups.set(key, group);
+    }
+    group.quotes.push({
+      offerId: offer.id,
+      offerName: offer.name,
+      verified: offer.verified,
+      amount,
+      currency: offer.currency,
+      usd: convertToUsd(amount, offer.currency, rate),
+    });
+  }
+
+  // Если у запроса нет собственных позиций — сам request.title и есть
+  // "материал", про который вообще идёт речь (запрос без разбивки на items).
+  const fallbackName = request.items[0]?.name || request.title;
+  const fallbackUnit = request.items[0]?.unit || '';
+
+  for (const offer of confirmedOffers) {
+    if (offer.items.length > 0) {
+      for (const item of offer.items) {
+        if (item.price == null) continue;
+        addQuote(item.name, item.unit, offer, purchaseItemTotal(item));
+      }
+    } else if (offer.price > 0) {
+      // Счёт распознан только итогом, без разбивки — весь итог относим к
+      // единственному материалу, про который создавался этот запрос.
+      addQuote(fallbackName, fallbackUnit, offer, offer.price);
+    }
+  }
+
+  const primaryKey = fallbackName.trim().toLowerCase();
+  const list = Array.from(groups.values());
+  for (const group of list) {
+    const priced = group.quotes.filter((q) => q.usd != null).sort((a, b) => b.usd! - a.usd!);
+    const unpriced = group.quotes.filter((q) => q.usd == null);
+    group.quotes = [...priced, ...unpriced];
+    if (priced.length > 0) {
+      const minUsd = Math.round(priced[priced.length - 1].usd! * 100);
+      for (const q of priced) {
+        if (Math.round(q.usd! * 100) === minUsd) group.cheapestOfferIds.add(q.offerId);
+      }
+    }
+  }
+  // Материал самого запроса — первым, остальные (доп. компоненты) — по
+  // числу полученных КП (сначала там, где реально есть с чем сравнивать).
+  list.sort((a, b) => {
+    if (a.key === primaryKey) return -1;
+    if (b.key === primaryKey) return 1;
+    return b.quotes.length - a.quotes.length;
+  });
+  return list;
+}
+
+function MaterialPriceComparisonCard({
+  request,
+  offers,
+  emails,
+  rate,
+  onOpenDetail,
+}: {
+  request: SupplierRequest;
+  offers: SupplierOffer[];
+  emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
+  onOpenDetail: (o: SupplierOffer) => void;
+}) {
+  const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
+  const confirmedOffers = offersInCountry.filter((o) => offerCommunicationStatus(o, emails) === 'confirmed');
+  const materialGroups = buildMaterialQuotes(request, confirmedOffers, rate);
+
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <div className="text-lg font-bold text-ink">{request.title}</div>
+      <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
+
+      {materialGroups.length === 0 ? (
+        <p className="text-sm text-ink-faint">Пока никто из «{country}» не прислал КП — переключите страну выше.</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {materialGroups.map((group) => (
+            <div key={group.key} className="flex flex-col gap-1.5">
+              <span className="text-sm font-semibold text-ink">
+                {group.name}
+                {group.unit && <span className="font-normal text-ink-faint"> ({group.unit})</span>}
+              </span>
+              <div className="flex flex-col gap-1.5">
+                {group.quotes.map((q) => {
+                  const isCheapest = group.cheapestOfferIds.has(q.offerId);
+                  return (
+                    <div
+                      key={q.offerId}
+                      className={cn(
+                        'flex flex-wrap items-center justify-between gap-3 rounded-control border px-3 py-2',
+                        isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
+                      )}
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-medium text-ink">{q.offerName}</span>
+                        {q.verified ? (
+                          <Badge tone="success">Верифицирован</Badge>
+                        ) : (
+                          <Badge tone="warning">Требуется верификация</Badge>
+                        )}
+                        {isCheapest && (
+                          <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
+                            лучшая цена
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className={cn('tabular-nums text-sm font-semibold', isCheapest ? 'text-success' : 'text-ink')}>
+                          {formatPrice(q.amount, q.currency)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const offer = offers.find((o) => o.id === q.offerId);
+                            if (offer) onOpenDetail(offer);
+                          }}
+                          className="shrink-0 text-xs font-medium text-primary hover:underline"
+                        >
+                          Подробнее
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
 // Беларуси и для России... в идеале переключение списков прямо внутри
 // самого блока, чем делать две отдельные таблицы". Переключатель — локальный
@@ -1953,12 +2131,14 @@ export function Suppliers() {
       )}
 
       {/* Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка
-          Сравнение цен. И внутри уже группировка по запросам, как грильято" —
-          тот же PriceComparisonBlock, что и внутри RequestCard, но без кнопок
-          управления запросом/предложением — чистый вид только для сравнения,
-          сгруппированный по тем же категориям (Материалы и оборудование/
-          Сервисы), что и вкладка "Поставщики". Категории вовсе без
-          предложений не показываются — сравнивать там нечего. */}
+          Сравнение цен... как грильято", уточнение тем же днём: "нужно
+          добавлять только тех, кто уже прислал КП" + "не списки
+          поставщиков, а материал — КП по убыванию" — MaterialPriceComparisonCard
+          (не PriceComparisonBlock — тот для "Поставщики", там нужен весь
+          список включая неответивших). Категория попадает сюда, только
+          если у неё есть хотя бы одно ПОДТВЕРЖДЁННОЕ предложение
+          (offerCommunicationStatus === 'confirmed') хоть в одной стране —
+          иначе сравнивать нечего. */}
       {tab === 'Сравнение цен' && (
         <div className="mt-6 flex flex-col gap-8">
           {loading && (
@@ -1972,13 +2152,15 @@ export function Suppliers() {
           {!loading && !loadError && (() => {
             const groups = (['materials', 'services'] as const).map((group) => ({
               group,
-              requestsWithOffers: requests.filter((r) => r.group === group && offers.some((o) => o.requestId === r.id)),
+              requestsWithOffers: requests.filter(
+                (r) => r.group === group && offers.some((o) => o.requestId === r.id && offerCommunicationStatus(o, supplierEmails) === 'confirmed'),
+              ),
             }));
             const anyOffers = groups.some((g) => g.requestsWithOffers.length > 0);
             if (!anyOffers) {
               return (
                 <Card className="py-10 text-center text-sm text-ink-muted">
-                  Пока нет предложений для сравнения — добавьте их на вкладке «Поставщики».
+                  Пока ни один поставщик не прислал КП — сравнивать пока нечего.
                 </Card>
               );
             }
@@ -1988,16 +2170,14 @@ export function Suppliers() {
                 <div key={group} className="flex flex-col gap-6">
                   <div className="text-lg font-bold text-ink">{SUPPLIER_REQUEST_GROUP_LABELS[group]}</div>
                   {requestsWithOffers.map((r) => (
-                    <Card key={r.id} className="flex flex-col gap-4 p-5">
-                      <div className="text-lg font-bold text-ink">{r.title}</div>
-                      <PriceComparisonBlock
-                        offers={offers.filter((o) => o.requestId === r.id)}
-                        emails={supplierEmails}
-                        rate={rate}
-                        onOpenDetail={(o) => setDetailOfferId(o.id)}
-                        emptyHint="переключите страну выше."
-                      />
-                    </Card>
+                    <MaterialPriceComparisonCard
+                      key={r.id}
+                      request={r}
+                      offers={offers.filter((o) => o.requestId === r.id)}
+                      emails={supplierEmails}
+                      rate={rate}
+                      onOpenDetail={(o) => setDetailOfferId(o.id)}
+                    />
                   ))}
                 </div>
               );
