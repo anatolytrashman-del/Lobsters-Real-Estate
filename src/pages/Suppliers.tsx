@@ -250,54 +250,6 @@ function rankOffersByPrice(
 // уникальное название позиции (матчинг точным совпадением по названию без
 // регистра/пробелов по краям — счета разных поставщиков не всегда называют
 // один и тот же компонент дословно одинаково, более умный матчинг здесь не
-// строим), столбец на каждого поставщика, у кого распознаны позиции. Лучшая
-// (минимальная в USD) цена по каждой строке подсвечивается тем же принципом,
-// что и rankOffersByPrice выше.
-interface ItemComparisonCell {
-  price: number;
-  usd: number | null;
-}
-
-interface ItemComparisonRow {
-  key: string;
-  name: string;
-  unit: string;
-  cells: Map<string, ItemComparisonCell>;
-  cheapestOfferIds: Set<string>;
-}
-
-function buildItemComparison(offersWithItems: SupplierOffer[], rate: ExchangeRate | undefined): ItemComparisonRow[] {
-  const rows = new Map<string, ItemComparisonRow>();
-  for (const offer of offersWithItems) {
-    for (const item of offer.items) {
-      if (item.price == null) continue;
-      const key = item.name.trim().toLowerCase();
-      if (!key) continue;
-      let row = rows.get(key);
-      if (!row) {
-        row = { key, name: item.name.trim(), unit: item.unit, cells: new Map(), cheapestOfferIds: new Set() };
-        rows.set(key, row);
-      }
-      const usd = convertToUsd(item.price, offer.currency, rate);
-      const existing = row.cells.get(offer.id);
-      // Несколько одноимённых строк у одного КП — берём меньшую цену, не
-      // складываем и не перезаписываем последней попавшейся.
-      if (!existing || (usd != null && (existing.usd == null || usd < existing.usd))) {
-        row.cells.set(offer.id, { price: item.price, usd });
-      }
-    }
-  }
-  for (const row of rows.values()) {
-    const priced = Array.from(row.cells.entries()).filter((e): e is [string, { price: number; usd: number }] => e[1].usd != null);
-    if (priced.length === 0) continue;
-    const minUsd = Math.round(Math.min(...priced.map(([, v]) => v.usd)) * 100);
-    for (const [offerId, v] of priced) {
-      if (Math.round(v.usd * 100) === minUsd) row.cheapestOfferIds.add(offerId);
-    }
-  }
-  return Array.from(rows.values());
-}
-
 // Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
 // цен. И внутри уже группировка по запросам, как грильято" — вынесено из
 // RequestCard в отдельный переиспользуемый блок: сам RequestCard (вкладка
@@ -346,7 +298,7 @@ function PriceComparisonBlock({
       {offersInCountry.length === 0 ? (
         <p className="text-sm text-ink-faint">{offers.length === 0 ? 'Пока нет предложений.' : `Нет предложений из «${country}» — ${emptyHint}`}</p>
       ) : (
-        <OfferTotalComparison offers={offersInCountry} emails={emails} rate={rate} onOpenDetail={onOpenDetail} />
+        <OfferTotalComparison offers={offersInCountry} emails={emails} rate={rate} onOpenDetail={onOpenDetail} showItemsSpoiler={false} />
       )}
     </>
   );
@@ -371,30 +323,35 @@ function OfferTotalComparison({
   emails,
   rate,
   onOpenDetail,
+  // Владелец, 2026-09-09: "в общем списке поставщиков убирай эту таблицу" —
+  // список позиций (в любом виде) нужен только на вкладке "Сравнение цен"
+  // (там это и есть смысл lot-режима — детализация того, из чего сложилась
+  // общая сумма), на "Поставщики" (весь список, включая ещё не ответивших)
+  // он только загромождает карточку категории.
+  showItemsSpoiler = true,
 }: {
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
+  showItemsSpoiler?: boolean;
 }) {
   const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offers, rate);
-  const offersWithItems = offers.filter((o) => o.items.length > 0);
-  const itemRows = offersWithItems.length > 0 ? buildItemComparison(offersWithItems, rate) : [];
 
   return (
-    <>
-      <div className="flex flex-col gap-2">
-        {sortedOffers.map((o) => {
-          const status = offerCommunicationStatus(o, emails);
-          const isCheapest = cheapestIds.has(o.id);
-          return (
-            <div
-              key={o.id}
-              className={cn(
-                'flex flex-wrap items-center justify-between gap-3 rounded-control border px-4 py-3',
-                isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
-              )}
-            >
+    <div className="flex flex-col gap-2">
+      {sortedOffers.map((o) => {
+        const status = offerCommunicationStatus(o, emails);
+        const isCheapest = cheapestIds.has(o.id);
+        return (
+          <div
+            key={o.id}
+            className={cn(
+              'flex flex-col gap-2 rounded-control border px-4 py-3',
+              isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
+            )}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-medium text-ink">{o.name}</span>
                 {o.verified ? (
@@ -418,57 +375,54 @@ function OfferTotalComparison({
                 </Button>
               </div>
             </div>
-          );
-        })}
-      </div>
 
-      {itemRows.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-ink-faint">
-            Сравнение по позициям — {offersWithItems.length > 1 ? 'лучшая цена на каждый компонент подсвечена' : 'разбивка компонентов этого КП'}
-          </span>
-          <div className="overflow-x-auto rounded-control border border-border">
-            <table className="w-full min-w-[480px] border-collapse text-sm">
-              <thead>
-                <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
-                  <th className="px-3 py-2">Компонент</th>
-                  {offersWithItems.map((o) => (
-                    <th key={o.id} className="px-3 py-2 text-right">
-                      {o.name}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {itemRows.map((row) => (
-                  <tr key={row.key} className="border-t border-border align-top">
-                    <td className="px-3 py-2 text-ink">
-                      {row.name}
-                      {row.unit && <span className="text-ink-faint"> ({row.unit})</span>}
-                    </td>
-                    {offersWithItems.map((o) => {
-                      const cell = row.cells.get(o.id);
-                      const isCheapestCell = row.cheapestOfferIds.has(o.id);
-                      return (
-                        <td
-                          key={o.id}
-                          className={cn(
-                            'px-3 py-2 text-right tabular-nums',
-                            isCheapestCell ? 'font-semibold text-success' : 'text-ink',
-                          )}
-                        >
-                          {cell ? formatPrice(cell.price, o.currency) : '—'}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {/* Владелец, 2026-09-09: "названия позиций будут 100% отличаться,
+                ты перекрестные сравнения не найдешь" — раньше здесь строилась
+                ОБЩАЯ таблица, сопоставляющая позиции разных поставщиков по
+                совпадению названия (buildItemComparison) — ненадёжно, у
+                каждого поставщика свои формулировки в счёте. Теперь список
+                позиций — под спойлером и СТРОГО отдельно на каждого
+                поставщика, без попытки свести их в одну таблицу. */}
+            {showItemsSpoiler && o.items.length > 0 && (
+              <details className="group">
+                <summary className="cursor-pointer text-xs font-medium text-ink-muted">
+                  Список материалов ({o.items.length} поз.)
+                </summary>
+                <div className="mt-2 overflow-x-auto rounded-control border border-border">
+                  <table className="w-full min-w-[360px] border-collapse text-sm">
+                    <thead>
+                      <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                        <th className="px-3 py-2">Название</th>
+                        <th className="px-3 py-2 text-right">Кол-во</th>
+                        <th className="px-3 py-2 text-right">Цена</th>
+                        <th className="px-3 py-2 text-right">Сумма</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {o.items.map((item) => (
+                        <tr key={item.id} className="border-t border-border align-top">
+                          <td className="px-3 py-2 text-ink">
+                            {item.name}
+                            {item.unit && <span className="text-ink-faint"> ({item.unit})</span>}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-ink">{item.quantity ?? '—'}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-ink">
+                            {item.price != null ? formatPrice(item.price, o.currency) : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold text-ink">
+                            {formatPrice(purchaseItemTotal(item), o.currency)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
           </div>
-        </div>
-      )}
-    </>
+        );
+      })}
+    </div>
   );
 }
 
