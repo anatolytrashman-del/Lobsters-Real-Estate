@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Send, Loader2, CheckCircle2, XCircle, TriangleAlert, Paperclip, FileText } from 'lucide-react';
+import { Send, Loader2, CheckCircle2, XCircle, TriangleAlert, Paperclip, FileText, Plus } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Textarea } from '../ui/Textarea';
-import type { SupplierRequest, SupplierOffer } from '../../data/supplierResearch';
+import { countryFlag, SUPPLIER_COUNTRIES, type SupplierRequest, type SupplierOffer } from '../../data/supplierResearch';
 import type { SupplierOrder } from '../../data/supplierOrders';
 import { insertSupplierOrder } from '../../lib/supplierOrdersApi';
 import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
@@ -16,6 +16,7 @@ import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment } from '../../
 import type { EmailTemplate } from '../../data/emailTemplates';
 import { renderEmailTemplate } from '../../lib/emailTemplates';
 import { emailSignature } from './SupplierCorrespondenceTab';
+import { TemplateFormModal } from './EmailTemplates';
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
@@ -67,6 +68,7 @@ type SendState = 'idle' | 'sending' | 'sent' | 'error';
 // рассылка не подмешивается в старый тред.
 export function BulkSendModal({
   request,
+  requests,
   attachment,
   offers,
   emails,
@@ -75,8 +77,13 @@ export function BulkSendModal({
   onClose,
   onOrderCreated,
   onEmailSent,
+  onTemplatesChange,
 }: {
   request: SupplierRequest;
+  // Владелец, 2026-09-09: "нельзя добавить новый шаблон" — полный список
+  // запросов нужен форме создания шаблона (TemplateFormModal), чтобы можно
+  // было привязать шаблон к любому запросу, не только к текущему.
+  requests: SupplierRequest[];
   attachment: LedgerAttachment;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
@@ -85,6 +92,7 @@ export function BulkSendModal({
   onClose: () => void;
   onOrderCreated: (order: SupplierOrder) => void;
   onEmailSent: (email: SupplierOfferEmail) => void;
+  onTemplatesChange: (templates: EmailTemplate[]) => void;
 }) {
   // Владелец, 2026-09-09: карточка организации теперь зависит от юрлица
   // категории (см. историю в data/legalEntities.ts), не одна на всё
@@ -95,6 +103,18 @@ export function BulkSendModal({
   // неверифицированным просто некуда, то же самое ограничение, что и на
   // вкладке "Письма" целиком.
   const candidates = offers.filter((o) => o.requestId === request.id && o.email && o.verified);
+
+  // Владелец, 2026-09-09: "непонятно, от какого юрлица и какой страны идёт
+  // закупка" — юрлицо категории видно только в заголовке ("Массовая
+  // рассылка — «Название категории»") и в блоке вложений (карточка), а
+  // страны получателей не показывались нигде. Свод стран — по фактическим
+  // получателям (candidates), не по всем офферам категории — какой смысл
+  // показывать страну, если письмо туда всё равно не уйдёт.
+  const recipientCountries = useMemo(() => {
+    const set = new Set<string>();
+    candidates.forEach((o) => set.add(o.country || SUPPLIER_COUNTRIES[0]));
+    return [...set];
+  }, [candidates]);
 
   // Родитель монтирует этот компонент заново на каждую новую рассылку
   // (bulkSendConfig в Suppliers.tsx — свежий объект на каждое открытие, а не
@@ -120,6 +140,7 @@ export function BulkSendModal({
   // отправки (см. renderEmailTemplate в handleSend), а не один и тот же
   // текст на всех, как раньше.
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [addTemplateOpen, setAddTemplateOpen] = useState(false);
   const orderedTemplates = useMemo(() => {
     const own = templates.filter((t) => t.requestId === request.id);
     const shared = templates.filter((t) => t.requestId !== request.id);
@@ -209,7 +230,7 @@ export function BulkSendModal({
   const estimatedMinutes = Math.ceil((selected.size * (MIN_DELAY_MS + MAX_DELAY_MS)) / 2 / 60000);
 
   return (
-    <Modal open onClose={sending ? () => {} : onClose} title={`Разослать «${attachment.fileName}»`}>
+    <Modal open onClose={sending ? () => {} : onClose} title={`Массовая рассылка — «${request.title}»`}>
       <div className="flex flex-col gap-4">
         {candidates.length === 0 ? (
           <p className="text-sm text-ink-faint">
@@ -217,6 +238,18 @@ export function BulkSendModal({
           </p>
         ) : (
           <>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-control border border-border-strong bg-surface-muted px-3 py-2 text-sm">
+              <span className="text-ink-muted">
+                Юрлицо: <span className="font-medium text-ink">{legalEntity ? legalEntity.shortName || legalEntity.name : 'не выбрано'}</span>
+              </span>
+              <span className="text-ink-muted">
+                Страны:{' '}
+                <span className="font-medium text-ink">
+                  {recipientCountries.map((c) => `${countryFlag(c)} ${c}`).join(', ')}
+                </span>
+              </span>
+            </div>
+
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm text-ink-muted">Получатели ({selected.size} из {candidates.length})</span>
               <button type="button" onClick={toggleAll} disabled={sending} className="text-sm font-medium text-primary hover:underline disabled:opacity-50">
@@ -237,7 +270,7 @@ export function BulkSendModal({
                       className="h-4 w-4 shrink-0 rounded border-border accent-primary disabled:opacity-50"
                     />
                     <span className="min-w-0 flex-1 truncate text-ink">
-                      {o.name}
+                      <span title={o.country || SUPPLIER_COUNTRIES[0]}>{countryFlag(o.country || SUPPLIER_COUNTRIES[0])}</span> {o.name}
                       {hadEmails && <span className="text-ink-faint"> · уже переписывались</span>}
                       {isFirstOutgoingToOffer(emails, o.id) && legalEntity?.cardFile && (
                         <span className="text-ink-faint" title={`${legalEntity.cardFile.fileName} — первое письмо этому поставщику`}>
@@ -258,27 +291,39 @@ export function BulkSendModal({
               })}
             </div>
 
-            {orderedTemplates.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                <span className="text-sm text-ink-muted">Шаблон</span>
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 shrink-0 text-ink-faint" />
-                  <select
-                    value={selectedTemplateId}
-                    disabled={sending}
-                    onChange={(e) => handlePickTemplate(e.target.value)}
-                    className="flex-1 rounded-control border border-transparent bg-surface-muted px-4 py-2.5 text-sm text-ink outline-none focus:border-primary disabled:opacity-50"
-                  >
-                    <option value="">Без шаблона</option>
-                    {orderedTemplates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+            {/* Владелец, 2026-09-09: "нельзя добавить новый шаблон из этого
+                интерфейса" — кнопка "+" рядом с селектом открывает ту же
+                форму, что и общий менеджер шаблонов (TemplateFormModal),
+                сразу привязывая новый шаблон к текущему запросу
+                (initialRequestId) и выбирая его после сохранения. */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm text-ink-muted">Шаблон</span>
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 shrink-0 text-ink-faint" />
+                <select
+                  value={selectedTemplateId}
+                  disabled={sending}
+                  onChange={(e) => handlePickTemplate(e.target.value)}
+                  className="flex-1 rounded-control border border-transparent bg-surface-muted px-4 py-2.5 text-sm text-ink outline-none focus:border-primary disabled:opacity-50"
+                >
+                  <option value="">Без шаблона</option>
+                  {orderedTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  icon={<Plus className="h-4 w-4" />}
+                  disabled={sending}
+                  onClick={() => setAddTemplateOpen(true)}
+                >
+                  Новый
+                </Button>
               </div>
-            )}
+            </div>
 
             <Input label="Тема" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={sending} />
             <Textarea label="Сообщение" rows={5} value={body} onChange={(e) => setBody(e.target.value)} disabled={sending} />
@@ -286,9 +331,25 @@ export function BulkSendModal({
               {'{компания} и {контакт} подставляются отдельно для каждого получателя при отправке.'}
             </p>
 
-            <div className="flex items-center gap-2 rounded-control border border-border-strong bg-surface-muted p-3 text-xs text-ink-muted">
-              <Paperclip className="h-4 w-4 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">{attachment.fileName} — уйдёт вложением каждому получателю</span>
+            <div className="flex flex-col gap-1.5 rounded-control border border-border-strong bg-surface-muted p-3 text-xs text-ink-muted">
+              <div className="flex items-center gap-2">
+                <Paperclip className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{attachment.fileName} — уйдёт вложением каждому получателю</span>
+              </div>
+              {/* Владелец, 2026-09-09: "в прикреплённых файлах вижу только
+                  ведомость материала, но не реквизиты" — карточка организации
+                  раньше была видна только тултипом на конкретном получателе,
+                  легко не заметить. Теперь — отдельной строкой сразу под
+                  ведомостью, если у юрлица категории есть файл карточки. */}
+              {legalEntity?.cardFile && (
+                <div className="flex items-center gap-2">
+                  <Paperclip className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">
+                    {legalEntity.cardFile.fileName} — карточка «{legalEntity.shortName || legalEntity.name}», уйдёт только
+                    тем, кому пишем впервые
+                  </span>
+                </div>
+              )}
             </div>
             {legalEntity && !legalEntity.cardFile && (
               <p className="text-xs text-ink-faint">
@@ -332,6 +393,20 @@ export function BulkSendModal({
           )}
         </div>
       </div>
+
+      <TemplateFormModal
+        open={addTemplateOpen}
+        template={null}
+        requests={requests}
+        initialRequestId={request.id}
+        onClose={() => setAddTemplateOpen(false)}
+        onSaved={(t) => {
+          onTemplatesChange([...templates, t]);
+          setSelectedTemplateId(t.id);
+          setSubject(t.subject);
+          setBody(t.body);
+        }}
+      />
     </Modal>
   );
 }

@@ -2269,6 +2269,7 @@ export function Suppliers() {
       {bulkSendConfig && (
         <BulkSendModal
           request={bulkSendConfig.request}
+          requests={requests}
           attachment={bulkSendConfig.attachment}
           offers={offers}
           emails={supplierEmails}
@@ -2277,6 +2278,7 @@ export function Suppliers() {
           onClose={() => setBulkSendConfig(null)}
           onOrderCreated={(order) => setSupplierOrders((prev) => [...prev, order])}
           onEmailSent={handleSupplierEmailSent}
+          onTemplatesChange={setEmailTemplates}
         />
       )}
     </>

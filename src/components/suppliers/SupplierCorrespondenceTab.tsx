@@ -1279,25 +1279,6 @@ export function SupplierCorrespondenceTab({
   const isUnreadView = effectiveRequestId === 'unread';
   const selectedGroup = groups.find((g) => g.request.id === effectiveRequestId) ?? null;
 
-  // Владелец, 2026-09-09: "по умолчанию сама рассылка должна быть массовой,
-  // вся категория... когда письма отправятся, у нас и так появится диалог с
-  // каждым поставщиком" — раньше "Массовая отправка" была кнопкой, которую
-  // нужно было заметить и нажать самому, а по умолчанию (категория выбрана,
-  // конкретный поставщик — нет) показывалась пассивная подсказка "Выберите
-  // поставщика слева". Теперь это состояние само открывает мастер массовой
-  // отправки — тот же onOpenBulkSend, что и у кнопки, без дублирования
-  // логики. Не трогает "Непрочитанные" (не настоящая категория) и случай,
-  // когда уже открыт конкретный поставщик (тогда это осознанный выбор
-  // человека, не default). Зависимости — только примитивы (id категории, а
-  // не сам объект selectedGroup): группы (groups) пересчитываются заново на
-  // каждый 20-секундный поллинг supplierEmails (см. Suppliers.tsx), и с
-  // объектом в зависимостях эффект переоткрывал бы мастер каждые 20 секунд.
-  useEffect(() => {
-    if (isUnreadView || selectedOfferId || !selectedGroup) return;
-    onOpenBulkSend(selectedGroup.request);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroup?.request.id, selectedOfferId, isUnreadView]);
-
   const categoryOptions = useMemo(() => {
     const base = groups.map((g) => {
       const unread = g.offers.reduce((sum, x) => sum + threadStatus(x.emails).unreadCount, 0);
