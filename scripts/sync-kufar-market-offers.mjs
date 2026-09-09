@@ -103,6 +103,123 @@ function classifyFinishStatus(ad) {
   return 'не указано';
 }
 
+// --- Бизнес-апартаменты (МБА) ---
+//
+// Владелец (2026-09-09): "на вторичке во вторичном рынке не хватает
+// апартаментов". В отличие от Офисов/Торговых/Кладовых — это НЕ отдельная
+// категория объявлений на Kufar (там просто "Квартиры", 1010, без единого
+// структурного поля, отличающего многофункциональный бизнес-апартамент от
+// рядовой квартиры на той же улице — проверено вживую по ad_parameters).
+// Единственный надёжный способ — точный список известных зданий МБА +
+// поиск ПО КОНКРЕТНОМУ АДРЕСУ (тот же приём, что уже отработан для
+// бизнес-центров, см. addressMatchesBuilding в sync-business-center-offers.mjs
+// — номер дома сравнивается как отдельный токен, не подстрокой).
+//
+// Список зданий собран из bir.by (официальный портал застройщика — даёт
+// внутренний house-код и слаг дома, но НЕ физический адрес для ещё не
+// сданных корпусов), сторонних статей (realt.by/myfin.by/blisch.by) и
+// прямых уточнений владельца в переписке (2026-09-09). На bir.by ни один
+// МБА-дом Минск Мира ещё не в статусе "Сдано" (проверено вживую,
+// ajax/get-search-objects-new type=live vid[]=Апартаменты stage[]=Сдано —
+// пустой ответ) — все актуальные объявления вторички на эти адреса
+// касаются ещё строящихся корпусов (переуступка/бронь), это ожидаемо, не
+// баг матчинга.
+//
+// Квартал "Звёздный" (Орион/Андромеда/Сириус/Вега, плюс Лира с уже
+// известным адресом ниже) — у 4 из 5 корпусов номер дома пока не найден ни
+// в одном открытом источнике (сам bir.by отдаёт только house-код "24.2.x"
+// без адреса). Вместо угадывания — отдельный проход по названию квартала
+// прямо в тексте адреса: объявления по ещё не пронумерованным зданиям
+// Minsk World на Kufar продавцы подписывают буквально "квартал Звёздный,
+// экспериментальный многофункциональный комплекс Минск-Мир" (то же самое
+// подтверждено вживую и для квартала "Австралия и Океания" — там при этом
+// есть здания С уже известным адресом, отсюда APARTMENT_QUARTER_QUERIES
+// как ДОПОЛНИТЕЛЬНЫЙ, не единственный проход поверх APARTMENT_BUILDINGS).
+//
+// Realt.by сюда сознательно НЕ подключён (в отличие от коммерческой
+// недвижимости выше) — у квартир в микрорайоне "Минск-Мир" на Realt тысячи
+// объявлений (проверено вживую — 3300+ на продажу одних только квартир), а
+// точечного поиска по адресу для Realt не нашли (тот же вывод, что уже
+// зафиксирован в sync-business-center-offers.mjs про Realt для БЦ — есть
+// внутренний /api/objects/search, но параметры не разгаданы). Перебрать
+// весь микрорайон целиком ради дюжины конкретных домов было бы
+// непропорционально медленно и спамно для источника — если найдётся
+// рабочий способ сузить Realt-поиск, можно будет добавить вторым
+// источником так же, как Kufar. Список честно неполный (см. пробелы
+// "Звёздного" выше) — Светлана верифицирует то, что нашлось, а не
+// исчерпывающий каталог всех МБА района.
+const APARTMENT_BUILDINGS = [
+  { label: 'Эверест', street: 'николы теслы', house: '33' },
+  { label: 'Континенталь', street: 'брилевская', house: '54' },
+  { label: 'Каспиан', street: 'игоря лученка', house: '18' },
+  { label: 'Медитерраниан', street: 'игоря лученка', house: '22' },
+  { label: 'Атлантик', street: 'мира', house: '7' },
+  { label: 'Пацифик', street: 'михаила савицкого', house: '29' },
+  { label: 'Адриатик', street: 'михаила савицкого', house: '27' },
+  // Без известного бренда дома — владелец назвал только адрес.
+  { label: 'Жореса Алфёрова, 22', street: 'жореса алфёрова', house: '22' },
+  { label: 'Михаила Савицкого, 24', street: 'михаила савицкого', house: '24' },
+  { label: 'Лира (квартал Звёздный)', street: 'площадь старый аэропорт', house: '2' },
+];
+
+// Дополнительный проход поверх APARTMENT_BUILDINGS — ловит корпуса без
+// известного номера дома по названию квартала прямо в тексте адреса (см.
+// комментарий выше).
+const APARTMENT_QUARTER_QUERIES = ['Звёздный', 'Австралия и Океания'];
+const APARTMENT_QUARTER_MARKERS = ['звёздный', 'звездный', 'австралия и океания'];
+
+function normalizeForApartmentMatch(s) {
+  return (s || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"'.]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Тот же приём, что и addressMatchesBuilding в sync-business-center-offers.mjs
+// (тот же класс бага там уже пойман — номер дома надо сравнивать как
+// отдельный токен, не подстрокой, иначе "2" ложно совпадёт с "22"/"2к1").
+// Улица "мира" (Атлантик, просп. Мира, 7) — короткое слово, реальный риск
+// ложного совпадения внутри другого слова (например, "Владимира" в имени
+// или названии другой улицы) при обычном includes(). Поэтому и улица, и
+// номер дома проверяются одинаково — как отдельная фраза с границами
+// (сосед — не буква, не цифра), не произвольной подстрокой.
+function addressMatchesApartmentBuilding(adAddress, building) {
+  if (!adAddress) return false;
+  const norm = normalizeForApartmentMatch(adAddress);
+
+  const streetNorm = normalizeForApartmentMatch(building.street);
+  const streetEscaped = streetNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const streetRe = new RegExp(`(^|[^a-zа-я])${streetEscaped}([^a-zа-я]|$)`, 'i');
+  if (!streetRe.test(norm)) return false;
+
+  const houseNorm = normalizeForApartmentMatch(building.house);
+  const houseEscaped = houseNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const houseRe = new RegExp(`(^|[^a-zа-я0-9])${houseEscaped}([^a-zа-я0-9]|$)`, 'i');
+  return houseRe.test(norm);
+}
+
+function matchesApartmentQuarterMarker(adAddress) {
+  if (!adAddress) return false;
+  const norm = normalizeForApartmentMatch(adAddress);
+  return APARTMENT_QUARTER_MARKERS.some((marker) => norm.includes(normalizeForApartmentMatch(marker)));
+}
+
+// flat_repair — отдельное структурное поле у квартир/апартаментов, НЕ то
+// же самое, что commercial_repair у коммерческих (классификация выше).
+// Полная шкала (проверено вживую по filters.metadata.parameters.refs):
+// 1 Косметический / 5 Евро / 10 Дизайнерский — реальная законченная
+// отделка → "с отделкой"; 15 Строительная отделка / 20 Без отделки /
+// 22 Требуется ремонт / 25 Аварийное состояние — требует работ или голое
+// помещение → "без отделки".
+const APARTMENT_FINISH_CODES_DONE = new Set(['1', '5', '10']);
+function classifyApartmentFinishStatus(ad) {
+  const repair = getAdParam(ad, 'flat_repair');
+  if (repair?.v == null) return 'не указано';
+  return APARTMENT_FINISH_CODES_DONE.has(String(repair.v)) ? 'с отделкой' : 'без отделки';
+}
+
 // Живые проверки (владелец, август 2026): в цене за м² попадаются явно
 // битые значения — "цена по запросу" без реальной цифры (0 / $0.01 / $0.67
 // за м²/мес) и минимум один явный выброс ($29 583/м² на продаже — 72 м² на
@@ -306,6 +423,177 @@ function extractOffers(ads, dealType, excluded) {
   return offers;
 }
 
+// --- Бизнес-апартаменты: точечный поиск по адресу/названию квартала ---
+// (см. большой комментарий у APARTMENT_BUILDINGS выше). В отличие от
+// fetchListingPage/fetchAllListings (перебор ВСЕГО рынка по Минск Миру
+// вручную) — используется полнотекстовый query= Kufar (тот же приём, что
+// в sync-business-center-offers.mjs), результат всё равно перепроверяется
+// addressMatchesApartmentBuilding/matchesApartmentQuarterMarker перед
+// сохранением — query у Kufar не точный AND по словам, доверять ему
+// напрямую нельзя.
+const APARTMENT_PAGE_SIZE = 30;
+const APARTMENT_MAX_PAGES = 15; // на одно здание/квартал объявлений заметно меньше, чем на весь рынок квартир
+
+async function fetchApartmentListingPage(dealSlug, query, cursor) {
+  const url = new URL(`https://re.kufar.by/l/minsk-oktyabrskij-rajon/${dealSlug}/kvartiru`);
+  url.searchParams.set('query', query);
+  url.searchParams.set('size', String(APARTMENT_PAGE_SIZE));
+  if (cursor) url.searchParams.set('cursor', cursor);
+
+  const res = await fetch(url, {
+    headers: { 'User-Agent': GOOGLEBOT_UA, Accept: 'text/html', 'Accept-Language': 'ru' },
+  });
+  if (!res.ok) {
+    throw new Error(`Kufar (апартаменты, ${dealSlug}, query="${query}") вернул ${res.status} для ${url}`);
+  }
+
+  const html = await res.text();
+  const match = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s);
+  if (!match) {
+    throw new Error(`Kufar (апартаменты, ${dealSlug}, query="${query}"): не нашёл __NEXT_DATA__`);
+  }
+
+  const data = JSON.parse(match[1]);
+  const listing = data?.props?.initialState?.listing;
+  if (!listing) {
+    throw new Error(`Kufar (апартаменты, ${dealSlug}, query="${query}"): не нашёл listing`);
+  }
+
+  const nextPage = (listing.pagination || []).find((p) => p.label === 'next');
+  return { ads: listing.ads || [], nextCursor: nextPage?.token ?? null };
+}
+
+async function fetchAllApartmentListings(dealSlug, query) {
+  const allAds = [];
+  let cursor = null;
+  for (let page = 0; page < APARTMENT_MAX_PAGES; page++) {
+    const result = await fetchApartmentListingPage(dealSlug, query, cursor);
+    if (result.ads.length === 0) break;
+    allAds.push(...result.ads);
+    if (!result.nextCursor) break;
+    cursor = result.nextCursor;
+  }
+  return allAds;
+}
+
+// Собирает одно объявление в payload market_offers (или null, если цена
+// неправдоподобная — тогда попадает в excluded, как и у остальных
+// категорий). Общая часть между проходом по APARTMENT_BUILDINGS и проходом
+// по APARTMENT_QUARTER_QUERIES — сам матчинг адреса у каждого свой,
+// извлечение полей объявления — одинаковое.
+function buildApartmentOffer(ad, dealType, excluded) {
+  const address = getAccountParam(ad, 'address')?.v;
+  const size = getAdParam(ad, 'size')?.v ?? null;
+  // Тот же приём, что и в extractOffers выше (price_usd — центы, строкой).
+  const priceUsdCents = ad.price_usd != null ? Number(ad.price_usd) : NaN;
+  const pricePerSqm = Number.isFinite(priceUsdCents) && size ? Math.round((priceUsdCents / 100 / size) * 100) / 100 : null;
+  if (size == null || pricePerSqm == null) return null;
+
+  const adLink = `https://re.kufar.by/vi/${ad.ad_id}`;
+  if (!isPlausiblePrice(dealType, pricePerSqm)) {
+    excluded.push({ dealType, propertyType: 'Бизнес-апартаменты', size, pricePerSqm, adLink });
+    return null;
+  }
+
+  const floor = getAdParam(ad, 'floor')?.v?.[0] ?? null;
+  return {
+    source: 'Kufar',
+    ad_id: String(ad.ad_id),
+    deal_type: dealType,
+    property_type: 'Бизнес-апартаменты',
+    size,
+    price_per_sqm: pricePerSqm,
+    finish_status: classifyApartmentFinishStatus(ad),
+    floor,
+    address: address ?? null,
+    ad_link: adLink,
+  };
+}
+
+async function collectApartmentOffers(excluded) {
+  const offers = [];
+  const seenAdIds = new Set();
+
+  for (const building of APARTMENT_BUILDINGS) {
+    for (const { slug, dealType } of DEAL_TYPES) {
+      const query = `${building.street} ${building.house}`;
+      console.log(`Kufar (апартаменты «${building.label}», ${slug}): ищу «${query}»...`);
+      let ads;
+      try {
+        ads = await fetchAllApartmentListings(slug, query);
+      } catch (err) {
+        console.error(err.message);
+        continue;
+      }
+      for (const ad of ads) {
+        if (seenAdIds.has(ad.ad_id)) continue;
+        const address = getAccountParam(ad, 'address')?.v;
+        if (!addressMatchesApartmentBuilding(address, building)) continue;
+        const offer = buildApartmentOffer(ad, dealType, excluded);
+        if (!offer) continue;
+        seenAdIds.add(ad.ad_id);
+        offers.push(offer);
+      }
+      await new Promise((r) => setTimeout(r, 400)); // не спамить источник частыми запросами подряд
+    }
+  }
+
+  for (const quarterQuery of APARTMENT_QUARTER_QUERIES) {
+    for (const { slug, dealType } of DEAL_TYPES) {
+      console.log(`Kufar (апартаменты, квартал «${quarterQuery}», ${slug}): ищу...`);
+      let ads;
+      try {
+        ads = await fetchAllApartmentListings(slug, quarterQuery);
+      } catch (err) {
+        console.error(err.message);
+        continue;
+      }
+      for (const ad of ads) {
+        if (seenAdIds.has(ad.ad_id)) continue;
+        const address = getAccountParam(ad, 'address')?.v;
+        if (!matchesApartmentQuarterMarker(address)) continue;
+        const offer = buildApartmentOffer(ad, dealType, excluded);
+        if (!offer) continue;
+        seenAdIds.add(ad.ad_id);
+        offers.push(offer);
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+
+  console.log(`Kufar (апартаменты): найдено ${offers.length} объявлений (до дедупликации повторных публикаций).`);
+  return dedupApartmentReposts(offers);
+}
+
+// Живая проверка (2026-09-09): на строящиеся корпуса МБА одна и та же
+// планировка регулярно переопубликовывается под новым ad_id — на реальном
+// прогоне у "Николы Теслы, 33" 448 объявлений свелись всего к 121
+// уникальной паре (этаж, площадь), а самая частая пара (10 этаж, 48.5 м²)
+// встретилась 37 раз почти с ОДНОЙ ценой (2 разных значения на все 37) —
+// это не 37 разных квартир одной планировки, а повторные публикации той же
+// продающейся ячейки (обычная практика застройщика/агентства для
+// поднятия объявления в выдаче на ещё не сданном доме, не баг парсинга).
+// Заливать всё как есть — заспамить очередь верификации Светланы тысячей
+// почти одинаковых карточек ради дюжины реальных типов планировок.
+// Оставляем по ОДНОЙ (самой дешёвой — не гадаем, какая "актуальнее") строке
+// на уникальную комбинацию (адрес, тип сделки, этаж, площадь) — если
+// действительно продаются РАЗНЫЕ квартиры того же метража на одном этаже,
+// они и так неотличимы друг от друга по доступным на Kufar данным (нет
+// номера квартиры), не только для этого скрипта.
+function dedupApartmentReposts(offers) {
+  const byKey = new Map();
+  for (const o of offers) {
+    const key = `${o.address}|${o.deal_type}|${o.floor}|${o.size.toFixed(1)}`;
+    const existing = byKey.get(key);
+    if (!existing || o.price_per_sqm < existing.price_per_sqm) {
+      byKey.set(key, o);
+    }
+  }
+  const deduped = [...byKey.values()];
+  console.log(`Kufar (апартаменты): после дедупликации повторных публикаций — ${deduped.length} строк.`);
+  return deduped;
+}
+
 async function main() {
   const offers = [];
   const excluded = [];
@@ -318,6 +606,8 @@ async function main() {
     console.log(`Kufar (${slug}): из них по Минск Миру — ${extracted.length} объявлений`);
     offers.push(...extracted);
   }
+
+  offers.push(...(await collectApartmentOffers(excluded)));
 
   if (excluded.length > 0) {
     console.log(`Kufar: отфильтровано ${excluded.length} объявлений с неправдоподобной ценой за м² (границы: продажа ${PRICE_BOUNDS.sale.min}–${PRICE_BOUNDS.sale.max} $/м², аренда ${PRICE_BOUNDS.rent.min}–${PRICE_BOUNDS.rent.max} $/м²/мес) — стоит бегло свериться по ссылкам:`);
