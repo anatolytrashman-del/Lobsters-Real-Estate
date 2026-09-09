@@ -299,8 +299,14 @@ export default async function handler(req, res) {
     // null (Альмира всегда может распознать вручную кнопкой в предпросмотре).
     let extraction = null;
     if (offerId) {
+      // Владелец, 2026-09-09: реальный счёт (.docx с разбивкой на позиции)
+      // раньше не подходил под этот фильтр вовсе — .docx не имеет
+      // "страниц" в том смысле, что PDF (нет байтового способа их
+      // посчитать), но и не бывает 40-страничным каталогом в том же
+      // смысле — pageCount у него всегда 1 (см. _attachments.js), поэтому
+      // порог INVOICE_MAX_PAGES ему не грозит.
       const candidate = attachments.find(
-        (a) => /\.(pdf|png|jpe?g|webp|gif)$/i.test(a.fileName) && a.pageCount != null && a.pageCount <= INVOICE_MAX_PAGES,
+        (a) => /\.(pdf|png|jpe?g|webp|gif|docx)$/i.test(a.fileName) && a.pageCount != null && a.pageCount <= INVOICE_MAX_PAGES,
       );
       if (candidate) {
         try {

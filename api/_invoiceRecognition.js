@@ -21,6 +21,7 @@
 // isInvoice — короткий документ без счёта (например, обычное письмо-
 // вложение не по теме) не считается счётом, ничего не подставляется.
 import { proxyApiKeyProblem } from './_proxyapi.js';
+import { extractDocxText } from './_docxText.js';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 export const INVOICE_MAX_PAGES = 3;
@@ -74,15 +75,46 @@ function blockTypeForFileName(fileName) {
   return null;
 }
 
-// fileUrl — публичная ссылка на уже загруженный файл (Supabase Storage),
-// модель читает его напрямую по URL, без повторного прогона байтов через
-// нашу функцию.
+// Владелец, 2026-09-09: реальный счёт (ЗАО "Волок", с разбивкой на позиции)
+// пришёл файлом .docx — recognizeInvoice его не видела вовсе, ни ошибки, ни
+// попытки. У Anthropic API нет content-блока под .docx (document — только
+// PDF), поэтому вместо пересылки файла модели передаём уже извлечённый
+// текст (см. _docxText.js) обычным text-блоком — для счёта-таблицы этого
+// достаточно, реальной картинки/вёрстки документа знать не нужно.
+async function buildDocxContent(fileUrl, fileName) {
+  const fileResp = await fetch(fileUrl);
+  if (!fileResp.ok) throw new Error(`Не удалось скачать .docx для распознавания (${fileResp.status})`);
+  const buffer = Buffer.from(await fileResp.arrayBuffer());
+  const text = await extractDocxText(buffer);
+  if (!text.trim()) throw new Error('Не удалось извлечь текст из .docx — файл повреждён или пуст');
+  return [
+    {
+      type: 'text',
+      text: `Текст документа «${fileName}» (столбцы таблиц разделены табуляцией, строки — переносом):\n\n${text}`,
+    },
+    { type: 'text', text: 'Определи, счёт/КП ли это, и если да — извлеки данные строго по формату из системной инструкции.' },
+  ];
+}
+
+// fileUrl — публичная ссылка на уже загруженный файл (Supabase Storage). Для
+// PDF/картинки модель читает его напрямую по URL; для .docx — сами скачиваем
+// и извлекаем текст (см. buildDocxContent).
 export async function recognizeInvoice(fileUrl, fileName) {
   const keyProblem = proxyApiKeyProblem();
   if (keyProblem) throw new Error(keyProblem);
 
-  const blockType = blockTypeForFileName(fileName);
-  if (!blockType) throw new Error('Неподдерживаемый тип файла для распознавания — нужен PDF или картинка (png/jpg/webp/gif)');
+  const ext = String(fileName || '').split('.').pop()?.toLowerCase();
+  let content;
+  if (ext === 'docx') {
+    content = await buildDocxContent(fileUrl, fileName);
+  } else {
+    const blockType = blockTypeForFileName(fileName);
+    if (!blockType) throw new Error('Неподдерживаемый тип файла для распознавания — нужен PDF, картинка (png/jpg/webp/gif) или .docx');
+    content = [
+      { type: blockType, source: { type: 'url', url: fileUrl } },
+      { type: 'text', text: 'Определи, счёт/КП ли это, и если да — извлеки данные строго по формату из системной инструкции.' },
+    ];
+  }
 
   const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
     method: 'POST',
@@ -95,15 +127,7 @@ export async function recognizeInvoice(fileUrl, fileName) {
       model: MODEL,
       max_tokens: 1500,
       system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: blockType, source: { type: 'url', url: fileUrl } },
-            { type: 'text', text: 'Определи, счёт/КП ли это, и если да — извлеки данные строго по формату из системной инструкции.' },
-          ],
-        },
-      ],
+      messages: [{ role: 'user', content }],
     }),
   });
 

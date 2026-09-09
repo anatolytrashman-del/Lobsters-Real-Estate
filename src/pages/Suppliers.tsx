@@ -644,6 +644,7 @@ function RequestCard({
   onAddOffer,
   onOpenDetail,
   onWebSearch,
+  onToggleComparisonMode,
   searching,
 }: {
   request: SupplierRequest;
@@ -655,6 +656,7 @@ function RequestCard({
   onAddOffer: (r: SupplierRequest) => void;
   onOpenDetail: (o: SupplierOffer) => void;
   onWebSearch: (r: SupplierRequest, country: string) => void;
+  onToggleComparisonMode: (r: SupplierRequest) => void;
   searching: boolean;
 }) {
   // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
@@ -666,7 +668,22 @@ function RequestCard({
     <Card className="flex flex-col gap-4 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-lg font-bold text-ink">{request.title}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-lg font-bold text-ink">{request.title}</span>
+            <button
+              type="button"
+              onClick={() => onToggleComparisonMode(request)}
+              title="Клик — переключить тип сравнения на «Сравнение цен»"
+              className={cn(
+                'rounded-full border px-2 py-0.5 text-[11px] font-medium hover:border-primary hover:text-primary',
+                request.comparisonMode === 'lot'
+                  ? 'border-border-strong text-ink-muted'
+                  : 'border-border text-ink-faint',
+              )}
+            >
+              {SUPPLIER_COMPARISON_MODE_LABELS[request.comparisonMode]}
+            </button>
+          </div>
           {request.items.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1.5">
               {request.items.map((item) => (
@@ -1680,6 +1697,34 @@ export function Suppliers() {
     }
   }
 
+  // Владелец, 2026-09-09: "где и как отмечается, какая поставка идёт целиком,
+  // а какие по частям? Это должно быть очевидно и просто" — раньше тип
+  // сравнения менялся только через полную форму "Редактировать запрос"
+  // (Select "Тип сравнения цен" внутри модалки), сам текущий выбор нигде не
+  // был виден на самой карточке "Поставщики" (только на "Сравнение цен", и
+  // то лишь когда выбран 'lot'). Теперь прямо на карточке категории —
+  // кликабельная пилюля с текущим режимом, переключается в один клик, без
+  // открытия формы.
+  async function toggleComparisonMode(r: SupplierRequest) {
+    const nextMode: SupplierComparisonMode = r.comparisonMode === 'lot' ? 'material' : 'lot';
+    const input: SupplierRequestInput = {
+      title: r.title,
+      group: r.group,
+      estimateId: r.estimateId,
+      sectionId: r.sectionId,
+      sectionTitle: r.sectionTitle,
+      items: r.items,
+      legalEntityId: r.legalEntityId,
+      comparisonMode: nextMode,
+    };
+    try {
+      const updated = await updateSupplierRequest(r.id, input);
+      setRequests((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось изменить тип сравнения'));
+    }
+  }
+
   function openAddOffer(request: SupplierRequest) {
     setOfferRequestId(request.id);
     setEditingOffer(null);
@@ -1880,11 +1925,16 @@ export function Suppliers() {
   }
 
   // Только те расширения, что реально умеет читать recognizeInvoice
-  // (api/_invoiceRecognition.js — PDF или картинка) — для остального
-  // (.xlsx/.docx и т.п.) просто загружаем файл без попытки распознать.
+  // (api/_invoiceRecognition.js — PDF, картинка или .docx с текстом) — для
+  // остального (.xlsx и т.п.) просто загружаем файл без попытки распознать.
+  // Владелец, 2026-09-09: реальный счёт (ЗАО "Волок") пришёл файлом .docx с
+  // разбивкой на позиции — раньше .docx был исключён вместе с .xlsx под
+  // предлогом "каталог на много страниц", хотя это обычный формат для
+  // разового счёта конкретного поставщика — добавлен явно, текст
+  // извлекается на сервере (api/_docxText.js), Claude сам файл не видит.
   function isRecognizableFileName(fileName: string): boolean {
     const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
-    return ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
+    return ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'docx'].includes(ext);
   }
 
   function isValidOfferCurrency(value: string | null): value is Currency {
@@ -2128,6 +2178,7 @@ export function Suppliers() {
                       onAddOffer={openAddOffer}
                       onOpenDetail={(o) => setDetailOfferId(o.id)}
                       onWebSearch={openWebQueryModal}
+                      onToggleComparisonMode={toggleComparisonMode}
                       searching={webSearchingId === r.id}
                     />
                   ))}
