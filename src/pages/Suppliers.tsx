@@ -62,7 +62,7 @@ import {
 import { searchSuppliersOnline, type SupplierSearchResult } from '../lib/supplierWebSearchApi';
 import { logActivity } from '../lib/activityLogApi';
 import { purchaseItemTotal, type PurchaseItem } from '../data/purchases';
-import type { Estimate, EstimateMaterial } from '../data/estimates';
+import { emptySection, type Estimate, type EstimateMaterial, type EstimateSection } from '../data/estimates';
 import { fetchEstimates, updateEstimate } from '../lib/estimatesApi';
 import type { RealtyObject } from '../data/objects';
 import { fetchObjects } from '../lib/objectsApi';
@@ -769,6 +769,14 @@ export function Suppliers() {
   const [editingMaterial, setEditingMaterial] = useState<EstimateMaterial | null>(null);
   const [commentsMaterialSectionId, setCommentsMaterialSectionId] = useState<string | null>(null);
   const [commentsMaterial, setCommentsMaterial] = useState<EstimateMaterial | null>(null);
+  // Переименование/добавление/удаление разделов прямо в ведомости — владелец,
+  // 2026-09-09: "нужна возможность вручную добавлять разделы" (у сметы без
+  // объекта стартовый набор из 4 стандартных разделов не всегда подходит).
+  // Тот же паттерн rename-формы, что и у разделов на странице сметы
+  // (EstimateDetail.tsx: startEditSection/saveSection/addSection).
+  const [editingLedgerSectionId, setEditingLedgerSectionId] = useState<string | null>(null);
+  const [ledgerSectionTitleDraft, setLedgerSectionTitleDraft] = useState('');
+  const [savingLedgerSection, setSavingLedgerSection] = useState(false);
 
   // "Найти в сети" (владелец, 2026-08-31) — веб-поиск поставщиков через
   // claude-haiku-4-5 (api/supplier-web-search.js; изначально был
@@ -1068,6 +1076,54 @@ export function Suppliers() {
     });
     setEstimates((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     return updated;
+  }
+
+  function startEditLedgerSection(section: EstimateSection) {
+    setEditingLedgerSectionId(section.id);
+    setLedgerSectionTitleDraft(section.title);
+    setLedgerError(null);
+  }
+
+  async function saveLedgerSectionTitle() {
+    if (!ledgerEstimate || !editingLedgerSectionId) return;
+    setSavingLedgerSection(true);
+    setLedgerError(null);
+    try {
+      const sections = ledgerEstimate.sections.map((s) =>
+        s.id === editingLedgerSectionId ? { ...s, title: ledgerSectionTitleDraft.trim() || 'Без названия' } : s,
+      );
+      await saveLedgerSections(ledgerEstimate.id, sections);
+      setEditingLedgerSectionId(null);
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось сохранить раздел'));
+    } finally {
+      setSavingLedgerSection(false);
+    }
+  }
+
+  async function addLedgerSection() {
+    if (!ledgerEstimate) return;
+    const section = emptySection('Новый раздел');
+    try {
+      await saveLedgerSections(ledgerEstimate.id, [...ledgerEstimate.sections, section]);
+      startEditLedgerSection(section);
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось добавить раздел'));
+    }
+  }
+
+  async function deleteLedgerSection(sectionId: string) {
+    if (!ledgerEstimate) return;
+    if (!window.confirm('Удалить раздел вместе с содержимым?')) return;
+    setLedgerError(null);
+    try {
+      await saveLedgerSections(
+        ledgerEstimate.id,
+        ledgerEstimate.sections.filter((s) => s.id !== sectionId),
+      );
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось удалить раздел'));
+    }
   }
 
   function openAddMaterial(sectionId: string) {
@@ -1558,7 +1614,46 @@ export function Suppliers() {
                 const { ungrouped, groups } = groupMaterials(section.materials);
                 return (
                   <div key={section.id} className="flex flex-col gap-3">
-                    <span className="text-lg font-bold text-ink">{section.title}</span>
+                    {editingLedgerSectionId === section.id ? (
+                      <div className="flex flex-col gap-3 rounded-2xl border border-border p-4">
+                        <Input
+                          label="Название раздела"
+                          value={ledgerSectionTitleDraft}
+                          onChange={(e) => setLedgerSectionTitleDraft(e.target.value)}
+                          autoFocus
+                        />
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" variant="secondary" onClick={() => setEditingLedgerSectionId(null)}>
+                            Отмена
+                          </Button>
+                          <Button type="button" onClick={saveLedgerSectionTitle} disabled={savingLedgerSection}>
+                            {savingLedgerSection ? 'Сохраняем...' : 'Сохранить'}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-lg font-bold text-ink">{section.title}</span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => startEditLedgerSection(section)}
+                            aria-label="Переименовать раздел"
+                            className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteLedgerSection(section.id)}
+                            aria-label="Удалить раздел"
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {section.materials.length === 0 && <p className="text-sm text-ink-faint">Материалов пока нет.</p>}
 
@@ -1599,6 +1694,10 @@ export function Suppliers() {
                   </div>
                 );
               })}
+
+              <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} className="w-fit" onClick={addLedgerSection}>
+                Добавить раздел
+              </Button>
             </div>
           )}
         </div>
