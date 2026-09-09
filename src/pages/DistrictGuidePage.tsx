@@ -70,6 +70,7 @@ import type { Currency } from '../data/transactions';
 import type { ExchangeRate } from '../data/exchangeRates';
 import { PrimaryMarketProModal } from '../components/district/PrimaryMarketProModal';
 import { useInView } from '../lib/useInView';
+import { lazyRetry } from '../lib/lazyRetry';
 // lazy() — обе карты тянут за собой отдельные снепшоты данных
 // (data/districtPlaces.ts ~60 КБ у DistrictMap, data/districtBusinessCategories.ts
 // 883 точки ~80 КБ у DistrictQuarterMap для индекса концентрации по нишам).
@@ -80,10 +81,10 @@ import { useInView } from '../lib/useInView';
 // chunk-импорт) дополнительно гейтится useInView, см. quarterMapInView/
 // districtMapInView.
 const DistrictQuarterMap = lazy(() =>
-  import('../components/district/DistrictQuarterMap').then((m) => ({ default: m.DistrictQuarterMap })),
+  lazyRetry(() => import('../components/district/DistrictQuarterMap')).then((m) => ({ default: m.DistrictQuarterMap })),
 );
 const DistrictMap = lazy(() =>
-  import('../components/district/DistrictMap').then((m) => ({ default: m.DistrictMap })),
+  lazyRetry(() => import('../components/district/DistrictMap')).then((m) => ({ default: m.DistrictMap })),
 );
 
 // Переехала с /rayon-minsk-mir на /minsk/minsk-mir (см. CLAUDE.md, урл-
@@ -595,14 +596,25 @@ const densityData: { icon: LucideIcon; label: string; count: number }[] = [
 // общий со страницей верификации /admin/market-offers.
 const MARKET_PROPERTY_TYPE_ORDER = MARKET_PROPERTY_TYPES;
 
-interface MarketPivotCell {
-  count: number;
-  medianPrice: number;
-}
-
+// Плоская строка "тип помещения × диапазон площади" — владелец, 2026-09-09:
+// "Сделай таблицу вторичного рынка по дизайну и оформлению 1 в 1 как и
+// первичный рынок" (см. buildPrimaryMarketPivot в data/primaryMarketOffers.ts).
+// Раньше это была сводная матрица (строка — тип помещения, столбец — диапазон
+// площади, в ячейке — count+медиана друг под другом) — по внешнему виду
+// заметно отличалась от таблицы первичного рынка (там — обычный плоский
+// список категорий с колонками Предложений/Площадь/Мин/Средняя/Макс). Теперь
+// строка — это одна КОНКРЕТНАЯ комбинация (тип помещения, диапазон площади),
+// а колонки повторяют первичный рынок буквально: Предложений/Площадь/Мин/
+// Медиана/Макс (столбец назван "Медиана", не "Средняя" — это действительно
+// медиана, не среднее, ради устойчивости к выбросам ценам).
 interface MarketPivotRow {
+  key: string;
   propertyType: string;
-  cells: (MarketPivotCell | null)[];
+  areaLabel: string;
+  count: number;
+  priceMinUsd: number;
+  priceMedianUsd: number;
+  priceMaxUsd: number;
 }
 
 function median(values: number[]): number {
@@ -637,14 +649,25 @@ function buildMarketPivot(offers: MarketOffer[], dealType: 'sale' | 'rent', fini
     byBucket.get(bucket)!.push(netPricePerSqm(offer));
   }
 
-  return MARKET_PROPERTY_TYPE_ORDER.filter((type) => byType.has(type)).map((propertyType) => {
-    const byBucket = byType.get(propertyType)!;
-    const cells = AREA_BUCKET_ORDER.map((bucket) => {
+  const rows: MarketPivotRow[] = [];
+  for (const propertyType of MARKET_PROPERTY_TYPE_ORDER) {
+    const byBucket = byType.get(propertyType);
+    if (!byBucket) continue;
+    for (const bucket of AREA_BUCKET_ORDER) {
       const prices = byBucket.get(bucket);
-      return prices ? { count: prices.length, medianPrice: Math.round(median(prices)) } : null;
-    });
-    return { propertyType, cells };
-  });
+      if (!prices || prices.length === 0) continue;
+      rows.push({
+        key: `${propertyType}__${bucket}`,
+        propertyType,
+        areaLabel: bucket,
+        count: prices.length,
+        priceMinUsd: Math.round(Math.min(...prices)),
+        priceMedianUsd: Math.round(median(prices)),
+        priceMaxUsd: Math.round(Math.max(...prices)),
+      });
+    }
+  }
+  return rows;
 }
 
 function countSmallFinishedOffices(offers: MarketOffer[], dealType: 'sale' | 'rent'): number {
@@ -777,11 +800,14 @@ function formatPricePerM2(amountEur: number, currency: Currency, rate: ExchangeR
 // Вторичный рынок (Kufar) хранит цену в USD — переводим в EUR тем же
 // курсом, что и первичный рынок (владелец: "давай всё сводить к евро"),
 // и уже от EUR идём в выбранную валюту через formatPricePerM2 выше — один
-// и тот же путь конвертации для обоих блоков.
-function formatMedianPriceLabel(amountUsd: number, currency: Currency, rate: ExchangeRate | null, isRent: boolean): string {
+// и тот же путь конвертации для обоих блоков. Возвращает голое число+символ
+// (как и formatPricePerM2), без суффикса "/м²" — тот теперь живёт в шапке
+// таблицы (2026-09-09, единый вид с первичным рынком), не повторяется в
+// каждой ячейке.
+function formatSecondaryPricePerM2(amountUsd: number, currency: Currency, rate: ExchangeRate | null): string {
   const amountEur = convertToEur(amountUsd, 'USD', rate);
   if (amountEur == null) return '—';
-  return `${formatPricePerM2(amountEur, currency, rate)}/м²${isRent ? '/мес' : ''}`;
+  return formatPricePerM2(amountEur, currency, rate);
 }
 const MARKET_FINISH_TO_DB: Record<(typeof MARKET_FINISH_OPTIONS)[number], string> = {
   'С отделкой': 'с отделкой',
@@ -898,10 +924,11 @@ const parkingAddresses: { category: string; house: string; address: string | nul
 interface DistrictPropertyType {
   icon: LucideIcon;
   title: string;
-  // ReactNode, не string — карточке "Офисные помещения" нужна внутренняя
-  // ссылка на /minsk/one прямо в тексте (аудит 2026-08-26: упоминание
-  // "деловой центр Red One" было голым текстом — упущенный внутренний линк
-  // из самого релевантного контекста страницы).
+  // ReactNode, не string — карточке "Офисные помещения" нужны внутренние
+  // якорные ссылки на разделы этой же страницы (МФЦ/Вторичный рынок), не
+  // просто голый текст. 2026-09-09: прямая реклама Red One из этой карточки
+  // убрана по просьбе владельца ("выглядит как простая реклама") — вместо
+  // неё факты про сами офисы района.
   description: ReactNode;
 }
 
@@ -933,12 +960,18 @@ const PROPERTY_TYPE_OFFICE: DistrictPropertyType = {
   title: 'Офисные помещения',
   description: (
     <>
-      Классические офисные площади под кабинеты, представительства и небольшие команды. В районе особенно не
-      хватает готовых компактных офисов с отделкой — этот дефицит закрывает{' '}
-      <Link to="/minsk/one" className="font-semibold text-primary-hover hover:underline">
-        деловой центр Red One
-      </Link>{' '}
-      по соседству.
+      Классические офисные площади под кабинеты, представительства и небольшие команды. В районе такие помещения
+      сейчас размещаются в основном на первых этажах жилых домов — отдельного классического бизнес-центра для
+      аренды офисов пока нет: единственный профильный объект,{' '}
+      <a href="#business-centers" className="font-semibold text-ink hover:underline">
+        Минский международный финансовый центр
+      </a>
+      , ещё строится. Из-за этого небольших офисов (до 40 м²) с готовой отделкой на вторичном рынке почти нет —
+      актуальные цены и объём предложения по офисам смотрите в таблице{' '}
+      <a href="#market" className="font-semibold text-ink hover:underline">
+        «Вторичный рынок»
+      </a>{' '}
+      ниже.
     </>
   ),
 };
@@ -1554,25 +1587,6 @@ export function DistrictGuidePage() {
           </div>
         </div>
 
-        {/* Посадочные под подсказки Google (аудит 2026-09-07) — гид остаётся
-            хабом, каждая страница берёт свой срез: бизнес-центры, коворкинг,
-            купить/арендовать офис, коммерческие помещения. */}
-        <div className={cn('flex flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
-          <h2 className="text-lg font-bold text-ink">Подробнее по темам</h2>
-          <div className="flex flex-wrap gap-2">
-            {MINSK_MIR_TOPIC_SLUGS.map((s) => (
-              <Link
-                key={s}
-                to={minskMirTopicUrl(s)}
-                className="rounded-full border border-border px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:border-primary hover:text-primary-hover"
-              >
-                {MINSK_MIR_TOPIC_LABELS[s]}
-              </Link>
-            ))}
-          </div>
-        </div>
-
-
         <div id="developer" className={cn('flex scroll-mt-6 flex-col gap-4 p-6', glassCardClass)} style={glassCardShadow}>
           {/* Логотипы на одном уровне с заголовком, справа (owner: сначала
               "перенеси логотип застройщика вправо" отдельной строкой, потом
@@ -1915,12 +1929,8 @@ export function DistrictGuidePage() {
           </div>
           <p className="text-sm leading-relaxed text-ink-muted">
             Классический бизнес-центр в самом районе пока один — МФЦ, и он ещё строится. Ближайший готовый БЦ
-            застройщика Dana Holdings стоит в другом районе, а офисный спрос в Минск Мире сегодня закрывают
-            помещения на первых этажах жилых домов и{' '}
-            <Link to="/minsk/one" className="font-semibold text-primary-hover hover:underline">
-              деловой центр Red One
-            </Link>{' '}
-            с небольшими кабинетами в собственность.
+            застройщика Dana Holdings стоит в другом районе, а офисный спрос в Минск Мире сегодня закрывают в
+            основном помещения на первых этажах жилых домов.
           </p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {MINSK_MIR_BUSINESS_CENTERS.map((bc) => (
@@ -2032,7 +2042,7 @@ export function DistrictGuidePage() {
           )}
         </div>
 
-        <div id="market" className={cn('flex scroll-mt-6 flex-col gap-4 p-6', glassCardClass)} style={glassCardShadow}>
+        <div id="market" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           {/* flex-col на мобильном — тот же фикс, что и у "Первичного рынка"
               выше (длинный заголовок + пилюля валюты не помещались в одну
               строку на 375px). */}
@@ -2075,19 +2085,25 @@ export function DistrictGuidePage() {
                 Цена с отделкой и без — разные рынки, поэтому не смешиваем их в одной цифре.
               </p>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[520px] border-collapse text-sm">
+                <table className="w-full min-w-[640px] border-collapse text-sm">
                   <caption className="sr-only">
-                    Вторичный рынок коммерческой недвижимости Минск Мира: количество предложений и медианная цена
-                    за м² по типу помещения и площади (данные Kufar, Realt)
+                    Вторичный рынок коммерческой недвижимости Минск Мира: количество предложений и цены за м² по
+                    типу помещения и диапазону площади (данные Kufar, Realt)
                   </caption>
                   <thead>
                     <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
                       <th scope="col" className="py-2 pr-3 text-left">Тип помещения</th>
-                      {AREA_BUCKET_ORDER.map((bucket) => (
-                        <th scope="col" key={bucket} className="py-2 px-2 text-right font-semibold">
-                          {bucket}
-                        </th>
-                      ))}
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">Предложений</th>
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь</th>
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">
+                        Мин, {currencySymbols[marketCurrency]}/м²{marketDealType === 'Аренда' ? '/мес' : ''}
+                      </th>
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">
+                        Медиана, {currencySymbols[marketCurrency]}/м²{marketDealType === 'Аренда' ? '/мес' : ''}
+                      </th>
+                      <th scope="col" className="py-2 pl-2 text-right font-semibold">
+                        Макс, {currencySymbols[marketCurrency]}/м²{marketDealType === 'Аренда' ? '/мес' : ''}
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -2096,28 +2112,24 @@ export function DistrictGuidePage() {
                       marketDealType === 'Продажа' ? 'sale' : 'rent',
                       MARKET_FINISH_TO_DB[marketFinish],
                     ).map((row) => (
-                      <tr key={row.propertyType}>
-                        <th scope="row" className="py-2.5 pr-3 text-left font-medium text-ink">{row.propertyType}</th>
-                        {row.cells.map((cell, i) => (
-                          <td key={i} className="py-2.5 px-2 text-right tabular-nums">
-                            {cell ? (
-                              <>
-                                <div className="font-semibold text-ink">{cell.count}</div>
-                                <div className="text-xs text-ink-muted">
-                                  {formatMedianPriceLabel(cell.medianPrice, marketCurrency, exchangeRate, marketDealType === 'Аренда')}
-                                </div>
-                              </>
-                            ) : (
-                              <span className="text-ink-faint">—</span>
-                            )}
-                          </td>
-                        ))}
+                      <tr key={row.key}>
+                        <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.propertyType}</th>
+                        <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
+                        <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.areaLabel}</td>
+                        <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                          {formatSecondaryPricePerM2(row.priceMinUsd, marketCurrency, exchangeRate)}
+                        </td>
+                        <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
+                          {formatSecondaryPricePerM2(row.priceMedianUsd, marketCurrency, exchangeRate)}
+                        </td>
+                        <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
+                          {formatSecondaryPricePerM2(row.priceMaxUsd, marketCurrency, exchangeRate)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <p className="text-xs text-ink-muted">Сверху — количество предложений, снизу — медианная цена за м².</p>
 
               <div className="flex items-start gap-2.5 rounded-control border border-success/30 bg-success-bg px-4 py-3">
                 <Sparkles className="h-4 w-4 shrink-0 translate-y-0.5 text-success" />
@@ -2548,6 +2560,27 @@ export function DistrictGuidePage() {
           <Link to="/minsk/one" className="w-fit text-sm font-semibold text-primary-hover hover:underline">
             Смотреть кабинеты в Red One →
           </Link>
+        </div>
+
+        {/* Посадочные под подсказки Google (аудит 2026-09-07) — гид остаётся
+            хабом, каждая страница берёт свой срез: бизнес-центры, коворкинг,
+            купить/арендовать офис, коммерческие помещения. Перенесено в самый
+            низ страницы (владелец, 2026-09-09) — раньше блок стоял сразу после
+            "Ключевых цифр", в самом начале, и первым же встречал посетителя
+            гида набором ссылок на другие страницы вместо контента этой. */}
+        <div className={cn('flex flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
+          <h2 className="text-lg font-bold text-ink">Подробнее по темам</h2>
+          <div className="flex flex-wrap gap-2">
+            {MINSK_MIR_TOPIC_SLUGS.map((s) => (
+              <Link
+                key={s}
+                to={minskMirTopicUrl(s)}
+                className="rounded-full border border-border px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:border-primary hover:text-primary-hover"
+              >
+                {MINSK_MIR_TOPIC_LABELS[s]}
+              </Link>
+            ))}
+          </div>
         </div>
           </div>
         </div>
