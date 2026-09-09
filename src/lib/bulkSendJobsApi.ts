@@ -1,6 +1,24 @@
 import { supabase } from './supabase';
 import { withRetry } from './withRetry';
+import { authFetch } from './authFetch';
 import type { BulkSendJob, BulkSendJobRow } from '../data/bulkSendJobs';
+
+// Владелец, 2026-09-09: "при каждой отправке письма запускай костыль, после
+// отправки всех писем — останавливай" — вместо периодического опроса сессией
+// Claude (переживает только пока сессия открыта) настоящий автотриггер:
+// сразу после постановки задания в очередь дёргаем api/trigger-rebuild.js
+// (action:'dispatch-bulk-send'), тот вызывает workflow_dispatch на
+// process-bulk-send-jobs.yml напрямую — не дожидаясь ни сломанного планового
+// крона (см. журнал CLAUDE.md), ни ручного вмешательства. Fire-and-forget —
+// неудача не должна мешать самой постановке в очередь (плановый крон
+// остаётся подстраховкой).
+function dispatchBulkSendWorkflow() {
+  authFetch('/api/trigger-rebuild', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'dispatch-bulk-send' }),
+  }).catch(() => {});
+}
 
 function fromRow(row: BulkSendJobRow): BulkSendJob {
   return {
@@ -47,6 +65,7 @@ export function insertBulkSendJob(input: {
       .insert(input.offerIds.map((offerId) => ({ job_id: job.id, offer_id: offerId })));
     if (itemsError) throw itemsError;
 
+    dispatchBulkSendWorkflow();
     return job;
   });
 }
