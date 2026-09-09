@@ -16,6 +16,9 @@ import { ContractorsResearch } from '../components/contractors/ContractorsResear
 import { cn } from '../lib/cn';
 import { formatPhoneDisplay } from '../lib/formatPhone';
 import { currencySymbols, type Currency } from '../data/transactions';
+import type { ExchangeRate } from '../data/exchangeRates';
+import { fetchTodayRate } from '../lib/exchangeRatesApi';
+import { convertToUsd } from '../lib/currencyConvert';
 import type { DocumentFile } from '../data/contractorDocuments';
 import {
   RESEARCH_CONTACT_METHODS,
@@ -200,6 +203,85 @@ const emptyOfferForm = {
   items: [] as PurchaseItem[],
 };
 
+// Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей цены" — тот
+// же принцип сравнения "дешевле всех" в общем знаменателе USD, что и у
+// rankOffers в ContractorsResearch.tsx (см. комментарий там), только считает
+// по offer.price/currency — итоговой цене по счёту, единственному
+// АВТОРИТЕТНОМУ источнику суммы (не сумма позиций, см. комментарий у
+// SupplierOffer.price). Предложения без цены — в хвост списка, не участвуют
+// в сравнении (0 не должен ложно выигрывать). Лидеров может быть несколько
+// (тот же принцип, что и там же).
+function rankOffersByPrice(
+  offers: SupplierOffer[],
+  rate: ExchangeRate | undefined,
+): { sorted: SupplierOffer[]; cheapestIds: Set<string> } {
+  const withUsd = offers.map((o) => ({
+    offer: o,
+    usd: o.price > 0 ? convertToUsd(o.price, o.currency, rate) : null,
+  }));
+  const priced = withUsd.filter((x) => x.usd != null).sort((a, b) => a.usd! - b.usd!);
+  const unpriced = withUsd.filter((x) => x.usd == null);
+  const minUsd = priced[0] ? Math.round(priced[0].usd! * 100) : null;
+  const cheapestIds = new Set(
+    minUsd == null ? [] : priced.filter((x) => Math.round(x.usd! * 100) === minUsd).map((x) => x.offer.id),
+  );
+  return { sorted: [...priced, ...unpriced].map((x) => x.offer), cheapestIds };
+}
+
+// Владелец, 2026-09-09: "та же поставка Грильято — это не 1 позиция, а
+// множество доп. компонентов. Предложи решение по организации инфы и цен с
+// учётом множества строк" — построчное сравнение: строка на каждое
+// уникальное название позиции (матчинг точным совпадением по названию без
+// регистра/пробелов по краям — счета разных поставщиков не всегда называют
+// один и тот же компонент дословно одинаково, более умный матчинг здесь не
+// строим), столбец на каждого поставщика, у кого распознаны позиции. Лучшая
+// (минимальная в USD) цена по каждой строке подсвечивается тем же принципом,
+// что и rankOffersByPrice выше.
+interface ItemComparisonCell {
+  price: number;
+  usd: number | null;
+}
+
+interface ItemComparisonRow {
+  key: string;
+  name: string;
+  unit: string;
+  cells: Map<string, ItemComparisonCell>;
+  cheapestOfferIds: Set<string>;
+}
+
+function buildItemComparison(offersWithItems: SupplierOffer[], rate: ExchangeRate | undefined): ItemComparisonRow[] {
+  const rows = new Map<string, ItemComparisonRow>();
+  for (const offer of offersWithItems) {
+    for (const item of offer.items) {
+      if (item.price == null) continue;
+      const key = item.name.trim().toLowerCase();
+      if (!key) continue;
+      let row = rows.get(key);
+      if (!row) {
+        row = { key, name: item.name.trim(), unit: item.unit, cells: new Map(), cheapestOfferIds: new Set() };
+        rows.set(key, row);
+      }
+      const usd = convertToUsd(item.price, offer.currency, rate);
+      const existing = row.cells.get(offer.id);
+      // Несколько одноимённых строк у одного КП — берём меньшую цену, не
+      // складываем и не перезаписываем последней попавшейся.
+      if (!existing || (usd != null && (existing.usd == null || usd < existing.usd))) {
+        row.cells.set(offer.id, { price: item.price, usd });
+      }
+    }
+  }
+  for (const row of rows.values()) {
+    const priced = Array.from(row.cells.entries()).filter((e): e is [string, { price: number; usd: number }] => e[1].usd != null);
+    if (priced.length === 0) continue;
+    const minUsd = Math.round(Math.min(...priced.map(([, v]) => v.usd)) * 100);
+    for (const [offerId, v] of priced) {
+      if (Math.round(v.usd * 100) === minUsd) row.cheapestOfferIds.add(offerId);
+    }
+  }
+  return Array.from(rows.values());
+}
+
 // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
 // Беларуси и для России... в идеале переключение списков прямо внутри
 // самого блока, чем делать две отдельные таблицы". Переключатель — локальный
@@ -210,6 +292,7 @@ function RequestCard({
   request,
   offers,
   emails,
+  rate,
   onEditRequest,
   onDeleteRequest,
   onAddOffer,
@@ -220,6 +303,7 @@ function RequestCard({
   request: SupplierRequest;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
   onEditRequest: (r: SupplierRequest) => void;
   onDeleteRequest: (r: SupplierRequest) => void;
   onAddOffer: (r: SupplierRequest) => void;
@@ -229,6 +313,9 @@ function RequestCard({
 }) {
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
+  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offersInCountry, rate);
+  const offersWithItems = offersInCountry.filter((o) => o.items.length > 0);
+  const itemRows = offersWithItems.length > 0 ? buildItemComparison(offersWithItems, rate) : [];
 
   return (
     <Card className="flex flex-col gap-4 p-5">
@@ -291,16 +378,23 @@ function RequestCard({
         </p>
       ) : (
         <div className="flex flex-col gap-2">
-          {/* Владелец, 2026-09-04: "Лучшую цену на этой странице не выводим
-              вообще. Просто показываем либо верифицированного, либо нет
-              поставщика" — сравнение "дешевле всех" по офферу в целом
-              убрано (цена теперь живёт на уровне конкретной заявки на
-              поставку, не самого поставщика), вместо зелёного бейджа —
-              статус верификации. */}
-          {offersInCountry.map((o) => {
+          {/* Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей
+              цены" — вернули сравнение "дешевле всех" по итоговой цене
+              счёта (offer.price), список отсортирован по возрастанию цены,
+              самая низкая (может быть несколько при равенстве) подсвечена
+              зелёным + бейдж "лучшая цена" — тот же принцип, что и у
+              сравнения предложений подрядчиков (ContractorsResearch.tsx). */}
+          {sortedOffers.map((o) => {
             const status = offerCommunicationStatus(o, emails);
+            const isCheapest = cheapestIds.has(o.id);
             return (
-              <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-3">
+              <div
+                key={o.id}
+                className={cn(
+                  'flex flex-wrap items-center justify-between gap-3 rounded-control border px-4 py-3',
+                  isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
+                )}
+              >
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-medium text-ink">{o.name}</span>
                   {o.verified ? (
@@ -308,10 +402,15 @@ function RequestCard({
                   ) : (
                     <Badge tone="warning">Требуется верификация</Badge>
                   )}
+                  {isCheapest && (
+                    <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
+                      лучшая цена
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-4">
                   <span className="max-w-[200px] truncate text-sm text-ink-muted">{OFFER_COMMUNICATION_STATUS_LABEL[status]}</span>
-                  <span className="tabular-nums font-semibold text-ink">
+                  <span className={cn('tabular-nums font-semibold', isCheapest ? 'text-success' : 'text-ink')}>
                     {o.price > 0 ? formatPrice(o.price, o.currency) : '—'}
                   </span>
                   <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
@@ -321,6 +420,53 @@ function RequestCard({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {itemRows.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-ink-faint">
+            Сравнение по позициям — {offersWithItems.length > 1 ? 'лучшая цена на каждый компонент подсвечена' : 'разбивка компонентов этого КП'}
+          </span>
+          <div className="overflow-x-auto rounded-control border border-border">
+            <table className="w-full min-w-[480px] border-collapse text-sm">
+              <thead>
+                <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                  <th className="px-3 py-2">Компонент</th>
+                  {offersWithItems.map((o) => (
+                    <th key={o.id} className="px-3 py-2 text-right">
+                      {o.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {itemRows.map((row) => (
+                  <tr key={row.key} className="border-t border-border align-top">
+                    <td className="px-3 py-2 text-ink">
+                      {row.name}
+                      {row.unit && <span className="text-ink-faint"> ({row.unit})</span>}
+                    </td>
+                    {offersWithItems.map((o) => {
+                      const cell = row.cells.get(o.id);
+                      const isCheapestCell = row.cheapestOfferIds.has(o.id);
+                      return (
+                        <td
+                          key={o.id}
+                          className={cn(
+                            'px-3 py-2 text-right tabular-nums',
+                            isCheapestCell ? 'font-semibold text-success' : 'text-ink',
+                          )}
+                        >
+                          {cell ? formatPrice(cell.price, o.currency) : '—'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </Card>
@@ -741,6 +887,12 @@ export function Suppliers() {
   const [offers, setOffers] = useState<SupplierOffer[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Курс на сегодня — только для сравнения "лучшая цена" в общем
+  // знаменателе USD между офферами в разных валютах (см. rankOffersByPrice/
+  // buildItemComparison выше). Не подтянулся — не блокируем страницу,
+  // просто предложения не в USD выпадают из сравнения (convertToUsd без
+  // курса возвращает null).
+  const [rate, setRate] = useState<ExchangeRate | undefined>(undefined);
 
   const [estimates, setEstimates] = useState<Estimate[]>([]);
   const [objects, setObjects] = useState<RealtyObject[]>([]);
@@ -878,6 +1030,7 @@ export function Suppliers() {
     fetchEmailTemplates().then(setEmailTemplates).catch(() => setEmailTemplates([]));
     fetchMaterialLedgers().then(setMaterialLedgers).catch(() => setMaterialLedgers([]));
     fetchSupplierOrders().then(setSupplierOrders).catch(() => setSupplierOrders([]));
+    fetchTodayRate().then(setRate).catch(() => setRate(undefined));
   }, []);
 
   // Владелец, 2026-09-03: "в ведомости по умолчанию всегда выбран Red One" —
@@ -1703,6 +1856,7 @@ export function Suppliers() {
                       request={r}
                       offers={offers.filter((o) => o.requestId === r.id)}
                       emails={supplierEmails}
+                      rate={rate}
                       onEditRequest={openEditRequest}
                       onDeleteRequest={handleDeleteRequest}
                       onAddOffer={openAddOffer}
