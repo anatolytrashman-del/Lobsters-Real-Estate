@@ -665,13 +665,26 @@ async function main() {
 
   const reviewedByAdId = new Map((existing ?? []).filter((e) => e.reviewed).map((e) => [e.ad_id, e]));
 
+  // Реальный баг, пойманный на живом прогоне (2026-09-09, синк упал на
+  // 23502 "null value in column has_terrace") — PostgREST строит один
+  // INSERT на весь batch по объединению ключей ВСЕХ объектов массива: если
+  // хотя бы у одной строки в этом же вызове upsert() есть has_terrace/
+  // terrace_area (у reviewedRow — есть, дочитаны из базы), а у остальных
+  // (новых, ещё не проверенных) объектов o этих ключей нет вовсе, PostgREST
+  // подставляет им NULL, а не DEFAULT false колонки — ломает ВЕСЬ batch на
+  // NOT NULL constraint, не только конкретную новую строку. Раньше это не
+  // проявлялось, пока в одном синке не оказывались рядом и проверенные, и
+  // новые строки — сейчас это уже почти всегда так (тот же баг и в
+  // sync-realt-market-offers.mjs, см. её же комментарий). Фикс — явно
+  // задавать has_terrace/terrace_area у КАЖДОЙ строки, чтобы все объекты
+  // массива несли одинаковый набор ключей.
   const now = new Date().toISOString();
   const payload = offers.map((o) => {
     const reviewedRow = reviewedByAdId.get(o.ad_id);
     if (reviewedRow) {
       return { ...o, ...reviewedRow, reviewed: true, updated_at: now };
     }
-    return { ...o, reviewed: false, updated_at: now };
+    return { ...o, has_terrace: false, terrace_area: null, reviewed: false, updated_at: now };
   });
 
   const { error } = await supabase.from('market_offers').upsert(payload, { onConflict: 'source,ad_id' });
