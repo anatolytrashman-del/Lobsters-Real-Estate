@@ -6,6 +6,7 @@ function fromRow(row: EstimateRow): Estimate {
   return {
     id: row.id,
     objectId: row.object_id,
+    title: row.title ?? null,
     // positions/manufacturer/model/price добавили позже body — у строк,
     // сохранённых до этого, их нет в JSONB вообще, а не пустое значение.
     // price (единое поле "Цена, $") — более старая форма, чем priceByn/
@@ -78,7 +79,8 @@ export function fetchEstimateByToken(token: string): Promise<Estimate> {
 }
 
 export function insertEstimate(input: {
-  objectId: string;
+  objectId: string | null;
+  title?: string | null;
   sections: EstimateSection[];
   questions: EstimateQuestion[];
   status: string;
@@ -86,7 +88,13 @@ export function insertEstimate(input: {
   return withRetry(async () => {
     const { data, error } = await supabase
       .from('estimates')
-      .insert({ object_id: input.objectId, sections: input.sections, questions: input.questions, status: input.status })
+      .insert({
+        object_id: input.objectId,
+        title: input.title ?? null,
+        sections: input.sections,
+        questions: input.questions,
+        status: input.status,
+      })
       .select()
       .single();
 

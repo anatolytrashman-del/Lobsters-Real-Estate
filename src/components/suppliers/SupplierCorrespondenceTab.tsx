@@ -16,7 +16,8 @@ import { insertSupplierOrder, updateSupplierOrder } from '../../lib/supplierOrde
 import type { SupplierOfferEmail, EmailExtractionItem } from '../../data/supplierOfferEmails';
 import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
 import { sendSupplierOfferEmail, setSupplierOfferEmailExtractionStatus } from '../../lib/supplierOfferEmailsApi';
-import { ORGANIZATION_CARD_ATTACHMENT } from '../../data/organizationCard';
+import type { LegalEntity } from '../../data/legalEntities';
+import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment } from '../../lib/legalEntityAttachment';
 import type { EmailTemplate } from '../../data/emailTemplates';
 import { renderEmailTemplate } from '../../lib/emailTemplates';
 import { TemplateFormModal, TemplateManagerModal } from './EmailTemplates';
@@ -336,6 +337,7 @@ export function EmailThread({
   templates,
   ledgers,
   allMaterials,
+  legalEntities,
   onEmailSent,
   onTemplateSaved,
   onLedgersChange,
@@ -359,6 +361,7 @@ export function EmailThread({
   templates: EmailTemplate[];
   ledgers: MaterialLedger[];
   allMaterials: { item: PurchaseItem; context: string }[];
+  legalEntities: LegalEntity[];
   onEmailSent: (email: SupplierOfferEmail) => void;
   onTemplateSaved: (template: EmailTemplate) => void;
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
@@ -389,8 +392,16 @@ export function EmailThread({
   // письма поставщика (emails, не threadEmails — карточка нужна один раз на
   // контрагента, не на тред), skipOrgCard даёт снять галочку на конкретное
   // письмо, если вдруг не нужно (по аналогии с pendingLedger — можно убрать).
+  //
+  // Владелец, 2026-09-09: карточка организации больше не одна на всё
+  // приложение (см. историю в data/legalEntities.ts) — какую именно
+  // прикладывать, решает юрлицо КАТЕГОРИИ (request.legalEntityId, с
+  // фолбэком на юрлицо по умолчанию). Если у выбранного юрлица ещё нет
+  // загруженной карточки (cardFile=null) — прикладывать нечего, чип вообще
+  // не показывается, ничего не выдумываем.
+  const legalEntity = resolveRequestLegalEntity(request.legalEntityId, legalEntities);
   const [skipOrgCard, setSkipOrgCard] = useState(false);
-  const attachOrgCard = isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard;
+  const attachOrgCard = isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard && !!legalEntity?.cardFile;
   // Какие письма развёрнуты (показана свёрнутая цитата целиком) — по id,
   // сбрасывается сам собой при смене offer (новый emails-список).
   const [expandedQuoteIds, setExpandedQuoteIds] = useState<Set<string>>(new Set());
@@ -556,7 +567,9 @@ export function EmailThread({
     setSending(true);
     setSendError(null);
     try {
-      const attachments = [...(pendingLedger ? [pendingLedger] : []), ...(attachOrgCard ? [ORGANIZATION_CARD_ATTACHMENT] : [])];
+      const orgCardAttachment =
+        attachOrgCard && legalEntity?.cardFile ? await fetchDocumentFileAsAttachment(legalEntity.cardFile) : null;
+      const attachments = [...(pendingLedger ? [pendingLedger] : []), ...(orgCardAttachment ? [orgCardAttachment] : [])];
       const email = await sendSupplierOfferEmail({
         offerId: offer.id,
         orderId: order?.id ?? null,
@@ -841,11 +854,13 @@ export function EmailThread({
               выше), чип показывает это до отправки и даёт снять галочку на
               конкретное письмо. Ко второму и последующим письмам того же
               поставщика чип просто не появляется — attachOrgCard уже false. */}
-          {isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard && (
+          {attachOrgCard && legalEntity?.cardFile && (
             <div className="flex w-fit items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-1.5 text-sm text-ink">
               <Paperclip className="h-4 w-4 shrink-0 text-ink-faint" />
-              {ORGANIZATION_CARD_ATTACHMENT.fileName}
-              <span className="text-xs text-ink-faint">(первое письмо — прикрепится автоматически)</span>
+              {legalEntity.cardFile.fileName}
+              <span className="text-xs text-ink-faint">
+                (первое письмо — юрлицо «{legalEntity.shortName || legalEntity.name}», прикрепится автоматически)
+              </span>
               <button
                 type="button"
                 onClick={() => setSkipOrgCard(true)}
@@ -855,6 +870,12 @@ export function EmailThread({
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
+          )}
+          {isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard && legalEntity && !legalEntity.cardFile && (
+            <p className="text-xs text-ink-faint">
+              Юрлицо категории — «{legalEntity.shortName || legalEntity.name}», но карточка организации для него ещё не
+              загружена (Документы → Юрлица) — письмо уйдёт без неё.
+            </p>
           )}
 
           {sendError && <p className="text-sm text-danger">{sendError}</p>}
@@ -1087,6 +1108,7 @@ export function SupplierCorrespondenceTab({
   templates,
   ledgers,
   allMaterials,
+  legalEntities,
   templatesModalOpen,
   onCloseTemplatesModal,
   onOpenBulkSend,
@@ -1108,6 +1130,7 @@ export function SupplierCorrespondenceTab({
   templates: EmailTemplate[];
   ledgers: MaterialLedger[];
   allMaterials: { item: PurchaseItem; context: string }[];
+  legalEntities: LegalEntity[];
   // Владелец, 2026-09-04: "перенеси Шаблоны направо, на уровень меню
   // Поставщики/Письма, но видно только на Письмах" — кнопка теперь в шапке
   // страницы (Suppliers.tsx), тут только сама модалка, открытость приходит
@@ -1255,6 +1278,25 @@ export function SupplierCorrespondenceTab({
         : (groups[0]?.request.id ?? null);
   const isUnreadView = effectiveRequestId === 'unread';
   const selectedGroup = groups.find((g) => g.request.id === effectiveRequestId) ?? null;
+
+  // Владелец, 2026-09-09: "по умолчанию сама рассылка должна быть массовой,
+  // вся категория... когда письма отправятся, у нас и так появится диалог с
+  // каждым поставщиком" — раньше "Массовая отправка" была кнопкой, которую
+  // нужно было заметить и нажать самому, а по умолчанию (категория выбрана,
+  // конкретный поставщик — нет) показывалась пассивная подсказка "Выберите
+  // поставщика слева". Теперь это состояние само открывает мастер массовой
+  // отправки — тот же onOpenBulkSend, что и у кнопки, без дублирования
+  // логики. Не трогает "Непрочитанные" (не настоящая категория) и случай,
+  // когда уже открыт конкретный поставщик (тогда это осознанный выбор
+  // человека, не default). Зависимости — только примитивы (id категории, а
+  // не сам объект selectedGroup): группы (groups) пересчитываются заново на
+  // каждый 20-секундный поллинг supplierEmails (см. Suppliers.tsx), и с
+  // объектом в зависимостях эффект переоткрывал бы мастер каждые 20 секунд.
+  useEffect(() => {
+    if (isUnreadView || selectedOfferId || !selectedGroup) return;
+    onOpenBulkSend(selectedGroup.request);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroup?.request.id, selectedOfferId, isUnreadView]);
 
   const categoryOptions = useMemo(() => {
     const base = groups.map((g) => {
@@ -1572,6 +1614,7 @@ export function SupplierCorrespondenceTab({
                 templates={templates}
                 ledgers={ledgers}
                 allMaterials={allMaterials}
+                legalEntities={legalEntities}
                 onEmailSent={onEmailSent}
                 onTemplateSaved={handleTemplateSaved}
                 onLedgersChange={onLedgersChange}

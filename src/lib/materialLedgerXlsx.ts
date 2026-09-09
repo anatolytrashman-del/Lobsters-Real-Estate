@@ -27,15 +27,21 @@ export interface LedgerAttachment {
 // единицах сметы, поэтому голая "цена за шт." из ведомости вводила в
 // заблуждение при сравнении — сравнение цен теперь идёт по факту
 // полученного КП (см. SupplierCorrespondenceTab.tsx), не по этому файлу.
+//
+// Владелец, 2026-09-09: "важно не только объём, но и ряд параметров...
+// нет поля комментария, которое бы и в таблицу попадало" (Grigliato —
+// нужны фактура/формат и т.п., не только площадь) — добавлена колонка
+// "Параметры" из PurchaseItem.note, ровно четвёртая, после уже
+// утверждённых трёх — не меняет их порядок.
 export async function buildMaterialLedgerXlsx(ledgerName: string, items: PurchaseItem[]): Promise<LedgerAttachment> {
   const XLSX = await import('xlsx');
-  const headerRow = ['Позиция', 'Количество', 'Ед.'];
+  const headerRow = ['Позиция', 'Количество', 'Ед.', 'Параметры'];
   const rows: (string | number)[][] = [
     headerRow,
-    ...items.map((i) => [i.name, i.quantity ?? '', i.unit || '']),
+    ...items.map((i) => [i.name, i.quantity ?? '', i.unit || '', i.note || '']),
   ];
   const sheet = XLSX.utils.aoa_to_sheet(rows);
-  sheet['!cols'] = [{ wch: 40 }, { wch: 12 }, { wch: 10 }];
+  sheet['!cols'] = [{ wch: 40 }, { wch: 12 }, { wch: 10 }, { wch: 40 }];
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, 'Ведомость');

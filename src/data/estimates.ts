@@ -282,7 +282,18 @@ export const estimateStatuses = ['В работе'] as const;
 
 export interface Estimate {
   id: string;
-  objectId: string;
+  // Владелец, 2026-09-09: "Смета Зелёный" — общая смета внутри платформы,
+  // не привязанная ни к какому объекту ("будет находиться внутри платформы
+  // без связи с конкретным объектом"). objectId стал nullable ради этого —
+  // null означает именно "не привязана", не "объект удалён" (для удалённого
+  // объекта в базе действует ON DELETE CASCADE — вместе с ним удаляется и
+  // смета, значит null тут никогда не появляется как побочный эффект).
+  objectId: string | null;
+  // Название сметы — заполняется только когда objectId=null (без объекта
+  // показывать нечего, кроме этого поля); у смет с объектом остаётся null,
+  // на экране в этом случае вместо title всегда показывается название/адрес
+  // объекта, как и раньше.
+  title: string | null;
   sections: EstimateSection[];
   questions: EstimateQuestion[];
   status: string;
@@ -301,7 +312,8 @@ export interface Estimate {
 // Форма строки в таблице Supabase (snake_case-колонки) — см. src/lib/estimatesApi.ts
 export interface EstimateRow {
   id: string;
-  object_id: string;
+  object_id: string | null;
+  title: string | null;
   sections: EstimateSection[] | null;
   questions: EstimateQuestion[] | null;
   status: string;

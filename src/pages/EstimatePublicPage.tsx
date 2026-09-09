@@ -101,8 +101,12 @@ export function EstimatePublicPage() {
   }, []);
 
   useEffect(() => {
-    document.title = object ? `Смета реновации ${object.name || object.address}` : ESTIMATE_PUBLIC_TITLE;
-  }, [object]);
+    document.title = object
+      ? `Смета реновации ${object.name || object.address}`
+      : estimate?.title
+        ? `Смета «${estimate.title}»`
+        : ESTIMATE_PUBLIC_TITLE;
+  }, [object, estimate]);
 
   useEffect(() => {
     setNoIndex();
@@ -116,7 +120,9 @@ export function EstimatePublicPage() {
     fetchEstimateByToken(token)
       .then((e) => {
         setEstimate(e);
-        return fetchObject(e.objectId);
+        // Смета без объекта (см. Estimates.tsx) — fetchObject(null) не
+        // нашёл бы строку и вернул бы ошибку вместо честного "объекта нет".
+        return e.objectId ? fetchObject(e.objectId) : Promise.resolve(null);
       })
       .then(setObject)
       .catch((err) => setLoadError(errorMessage(err, 'Не удалось загрузить смету')))
@@ -443,7 +449,11 @@ export function EstimatePublicPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex flex-col gap-1">
               <span className="text-lg font-bold text-ink">
-                {object ? `Смета реновации ${object.name || object.address}` : ESTIMATE_PUBLIC_TITLE}
+                {object
+                  ? `Смета реновации ${object.name || object.address}`
+                  : estimate?.title
+                    ? `Смета «${estimate.title}»`
+                    : ESTIMATE_PUBLIC_TITLE}
               </span>
               <span className="text-sm text-ink-muted">Можно добавлять, редактировать и удалять строки, оставлять комментарии.</span>
             </div>

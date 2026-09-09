@@ -152,11 +152,15 @@ export function EstimateDetail() {
       .then((e) => {
         setEstimate(e);
         setStatusDraft(e.status);
-        return fetchObject(e.objectId);
+        // Смета без привязки к объекту (owner, 2026-09-09: "Смета Зелёный") —
+        // fetchObject(null) сходил бы в базу за несуществующей строкой и
+        // выдал бы "не удалось загрузить смету" вместо честного "объекта
+        // нет вовсе".
+        return e.objectId ? fetchObject(e.objectId) : Promise.resolve(null);
       })
       .then((o) => {
         setObject(o);
-        if (o.buildingPlanIds.length === 0) return;
+        if (!o || o.buildingPlanIds.length === 0) return;
         return Promise.all(o.buildingPlanIds.map((planId) => fetchZonesForPlan(planId))).then((lists) =>
           setZones(lists.flat()),
         );
@@ -422,7 +426,7 @@ export function EstimateDetail() {
   return (
     <>
       <PageHeader
-        title="Смета"
+        title={estimate && !estimate.objectId ? `Смета «${estimate.title || 'без названия'}»` : 'Смета'}
         action={
           estimate ? (
             <div className="flex flex-wrap gap-2">
