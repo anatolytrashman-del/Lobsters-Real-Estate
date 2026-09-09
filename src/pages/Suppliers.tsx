@@ -2276,8 +2276,6 @@ export function Suppliers() {
           templates={emailTemplates}
           legalEntities={legalEntities}
           onClose={() => setBulkSendConfig(null)}
-          onOrderCreated={(order) => setSupplierOrders((prev) => [...prev, order])}
-          onEmailSent={handleSupplierEmailSent}
           onTemplatesChange={setEmailTemplates}
         />
       )}
