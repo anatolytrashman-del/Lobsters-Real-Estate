@@ -66,6 +66,8 @@ import type { Estimate, EstimateMaterial } from '../data/estimates';
 import { fetchEstimates, updateEstimate } from '../lib/estimatesApi';
 import type { RealtyObject } from '../data/objects';
 import { fetchObjects } from '../lib/objectsApi';
+import type { LegalEntity } from '../data/legalEntities';
+import { fetchLegalEntities } from '../lib/legalEntitiesApi';
 import { MaterialsTable, groupMaterials, type MaterialBestPriceOption } from '../components/estimates/MaterialsTable';
 import { EstimateMaterialFormModal } from '../components/estimates/EstimateMaterialFormModal';
 import { EstimateMaterialCommentsModal } from '../components/estimates/EstimateMaterialCommentsModal';
@@ -148,6 +150,7 @@ const emptyRequestForm = {
   sectionId: '' as string,
   sectionTitle: '',
   items: [] as PurchaseItem[],
+  legalEntityId: '' as string,
 };
 
 function requestToForm(r: SupplierRequest) {
@@ -158,6 +161,7 @@ function requestToForm(r: SupplierRequest) {
     sectionId: r.sectionId ?? '',
     sectionTitle: r.sectionTitle,
     items: r.items,
+    legalEntityId: r.legalEntityId ?? '',
   };
 }
 
@@ -711,6 +715,7 @@ export function Suppliers() {
 
   const [estimates, setEstimates] = useState<Estimate[]>([]);
   const [objects, setObjects] = useState<RealtyObject[]>([]);
+  const [legalEntities, setLegalEntities] = useState<LegalEntity[]>([]);
 
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [editingRequest, setEditingRequest] = useState<SupplierRequest | null>(null);
@@ -817,6 +822,7 @@ export function Suppliers() {
       .catch(() => setRate(undefined));
     fetchEstimates().then(setEstimates).catch(() => setEstimates([]));
     fetchObjects().then(setObjects).catch(() => setObjects([]));
+    fetchLegalEntities().then(setLegalEntities).catch(() => setLegalEntities([]));
     fetchAllSupplierOfferEmails().then(setSupplierEmails).catch(() => setSupplierEmails([]));
     fetchEmailTemplates().then(setEmailTemplates).catch(() => setEmailTemplates([]));
     fetchMaterialLedgers().then(setMaterialLedgers).catch(() => setMaterialLedgers([]));
@@ -900,8 +906,19 @@ export function Suppliers() {
     return o ? o.name || o.address : 'Объект без названия';
   }
 
+  // Юрлицо по умолчанию — используется в подписи-плейсхолдере поля
+  // "Юрлицо" формы категории, когда сама категория его не выбрала явно.
+  const defaultLegalEntity = useMemo(() => legalEntities.find((e) => e.isDefault) ?? null, [legalEntities]);
+
+  // Смета может быть без объекта (владелец, 2026-09-09: "Смета Зелёный" —
+  // общая смета внутри платформы) — тогда вместо объекта показываем её
+  // собственное название (title), а не пытаемся искать несуществующий id.
   const estimateOptions = useMemo(
-    () => estimates.map((e) => ({ id: e.id, label: `Смета — ${objectLabel(e.objectId)}` })),
+    () =>
+      estimates.map((e) => ({
+        id: e.id,
+        label: `Смета — ${e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'}`,
+      })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimates, objects],
   );
@@ -917,7 +934,7 @@ export function Suppliers() {
   const allEstimateMaterials = useMemo(() => {
     const list: { item: PurchaseItem; context: string }[] = [];
     for (const e of estimates) {
-      const objLabel = objectLabel(e.objectId);
+      const objLabel = e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта';
       for (const s of e.sections) {
         for (const m of s.materials) {
           list.push({
@@ -1132,6 +1149,7 @@ export function Suppliers() {
       sectionId: requestForm.sectionId || null,
       sectionTitle: requestForm.sectionTitle,
       items: requestForm.items,
+      legalEntityId: requestForm.legalEntityId || null,
     };
     try {
       if (editingRequest) {
@@ -1596,6 +1614,7 @@ export function Suppliers() {
             templates={emailTemplates}
             ledgers={materialLedgers}
             allMaterials={allEstimateMaterials}
+            legalEntities={legalEntities}
             templatesModalOpen={templatesModalOpen}
             onCloseTemplatesModal={() => setTemplatesModalOpen(false)}
             onOpenBulkSend={setBulkLedgerPickerRequest}
@@ -1641,6 +1660,24 @@ export function Suppliers() {
             onChange={(label) => {
               const o = estimateOptions.find((x) => x.label === label);
               setRequestForm((f) => ({ ...f, estimateId: o?.id ?? '', sectionId: '', sectionTitle: '' }));
+            }}
+          />
+
+          <Select
+            label="Юрлицо"
+            placeholder={
+              defaultLegalEntity
+                ? `По умолчанию (${defaultLegalEntity.shortName || defaultLegalEntity.name})`
+                : 'Не выбрано'
+            }
+            options={legalEntities.map((e) => e.shortName || e.name)}
+            value={(() => {
+              const picked = legalEntities.find((e) => e.id === requestForm.legalEntityId);
+              return picked ? picked.shortName || picked.name : '';
+            })()}
+            onChange={(label) => {
+              const e = legalEntities.find((x) => (x.shortName || x.name) === label);
+              setRequestForm((f) => ({ ...f, legalEntityId: e?.id ?? '' }));
             }}
           />
 
@@ -1691,26 +1728,43 @@ export function Suppliers() {
             {requestForm.items.length > 0 && (
               <div className="flex flex-col gap-1.5">
                 {requestForm.items.map((item) => (
-                  <div key={item.id} className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm">
-                    <span className="flex-1 text-ink">{item.name}</span>
+                  <div key={item.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-ink">{item.name}</span>
+                      <input
+                        type="number"
+                        placeholder="Кол-во"
+                        value={item.quantity ?? ''}
+                        onChange={(e) =>
+                          updateRequestItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
+                        }
+                        className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      />
+                      {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
+                      <button
+                        type="button"
+                        onClick={() => removeRequestItem(item.id)}
+                        aria-label="Удалить позицию"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {/* Владелец, 2026-09-09: "важно не только объём, но и ряд
+                        параметров... нет поля комментария, которое бы и в
+                        таблицу попадало, и в письмо" (пример — Grigliato:
+                        нужны не только м², но и фактура/формат и т.п.) —
+                        note у PurchaseItem уже существовал (для сопоставления
+                        счетов), просто не был виден/редактируем здесь; теперь
+                        попадает и в ведомость (materialLedgerXlsx.ts), и в
+                        текст письма ({материалы}, formatRequestItemsText). */}
                     <input
-                      type="number"
-                      placeholder="Кол-во"
-                      value={item.quantity ?? ''}
-                      onChange={(e) =>
-                        updateRequestItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
-                      }
-                      className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      type="text"
+                      placeholder="Важные параметры — фактура, формат, цвет и т.п. (попадёт и в ведомость, и в письмо)"
+                      value={item.note}
+                      onChange={(e) => updateRequestItem(item.id, { note: e.target.value })}
+                      className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-primary"
                     />
-                    {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
-                    <button
-                      type="button"
-                      onClick={() => removeRequestItem(item.id)}
-                      aria-label="Удалить позицию"
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
                   </div>
                 ))}
               </div>
@@ -1757,7 +1811,13 @@ export function Suppliers() {
                 onChange={(v) => setOfferForm((f) => ({ ...f, contactMethod: v as ResearchContactMethod }))}
               />
               <Input
-                placeholder={offerForm.contactMethod === 'Telegram' ? '@username' : '+375 29 ...'}
+                placeholder={
+                  offerForm.contactMethod === 'Telegram'
+                    ? '@username'
+                    : offerForm.country === 'Россия'
+                      ? '+7 9__ ...'
+                      : '+375 29 ...'
+                }
                 type={offerForm.contactMethod === 'Telegram' ? 'text' : 'tel'}
                 value={offerForm.contact}
                 onChange={(e) => setOfferForm((f) => ({ ...f, contact: e.target.value }))}
@@ -1929,6 +1989,7 @@ export function Suppliers() {
               templates={emailTemplates}
               ledgers={materialLedgers}
               allMaterials={allEstimateMaterials}
+              legalEntities={legalEntities}
               onEmailSent={handleSupplierEmailSent}
               onMarkRead={handleMarkSupplierEmailsRead}
               onTemplateSaved={handleEmailTemplateSaved}
@@ -2058,6 +2119,7 @@ export function Suppliers() {
       {bulkLedgerPickerRequest && (
         <MaterialLedgerModal
           open
+          readyOnly
           requestItems={bulkLedgerPickerRequest.items}
           allMaterials={allEstimateMaterials}
           ledgers={materialLedgers}
@@ -2077,6 +2139,8 @@ export function Suppliers() {
           attachment={bulkSendConfig.attachment}
           offers={offers}
           emails={supplierEmails}
+          templates={emailTemplates}
+          legalEntities={legalEntities}
           onClose={() => setBulkSendConfig(null)}
           onOrderCreated={(order) => setSupplierOrders((prev) => [...prev, order])}
           onEmailSent={handleSupplierEmailSent}
@@ -2098,6 +2162,7 @@ function OfferEmailModal({
   templates,
   ledgers,
   allMaterials,
+  legalEntities,
   onEmailSent,
   onMarkRead,
   onTemplateSaved,
@@ -2113,6 +2178,7 @@ function OfferEmailModal({
   templates: EmailTemplate[];
   ledgers: MaterialLedger[];
   allMaterials: { item: PurchaseItem; context: string }[];
+  legalEntities: LegalEntity[];
   onEmailSent: (email: SupplierOfferEmail) => void;
   onMarkRead: (offerId: string, orderId: string | null) => void;
   onTemplateSaved: (template: EmailTemplate) => void;
@@ -2145,6 +2211,7 @@ function OfferEmailModal({
         templates={templates}
         ledgers={ledgers}
         allMaterials={allMaterials}
+        legalEntities={legalEntities}
         onEmailSent={onEmailSent}
         onTemplateSaved={onTemplateSaved}
         onLedgersChange={onLedgersChange}

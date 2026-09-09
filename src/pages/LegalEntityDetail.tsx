@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, Eye, FileText, Loader2, Plus, Trash2, Upload, X } from 'lucide-react';
+import { ArrowLeft, Download, Eye, FileText, Loader2, Plus, Star, Trash2, Upload, X } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
 import { Modal } from '../components/ui/Modal';
 import { DocumentPreviewModal, isPreviewable, type PreviewFile } from '../components/documents/DocumentPreviewModal';
 import type { LegalEntity } from '../data/legalEntities';
 import { QUARTERS, taxDeclarationTitle, type TaxDeclaration, type Quarter } from '../data/taxDeclarations';
-import { fetchLegalEntities } from '../lib/legalEntitiesApi';
+import { fetchLegalEntities, updateLegalEntity, setLegalEntityDefault, uploadLegalEntityCardFile } from '../lib/legalEntitiesApi';
 import { fetchTaxDeclarations, insertTaxDeclaration, deleteTaxDeclaration } from '../lib/taxDeclarationsApi';
 import { uploadObjectDocument } from '../lib/objectsApi';
 
@@ -41,9 +42,20 @@ const emptyDeclarationForm = { quarter: 1 as Quarter, year: currentYear, files: 
 
 export function LegalEntityDetail() {
   const { id } = useParams();
-  const [entity, setEntity] = useState<LegalEntity | null>(null);
+  const [entities, setEntities] = useState<LegalEntity[]>([]);
   const [entityLoading, setEntityLoading] = useState(true);
   const [entityError, setEntityError] = useState<string | null>(null);
+  const entity = useMemo(() => entities.find((e) => e.id === id) ?? null, [entities, id]);
+
+  // Владелец, 2026-09-09: короткое имя/карточка организации/юрлицо по
+  // умолчанию — та инфраструктура, которая позволяет закупщице выбрать "это
+  // закупки ООО «Матрёшка»" и получить правильную карточку в письме
+  // автоматически (см. историю в data/legalEntities.ts).
+  const [shortNameDraft, setShortNameDraft] = useState('');
+  const [savingShortName, setSavingShortName] = useState(false);
+  const [cardUploading, setCardUploading] = useState(false);
+  const [settingDefault, setSettingDefault] = useState(false);
+  const [entityActionError, setEntityActionError] = useState<string | null>(null);
 
   const [declarations, setDeclarations] = useState<TaxDeclaration[]>([]);
   const [declarationsLoading, setDeclarationsLoading] = useState(true);
@@ -59,7 +71,7 @@ export function LegalEntityDetail() {
 
   useEffect(() => {
     fetchLegalEntities()
-      .then((all) => setEntity(all.find((e) => e.id === id) ?? null))
+      .then(setEntities)
       .catch((err) => setEntityError(errorMessage(err, 'Не удалось загрузить юрлицо')))
       .finally(() => setEntityLoading(false));
     fetchTaxDeclarations()
@@ -67,6 +79,60 @@ export function LegalEntityDetail() {
       .catch((err) => setDeclarationsError(errorMessage(err, 'Не удалось загрузить декларации')))
       .finally(() => setDeclarationsLoading(false));
   }, [id]);
+
+  // Черновик короткого имени пересобирается заново при смене загруженного
+  // юрлица — не при каждом ре-рендере (иначе непечатаный ввод перетирался бы
+  // сам собой на любой обновление списка сверху).
+  useEffect(() => {
+    setShortNameDraft(entity?.shortName ?? '');
+  }, [entity?.id]);
+
+  async function handleSaveShortName() {
+    if (!entity || savingShortName) return;
+    setSavingShortName(true);
+    setEntityActionError(null);
+    try {
+      const updated = await updateLegalEntity(entity.id, {
+        name: entity.name,
+        shortName: shortNameDraft.trim(),
+        cardFile: entity.cardFile,
+      });
+      setEntities((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setEntityActionError(errorMessage(err, 'Не удалось сохранить короткое имя'));
+    } finally {
+      setSavingShortName(false);
+    }
+  }
+
+  async function handleSetDefault() {
+    if (!entity || entity.isDefault || settingDefault) return;
+    setSettingDefault(true);
+    setEntityActionError(null);
+    try {
+      const updated = await setLegalEntityDefault(entity.id, entities);
+      setEntities(updated);
+    } catch (err) {
+      setEntityActionError(errorMessage(err, 'Не удалось назначить юрлицо по умолчанию'));
+    } finally {
+      setSettingDefault(false);
+    }
+  }
+
+  async function handleCardFileChange(file: File | null) {
+    if (!entity || !file || cardUploading) return;
+    setCardUploading(true);
+    setEntityActionError(null);
+    try {
+      const cardFile = await uploadLegalEntityCardFile(file);
+      const updated = await updateLegalEntity(entity.id, { name: entity.name, shortName: entity.shortName, cardFile });
+      setEntities((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setEntityActionError(errorMessage(err, 'Не удалось загрузить карточку организации'));
+    } finally {
+      setCardUploading(false);
+    }
+  }
 
   // По возрастанию — старые периоды выше (владелец: "2025 год раньше, чем
   // 2026, 1 квартал выше, чем 2 квартал"), не по дате загрузки файла.
@@ -141,6 +207,82 @@ export function LegalEntityDetail() {
       {!entityLoading && entityError && <Card className="py-10 text-center text-sm text-danger">{entityError}</Card>}
       {!entityLoading && !entityError && !entity && (
         <Card className="py-10 text-center text-sm text-ink-muted">Юрлицо не найдено</Card>
+      )}
+
+      {entity && (
+        <Card className="flex flex-col gap-4 p-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-lg font-bold text-ink">Карточка юрлица</h2>
+            {entity.isDefault ? (
+              <span className="rounded-full bg-success-bg px-2 py-0.5 text-xs font-medium text-success">
+                Юрлицо по умолчанию
+              </span>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                icon={<Star className="h-3.5 w-3.5" />}
+                onClick={handleSetDefault}
+                disabled={settingDefault}
+              >
+                {settingDefault ? 'Назначаем...' : 'Сделать юрлицом по умолчанию'}
+              </Button>
+            )}
+          </div>
+          <p className="-mt-2 text-xs text-ink-faint">
+            Юрлицо по умолчанию используется для категорий поставщиков, где закупщица явно не выбрала своё юрлицо.
+          </p>
+
+          <div className="flex flex-wrap items-end gap-2">
+            <Input
+              label="Короткое имя (для выбора в закупках и в письмах)"
+              placeholder="Например, ИП Трэшмен"
+              value={shortNameDraft}
+              onChange={(e) => setShortNameDraft(e.target.value)}
+              className="min-w-[240px] flex-1"
+            />
+            <Button type="button" variant="secondary" onClick={handleSaveShortName} disabled={savingShortName}>
+              {savingShortName ? 'Сохраняем...' : 'Сохранить'}
+            </Button>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Карточка организации (реквизиты — прикладывается к первому письму поставщику)</span>
+            {entity.cardFile ? (
+              <div className="flex items-center gap-2 rounded-control bg-surface-muted px-3 py-2">
+                <FileText className="h-4 w-4 shrink-0 text-ink-faint" />
+                <span className="min-w-0 flex-1 truncate text-sm text-ink">{entity.cardFile.fileName}</span>
+                <a
+                  href={entity.cardFile.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Скачать"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-muted hover:text-primary"
+                >
+                  <Download className="h-4 w-4" />
+                </a>
+              </div>
+            ) : (
+              <p className="text-sm text-ink-faint">Карточка ещё не загружена — до загрузки письма уходят без вложения.</p>
+            )}
+            <label className="flex w-fit cursor-pointer items-center gap-2 rounded-control border border-dashed border-border px-4 py-2.5 text-sm text-ink-muted hover:border-border-strong">
+              <Upload className="h-4 w-4" />
+              {cardUploading ? 'Загружаем...' : entity.cardFile ? 'Заменить файл' : 'Загрузить файл'}
+              <input
+                type="file"
+                className="hidden"
+                disabled={cardUploading}
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  e.target.value = '';
+                  handleCardFileChange(file);
+                }}
+              />
+            </label>
+          </div>
+
+          {entityActionError && <p className="text-sm text-danger">{entityActionError}</p>}
+        </Card>
       )}
 
       {entity && (

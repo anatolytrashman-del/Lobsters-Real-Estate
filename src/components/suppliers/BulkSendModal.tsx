@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Send, Loader2, CheckCircle2, XCircle, TriangleAlert, Paperclip } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Send, Loader2, CheckCircle2, XCircle, TriangleAlert, Paperclip, FileText } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -11,7 +11,10 @@ import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
 import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
 import { sendSupplierOfferEmail } from '../../lib/supplierOfferEmailsApi';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
-import { ORGANIZATION_CARD_ATTACHMENT } from '../../data/organizationCard';
+import type { LegalEntity } from '../../data/legalEntities';
+import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment } from '../../lib/legalEntityAttachment';
+import type { EmailTemplate } from '../../data/emailTemplates';
+import { renderEmailTemplate } from '../../lib/emailTemplates';
 import { emailSignature } from './SupplierCorrespondenceTab';
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -67,6 +70,8 @@ export function BulkSendModal({
   attachment,
   offers,
   emails,
+  templates,
+  legalEntities,
   onClose,
   onOrderCreated,
   onEmailSent,
@@ -75,10 +80,16 @@ export function BulkSendModal({
   attachment: LedgerAttachment;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  templates: EmailTemplate[];
+  legalEntities: LegalEntity[];
   onClose: () => void;
   onOrderCreated: (order: SupplierOrder) => void;
   onEmailSent: (email: SupplierOfferEmail) => void;
 }) {
+  // Владелец, 2026-09-09: карточка организации теперь зависит от юрлица
+  // категории (см. историю в data/legalEntities.ts), не одна на всё
+  // приложение — тот же принцип, что и в EmailThread.
+  const legalEntity = resolveRequestLegalEntity(request.legalEntityId, legalEntities);
   // Владелец, 2026-09-04: "поставщик становится доступен для email-переписок"
   // только после верификации (см. более раннюю правку) — рассылать
   // неверифицированным просто некуда, то же самое ограничение, что и на
@@ -100,6 +111,29 @@ export function BulkSendModal({
   const [states, setStates] = useState<Record<string, SendState>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [sentCount, setSentCount] = useState(0);
+
+  // Владелец, 2026-09-09: "отправка единичных и массовых писем должна быть
+  // максимально похожа" — тот же выбор шаблона, что и в EmailThread (own
+  // request первыми, общие следом). Текст шаблона подставляется как есть, с
+  // НЕразрешёнными плейсхолдерами {компания}/{контакт} — единого "офера" на
+  // всю рассылку нет, каждый получатель получает свою подстановку в момент
+  // отправки (см. renderEmailTemplate в handleSend), а не один и тот же
+  // текст на всех, как раньше.
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const orderedTemplates = useMemo(() => {
+    const own = templates.filter((t) => t.requestId === request.id);
+    const shared = templates.filter((t) => t.requestId !== request.id);
+    return [...own, ...shared];
+  }, [templates, request.id]);
+
+  function handlePickTemplate(templateId: string) {
+    setSelectedTemplateId(templateId);
+    const template = templates.find((t) => t.id === templateId);
+    if (!template) return;
+    if (body.trim() && !window.confirm('Заменить уже введённый текст письма шаблоном?')) return;
+    setSubject(template.subject);
+    setBody(template.body);
+  }
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -139,13 +173,24 @@ export function BulkSendModal({
         onOrderCreated(order);
         // Владелец, 2026-09-06: карточка организации — только к первому
         // письму конкретному поставщику (не к каждой новой рассылке ему же).
-        const attachments = [attachment, ...(isFirstOutgoingToOffer(emails, offer.id) ? [ORGANIZATION_CARD_ATTACHMENT] : [])];
+        // Владелец, 2026-09-09: какую именно карточку — решает юрлицо
+        // категории (см. legalEntity выше), не одна и та же на всё
+        // приложение.
+        const orgCardAttachment =
+          isFirstOutgoingToOffer(emails, offer.id) && legalEntity?.cardFile
+            ? await fetchDocumentFileAsAttachment(legalEntity.cardFile)
+            : null;
+        const attachments = [attachment, ...(orgCardAttachment ? [orgCardAttachment] : [])];
+        // Плейсхолдеры {компания}/{контакт} персонализируются под КОНКРЕТНОГО
+        // получателя прямо здесь — subject/body в стейте формы общие на всю
+        // рассылку, personalized-версия строится заново на каждой итерации.
+        const rendered = renderEmailTemplate({ subject, body }, { offer, request });
         const email = await sendSupplierOfferEmail({
           offerId: offer.id,
           orderId: order.id,
           toAddress: offer.email,
-          subject: subject.trim(),
-          body,
+          subject: rendered.subject.trim(),
+          body: rendered.body,
           attachments,
         });
         onEmailSent(email);
@@ -194,8 +239,8 @@ export function BulkSendModal({
                     <span className="min-w-0 flex-1 truncate text-ink">
                       {o.name}
                       {hadEmails && <span className="text-ink-faint"> · уже переписывались</span>}
-                      {isFirstOutgoingToOffer(emails, o.id) && (
-                        <span className="text-ink-faint" title={`${ORGANIZATION_CARD_ATTACHMENT.fileName} — первое письмо этому поставщику`}>
+                      {isFirstOutgoingToOffer(emails, o.id) && legalEntity?.cardFile && (
+                        <span className="text-ink-faint" title={`${legalEntity.cardFile.fileName} — первое письмо этому поставщику`}>
                           {' '}· + карточка организации
                         </span>
                       )}
@@ -213,13 +258,44 @@ export function BulkSendModal({
               })}
             </div>
 
+            {orderedTemplates.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm text-ink-muted">Шаблон</span>
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 shrink-0 text-ink-faint" />
+                  <select
+                    value={selectedTemplateId}
+                    disabled={sending}
+                    onChange={(e) => handlePickTemplate(e.target.value)}
+                    className="flex-1 rounded-control border border-transparent bg-surface-muted px-4 py-2.5 text-sm text-ink outline-none focus:border-primary disabled:opacity-50"
+                  >
+                    <option value="">Без шаблона</option>
+                    {orderedTemplates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
             <Input label="Тема" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={sending} />
             <Textarea label="Сообщение" rows={5} value={body} onChange={(e) => setBody(e.target.value)} disabled={sending} />
+            <p className="-mt-2 text-xs text-ink-faint">
+              {'{компания} и {контакт} подставляются отдельно для каждого получателя при отправке.'}
+            </p>
 
             <div className="flex items-center gap-2 rounded-control border border-border-strong bg-surface-muted p-3 text-xs text-ink-muted">
               <Paperclip className="h-4 w-4 shrink-0" />
               <span className="min-w-0 flex-1 truncate">{attachment.fileName} — уйдёт вложением каждому получателю</span>
             </div>
+            {legalEntity && !legalEntity.cardFile && (
+              <p className="text-xs text-ink-faint">
+                Юрлицо категории — «{legalEntity.shortName || legalEntity.name}», но карточка организации для него ещё не
+                загружена (Документы → Юрлица) — первым письмам она не приложится.
+              </p>
+            )}
 
             {selected.size > WARN_THRESHOLD && (
               <div className="flex items-start gap-2 rounded-control border border-warning/30 bg-warning-bg p-3 text-xs text-warning">

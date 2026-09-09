@@ -22,6 +22,7 @@ function requestFromRow(row: SupplierRequestRow): SupplierRequest {
     sectionId: row.section_id,
     sectionTitle: row.section_title ?? '',
     items: row.items ?? [],
+    legalEntityId: row.legal_entity_id ?? null,
     createdAt: row.created_at,
   };
 }
@@ -64,6 +65,7 @@ export interface SupplierRequestInput {
   sectionId: string | null;
   sectionTitle: string;
   items: PurchaseItem[];
+  legalEntityId: string | null;
 }
 
 export function insertSupplierRequest(input: SupplierRequestInput): Promise<SupplierRequest> {
@@ -77,6 +79,7 @@ export function insertSupplierRequest(input: SupplierRequestInput): Promise<Supp
         section_id: input.sectionId,
         section_title: input.sectionTitle,
         items: input.items,
+        legal_entity_id: input.legalEntityId,
       })
       .select()
       .single();
@@ -96,6 +99,7 @@ export function updateSupplierRequest(id: string, input: SupplierRequestInput): 
         section_id: input.sectionId,
         section_title: input.sectionTitle,
         items: input.items,
+        legal_entity_id: input.legalEntityId,
       })
       .eq('id', id)
       .select()

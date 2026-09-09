@@ -167,7 +167,11 @@ export function Purchases({
   }
 
   const estimateOptions = useMemo(
-    () => estimates.map((e) => ({ id: e.id, label: `Смета — ${objectLabel(e.objectId)}` })),
+    () =>
+      estimates.map((e) => ({
+        id: e.id,
+        label: `Смета — ${e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'}`,
+      })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimates, objects],
   );

@@ -96,6 +96,13 @@ export interface SupplierRequest {
   sectionId: string | null;
   sectionTitle: string;
   items: PurchaseItem[];
+  // Владелец, 2026-09-09: "чтобы Альмира могла выбрать, что это закупки ООО
+  // «Матрешка», и нужная карточка была прикреплена автоматически" — от
+  // какого юрлица (data/legalEntities.ts) идёт закупка по этой категории.
+  // null — юрлицо не выбрано явно, тогда используется юрлицо по умолчанию
+  // (см. resolveRequestLegalEntity в lib/legalEntityAttachment.ts) — старые
+  // категории, заведённые до этого поля, продолжают работать как раньше.
+  legalEntityId: string | null;
   createdAt: string;
 }
 
@@ -107,6 +114,7 @@ export interface SupplierRequestRow {
   section_id: string | null;
   section_title: string | null;
   items: PurchaseItem[] | null;
+  legal_entity_id: string | null;
   created_at: string;
 }
 
@@ -208,9 +216,20 @@ export function supplierOfferEmailAddress(shortCode: string): string {
 // Suppliers.tsx) и для плейсхолдера {материалы} в шаблонах писем
 // (lib/emailTemplates.ts), раньше формировался только на месте в первом
 // случае, теперь один источник вместо двух копий.
+// Владелец, 2026-09-09: "важно не только объём, но и ряд параметров...
+// нет поля комментария, которое бы и в таблицу попадало, и в письмо"
+// (пример — Grigliato) — item.note (уже существовавшее поле, раньше нигде
+// не показывалось закупщику) теперь всегда попадает в текст письма, не
+// только объём/ед.
 export function formatRequestItemsText(items: PurchaseItem[], fallback: string): string {
   if (items.length === 0) return fallback;
-  return items.map((i) => `${i.name}${i.quantity ? ` (${i.quantity}${i.unit ? ` ${i.unit}` : ''})` : ''}`).join(', ');
+  return items
+    .map((i) => {
+      const qty = i.quantity ? ` (${i.quantity}${i.unit ? ` ${i.unit}` : ''})` : '';
+      const note = i.note.trim() ? ` — ${i.note.trim()}` : '';
+      return `${i.name}${qty}${note}`;
+    })
+    .join(', ');
 }
 
 // Владелец, 2026-09-04: "Статус коммуникации — вполне можем определять
