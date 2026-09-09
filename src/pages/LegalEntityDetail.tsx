@@ -9,6 +9,7 @@ import { Select } from '../components/ui/Select';
 import { Modal } from '../components/ui/Modal';
 import { DocumentPreviewModal, isPreviewable, type PreviewFile } from '../components/documents/DocumentPreviewModal';
 import type { LegalEntity } from '../data/legalEntities';
+import { SUPPLIER_COUNTRIES } from '../data/supplierResearch';
 import { QUARTERS, taxDeclarationTitle, type TaxDeclaration, type Quarter } from '../data/taxDeclarations';
 import { fetchLegalEntities, updateLegalEntity, setLegalEntityDefault, uploadLegalEntityCardFile } from '../lib/legalEntitiesApi';
 import { fetchTaxDeclarations, insertTaxDeclaration, deleteTaxDeclaration } from '../lib/taxDeclarationsApi';
@@ -52,6 +53,10 @@ export function LegalEntityDetail() {
   // закупки ООО «Матрёшка»" и получить правильную карточку в письме
   // автоматически (см. историю в data/legalEntities.ts).
   const [shortNameDraft, setShortNameDraft] = useState('');
+  // Владелец, 2026-09-09: "если выбираем ИП Трэшмен или Матрешка, страна
+  // автоматически Россия; если ЛАВЭ — Беларусь" — эта страна и подставляется
+  // (BulkSendModal читает entity.country по выбранному юрлицу).
+  const [countryDraft, setCountryDraft] = useState('');
   const [savingShortName, setSavingShortName] = useState(false);
   const [cardUploading, setCardUploading] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
@@ -85,6 +90,7 @@ export function LegalEntityDetail() {
   // сам собой на любой обновление списка сверху).
   useEffect(() => {
     setShortNameDraft(entity?.shortName ?? '');
+    setCountryDraft(entity?.country ?? '');
   }, [entity?.id]);
 
   async function handleSaveShortName() {
@@ -96,6 +102,7 @@ export function LegalEntityDetail() {
         name: entity.name,
         shortName: shortNameDraft.trim(),
         cardFile: entity.cardFile,
+        country: countryDraft || null,
       });
       setEntities((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     } catch (err) {
@@ -241,10 +248,22 @@ export function LegalEntityDetail() {
               onChange={(e) => setShortNameDraft(e.target.value)}
               className="min-w-[240px] flex-1"
             />
+            <div className="min-w-[180px]">
+              <Select
+                label="Страна поставок"
+                placeholder="Не указана"
+                options={[...SUPPLIER_COUNTRIES]}
+                value={countryDraft}
+                onChange={setCountryDraft}
+              />
+            </div>
             <Button type="button" variant="secondary" onClick={handleSaveShortName} disabled={savingShortName}>
               {savingShortName ? 'Сохраняем...' : 'Сохранить'}
             </Button>
           </div>
+          <p className="-mt-2 text-xs text-ink-faint">
+            Страна используется в массовой рассылке — при выборе этого юрлица страна получателей подставится сама.
+          </p>
 
           <div className="flex flex-col gap-1.5">
             <span className="text-sm text-ink-muted">Карточка организации (реквизиты — прикладывается к первому письму поставщику)</span>

@@ -7,6 +7,7 @@ function fromRow(row: MaterialLedgerRow): MaterialLedger {
     id: row.id,
     name: row.name,
     items: row.items ?? [],
+    estimateId: row.estimate_id ?? null,
     createdAt: row.created_at,
   };
 }
@@ -23,7 +24,7 @@ export function insertMaterialLedger(input: Omit<MaterialLedger, 'id' | 'created
   return withRetry(async () => {
     const { data, error } = await supabase
       .from('material_ledgers')
-      .insert({ name: input.name, items: input.items })
+      .insert({ name: input.name, items: input.items, estimate_id: input.estimateId })
       .select()
       .single();
     if (error) throw error;
@@ -35,7 +36,7 @@ export function updateMaterialLedger(id: string, input: Omit<MaterialLedger, 'id
   return withRetry(async () => {
     const { data, error } = await supabase
       .from('material_ledgers')
-      .update({ name: input.name, items: input.items })
+      .update({ name: input.name, items: input.items, estimate_id: input.estimateId })
       .eq('id', id)
       .select()
       .single();

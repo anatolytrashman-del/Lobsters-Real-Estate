@@ -36,6 +36,12 @@ export interface LegalEntity {
   // быть отмечено по умолчанию — это не ограничение в БД, а соглашение,
   // соблюдаемое через setLegalEntityDefault (lib/legalEntitiesApi.ts).
   isDefault: boolean;
+  // Владелец, 2026-09-09: "если выбираем ИП Трэшмен или Матрешка, страна
+  // автоматически Россия; а если ЛАВЭ — Беларусь" — страна, из которой
+  // юрлицо реально осуществляет поставки (BulkSendModal подставляет её в
+  // выбор страны получателей сразу по выбору юрлица). null — не заполнено
+  // (новое юрлицо), автоподстановка тогда просто не срабатывает.
+  country: string | null;
   createdAt: string;
 }
 
@@ -46,5 +52,6 @@ export interface LegalEntityRow {
   short_name: string | null;
   card_file: { url: string; fileName: string } | null;
   is_default: boolean;
+  country: string | null;
   created_at: string;
 }

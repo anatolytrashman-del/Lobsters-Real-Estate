@@ -38,6 +38,7 @@ export function MaterialLedgerModal({
   readyOnly,
   initialLedgerId,
   hideLedgerPicker,
+  estimateId,
 }: {
   open: boolean;
   requestItems: PurchaseItem[];
@@ -79,6 +80,15 @@ export function MaterialLedgerModal({
   // Открыть модалку сразу с предзагруженной конкретной ведомостью (правка
   // из списка на странице), а не с чистой формой создания.
   initialLedgerId?: string;
+  // Владелец, 2026-09-09: "шаблон ведомости материала привязывался к
+  // смете" — смета, к которой привязывается НОВАЯ ведомость при сохранении
+  // (передаётся только со страницы "Ведомости материалов", где есть своя
+  // выбранная смета). При редактировании УЖЕ существующей ведомости этот
+  // проп не используется для перезаписи — сохраняется её собственный,
+  // изначальный estimateId (см. handleSaveLedger), иначе тот же компонент,
+  // открытый из другого места (например EmailThread "Прикрепить ведомость",
+  // без своей сметы) мог бы тихо отвязать чужую ведомость от сметы.
+  estimateId?: string | null;
 }) {
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
@@ -186,7 +196,12 @@ export function MaterialLedgerModal({
     setSaving(true);
     setError(null);
     try {
-      const payload = { name: name.trim(), items };
+      const existingLedger = selectedId ? ledgers.find((l) => l.id === selectedId) : null;
+      const payload = {
+        name: name.trim(),
+        items,
+        estimateId: existingLedger ? existingLedger.estimateId : (estimateId ?? null),
+      };
       const saved = selectedId ? await updateMaterialLedger(selectedId, payload) : await insertMaterialLedger(payload);
       onLedgersChange(ledgers.some((l) => l.id === saved.id) ? ledgers.map((l) => (l.id === saved.id ? saved : l)) : [...ledgers, saved]);
       setSelectedId(saved.id);

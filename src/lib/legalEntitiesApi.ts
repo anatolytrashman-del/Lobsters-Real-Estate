@@ -9,6 +9,7 @@ function fromRow(row: LegalEntityRow): LegalEntity {
     shortName: row.short_name ?? '',
     cardFile: row.card_file ?? null,
     isDefault: row.is_default,
+    country: row.country ?? null,
     createdAt: row.created_at,
   };
 }
@@ -31,12 +32,17 @@ export function insertLegalEntity(name: string): Promise<LegalEntity> {
 
 export function updateLegalEntity(
   id: string,
-  input: { name: string; shortName: string; cardFile: LegalEntity['cardFile'] },
+  input: { name: string; shortName: string; cardFile: LegalEntity['cardFile']; country?: string | null },
 ): Promise<LegalEntity> {
   return withRetry(async () => {
     const { data, error } = await supabase
       .from('legal_entities')
-      .update({ name: input.name, short_name: input.shortName || null, card_file: input.cardFile })
+      .update({
+        name: input.name,
+        short_name: input.shortName || null,
+        card_file: input.cardFile,
+        ...(input.country !== undefined ? { country: input.country || null } : {}),
+      })
       .eq('id', id)
       .select()
       .single();

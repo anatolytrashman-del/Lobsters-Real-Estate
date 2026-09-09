@@ -1013,6 +1013,17 @@ export function Suppliers() {
   // загруженной сметой).
   const ledgerEstimate = estimates.find((e) => e.id === ledgerEstimateId) ?? null;
 
+  // Владелец, 2026-09-09: "шаблон ведомости материала привязывался к смете...
+  // когда выбран Red One, всё равно видны шаблоны Зелёного" — список
+  // "Готовые ведомости" на этой вкладке теперь показывает только ведомости
+  // ВЫБРАННОЙ здесь сметы (MaterialLedger.estimateId), не все сразу. Без
+  // выбранной сметы список пуст (не имеет смысла показывать чужие ведомости
+  // без контекста, к какой смете их отнести).
+  const scopedMaterialLedgers = useMemo(
+    () => (ledgerEstimateId ? materialLedgers.filter((l) => l.estimateId === ledgerEstimateId) : []),
+    [materialLedgers, ledgerEstimateId],
+  );
+
   const materialGroupOptions = useMemo(() => {
     const set = new Set<string>();
     (ledgerEstimate?.sections ?? []).forEach((s) => s.materials.forEach((m) => m.group && set.add(m.group)));
@@ -1556,20 +1567,34 @@ export function Suppliers() {
 
       {tab === 'Ведомости материалов' && (
         <div className="mt-6 flex flex-col gap-6">
+          <Select
+            label="Смета"
+            placeholder="Не выбрана"
+            options={estimateOptions.map((o) => o.label)}
+            value={estimateOptions.find((o) => o.id === ledgerEstimateId)?.label ?? ''}
+            onChange={(label) => {
+              const o = estimateOptions.find((x) => x.label === label);
+              setLedgerEstimateId(o?.id ?? '');
+            }}
+          />
+
           {/* Владелец, 2026-09-09: "не хватает отображения шаблонов готовых
-              ведомостей на странице ведомостей" — раньше список сохранённых
-              MaterialLedger был виден только внутри самой модалки "Шаблоны"
-              (через выпадающий список), тут он выведен прямо на страницу.
-              Список не зависит от выбранной ниже сметы — готовые ведомости
-              не привязаны к конкретному объекту. */}
+              ведомостей на странице ведомостей" — список сохранённых
+              MaterialLedger виден прямо на странице, не только внутри
+              модалки. Владелец, тем же днём позже: "шаблон ведомости
+              материала привязывался к смете... когда выбран Red One, всё
+              равно видны шаблоны Зелёного" — список СОЗНАТЕЛЬНО ограничен
+              ведомостями ВЫБРАННОЙ выше сметы (scopedMaterialLedgers), не
+              всеми сразу, и требует сначала выбрать смету. */}
           <div className="flex flex-col gap-3">
             <span className="text-lg font-bold text-ink">Готовые ведомости</span>
-            {materialLedgers.length === 0 && (
-              <p className="text-sm text-ink-faint">Пока нет ни одной сохранённой ведомости.</p>
+            {!ledgerEstimateId && <p className="text-sm text-ink-faint">Выберите смету, чтобы увидеть её ведомости.</p>}
+            {ledgerEstimateId && scopedMaterialLedgers.length === 0 && (
+              <p className="text-sm text-ink-faint">Для этой сметы пока нет ни одной сохранённой ведомости.</p>
             )}
-            {materialLedgers.length > 0 && (
+            {scopedMaterialLedgers.length > 0 && (
               <div className="flex flex-col gap-2">
-                {materialLedgers.map((l) => (
+                {scopedMaterialLedgers.map((l) => (
                   <div key={l.id} className="flex items-center justify-between gap-3 rounded-control border border-border px-4 py-3">
                     <div className="min-w-0">
                       <div className="truncate font-medium text-ink">{l.name}</div>
@@ -1599,27 +1624,18 @@ export function Suppliers() {
                 ))}
               </div>
             )}
-            <Button
-              type="button"
-              variant="secondary"
-              icon={<Plus className="h-4 w-4" />}
-              className="w-fit"
-              onClick={() => setLedgerModalTarget('new')}
-            >
-              Новая ведомость
-            </Button>
+            {ledgerEstimateId && (
+              <Button
+                type="button"
+                variant="secondary"
+                icon={<Plus className="h-4 w-4" />}
+                className="w-fit"
+                onClick={() => setLedgerModalTarget('new')}
+              >
+                Новая ведомость
+              </Button>
+            )}
           </div>
-
-          <Select
-            label="Смета"
-            placeholder="Не выбрана"
-            options={estimateOptions.map((o) => o.label)}
-            value={estimateOptions.find((o) => o.id === ledgerEstimateId)?.label ?? ''}
-            onChange={(label) => {
-              const o = estimateOptions.find((x) => x.label === label);
-              setLedgerEstimateId(o?.id ?? '');
-            }}
-          />
 
           {ledgerError && <p className="text-sm text-danger">{ledgerError}</p>}
 
@@ -2235,12 +2251,17 @@ export function Suppliers() {
           повторять его внутри модалки было непонятно, зачем. Чек-лист
           материалов ограничен выбранной на странице сметой
           (ledgerEstimateChecklistMaterials), чтобы не путать позиции Red One
-          с позициями Смета Зелёный. */}
+          с позициями Смета Зелёный. Владелец, 2026-09-09 (второй заход):
+          "шаблон ведомости привязывался к смете" — новая ведомость, созданная
+          здесь, сохраняется с estimateId=ledgerEstimateId (проп estimateId
+          ниже), сам список на странице (scopedMaterialLedgers) фильтруется по
+          этому же полю — открыв Red One, Зелёный больше не виден. */}
       {ledgerModalTarget !== null && (
         <MaterialLedgerModal
           open
           hideLedgerPicker
           initialLedgerId={ledgerModalTarget === 'new' ? undefined : ledgerModalTarget}
+          estimateId={ledgerEstimateId || null}
           requestItems={[]}
           allMaterials={ledgerEstimateChecklistMaterials}
           ledgers={materialLedgers}
