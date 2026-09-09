@@ -19,6 +19,7 @@ import { currencySymbols, type Currency } from '../data/transactions';
 import type { DocumentFile } from '../data/contractorDocuments';
 import {
   RESEARCH_CONTACT_METHODS,
+  RESEARCH_CURRENCIES,
   SUPPLIER_COUNTRIES,
   SUPPLIER_REQUEST_GROUPS,
   SUPPLIER_REQUEST_GROUP_LABELS,
@@ -174,6 +175,18 @@ const emptyOfferForm = {
   catalogModelPhoto: null as DocumentFile | null,
   existingFiles: [] as DocumentFile[],
   newFiles: [] as File[],
+  // Владелец, 2026-09-09: "у Альмиры есть сметы, которые она собрала
+  // вручную — PDF/Excel/письма с ценами" — эти три поля были убраны
+  // 2026-09-04 (тогда единственным путём попасть в базу было автораспознавание
+  // счёта из переписки, см. applyExtractionToOffer в SupplierCorrespondenceTab.tsx),
+  // теперь возвращены как РУЧНОЙ путь рядом с автоматическим — не замена,
+  // а второй способ зафиксировать цену. price — строка (не number), как и
+  // в остальных денежных полях формы этого проекта (например
+  // ContractorsResearch.tsx) — value контролируемого <input type="number">
+  // должен быть строкой, иначе пустое поле нельзя стереть до конца.
+  price: '' as string,
+  currency: RESEARCH_CURRENCIES[0] as Currency,
+  items: [] as PurchaseItem[],
 };
 
 // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
@@ -198,7 +211,7 @@ function RequestCard({
   emails: SupplierOfferEmail[];
   onEditRequest: (r: SupplierRequest) => void;
   onDeleteRequest: (r: SupplierRequest) => void;
-  onAddOffer: (requestId: string) => void;
+  onAddOffer: (r: SupplierRequest) => void;
   onOpenDetail: (o: SupplierOffer) => void;
   onWebSearch: (r: SupplierRequest, country: string) => void;
   searching: boolean;
@@ -235,7 +248,7 @@ function RequestCard({
           >
             {searching ? 'Ищем в сети...' : 'Найти в сети'}
           </Button>
-          <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request.id)}>
+          <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
             Добавить предложение
           </Button>
           <button
@@ -733,6 +746,7 @@ export function Suppliers() {
   const [offerRequestId, setOfferRequestId] = useState<string | null>(null);
   const [editingOffer, setEditingOffer] = useState<SupplierOffer | null>(null);
   const [offerForm, setOfferForm] = useState(emptyOfferForm);
+  const [offerManualItemName, setOfferManualItemName] = useState('');
   const [savingOffer, setSavingOffer] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
@@ -1225,12 +1239,44 @@ export function Suppliers() {
     }
   }
 
-  function openAddOffer(requestId: string) {
-    setOfferRequestId(requestId);
+  function openAddOffer(request: SupplierRequest) {
+    setOfferRequestId(request.id);
     setEditingOffer(null);
-    setOfferForm(emptyOfferForm);
+    setOfferForm({
+      ...emptyOfferForm,
+      // Предзаполняем позициями категории (то же самое "что просим оценить
+      // у поставщиков") — Альмире останется только вписать цены из своего
+      // PDF/Excel/письма, не перепечатывать названия материалов заново.
+      // Свежие id (не переиспользуем id из request.items) — это отдельный,
+      // независимо редактируемый список внутри конкретного предложения.
+      items: request.items.map((i) => ({ ...i, id: crypto.randomUUID() })),
+    });
+    setOfferManualItemName('');
     setOfferError(null);
     setOfferModalOpen(true);
+  }
+
+  function updateOfferItem(id: string, patch: Partial<PurchaseItem>) {
+    setOfferForm((f) => ({ ...f, items: f.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
+  }
+
+  function removeOfferItem(id: string) {
+    setOfferForm((f) => ({ ...f, items: f.items.filter((i) => i.id !== id) }));
+  }
+
+  function addManualOfferItem() {
+    if (!offerManualItemName.trim()) return;
+    const item: PurchaseItem = {
+      id: crypto.randomUUID(),
+      sourceMaterialId: null,
+      name: offerManualItemName.trim(),
+      unit: '',
+      quantity: null,
+      price: null,
+      note: '',
+    };
+    setOfferForm((f) => ({ ...f, items: [...f.items, item] }));
+    setOfferManualItemName('');
   }
 
   function openWebQueryModal(request: SupplierRequest, country: string) {
@@ -1363,7 +1409,11 @@ export function Suppliers() {
       catalogModelPhoto: o.catalogModelPhoto,
       existingFiles: o.files,
       newFiles: [],
+      price: o.price > 0 ? String(o.price) : '',
+      currency: o.currency,
+      items: o.items,
     });
+    setOfferManualItemName('');
     setOfferError(null);
     setOfferModalOpen(true);
     setDetailOfferId(null);
@@ -1393,7 +1443,9 @@ export function Suppliers() {
   // хватить" — совсем пустая карточка (только имя, никакого способа связаться
   // или хоть что-то ещё) толку не несёт, поэтому помимо названия нужно
   // заполнить хотя бы одно из остальных полей (любое, не обязательно сайт
-  // или контакт конкретно).
+  // или контакт конкретно). price/items добавлены в список 2026-09-09 —
+  // без этого нельзя было бы сохранить карточку "Название + вручную
+  // вписанная цена", ничего больше не заполняя.
   const canSubmitOffer =
     offerForm.name.trim().length > 0 &&
     (offerForm.contact.trim().length > 0 ||
@@ -1402,7 +1454,11 @@ export function Suppliers() {
       offerForm.websiteUrl.trim().length > 0 ||
       offerForm.catalogModelName.trim().length > 0 ||
       offerForm.existingFiles.length > 0 ||
-      offerForm.newFiles.length > 0);
+      offerForm.newFiles.length > 0 ||
+      offerForm.price.trim().length > 0 ||
+      offerForm.items.length > 0);
+
+  const offerItemsTotal = offerForm.items.reduce((sum, i) => sum + purchaseItemTotal(i), 0);
 
   // Владелец, 2026-09-04: "закупщик заполняет все возможные поля, жмёт
   // сохранить — поставщик становится доступен для email-переписок" — любое
@@ -1428,9 +1484,9 @@ export function Suppliers() {
         websiteUrl: offerForm.websiteUrl.trim(),
         catalogModelName: offerForm.catalogModelName.trim(),
         catalogModelPhoto: offerForm.catalogModelPhoto,
-        price: editingOffer?.price ?? 0,
-        currency: editingOffer?.currency ?? ('USD' as Currency),
-        items: editingOffer?.items ?? [],
+        price: offerForm.price.trim() ? Number(offerForm.price) : 0,
+        currency: offerForm.currency,
+        items: offerForm.items,
         files: [...offerForm.existingFiles, ...uploadedNewFiles],
         verified: true,
       };
@@ -2036,16 +2092,106 @@ export function Suppliers() {
           </div>
 
           {/* Владелец, 2026-09-04: "Статус коммуникации — вполне можем
-              определять автоматически" / "Итоговая цена — убирай" / "Срок —
-              убирай, срок доставки будет отличаться для каждой поставки" /
-              "Позиции КП — убирай, вручную это указывать тупо, зато когда
-              получим КП от поставщика, вполне можем записать в базу" /
-              "Требования — убирай" — все пять полей убраны из формы: статус
-              теперь считается сам из переписки (offerCommunicationStatus),
-              цена/позиции заполняются только автораспознаванием счёта
-              (applyExtractionToOffer в SupplierCorrespondenceTab.tsx), у
+              определять автоматически" / "Срок — убирай, срок доставки будет
+              отличаться для каждой поставки" / "Требования — убирай" — статус
+              теперь считается сам из переписки (offerCommunicationStatus), у
               срока/требований больше нет места на уровне поставщика в целом
-              (переезжают на уровень конкретной заявки на поставку). */}
+              (переезжают на уровень конкретной заявки на поставку). "Итоговая
+              цена"/"Позиции КП" тогда же были убраны как "вручную это
+              указывать тупо" в пользу единственного пути — автораспознавания
+              счёта из переписки (applyExtractionToOffer в
+              SupplierCorrespondenceTab.tsx). Владелец, 2026-09-09: у Альмиры
+              есть сметы, собранные вручную (PDF/Excel-файлики, обычные
+              email-письма с ценами, не через переписку в самой системе) —
+              оба поля возвращены как ВТОРОЙ, ручной путь рядом с
+              автоматическим, не взамен него. */}
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Итоговая цена</span>
+            <div className="flex gap-2">
+              <Input
+                placeholder="0"
+                type="number"
+                min="0"
+                value={offerForm.price}
+                onChange={(e) => setOfferForm((f) => ({ ...f, price: e.target.value }))}
+                className="flex-1"
+              />
+              <ToggleGroup
+                options={RESEARCH_CURRENCIES}
+                value={offerForm.currency}
+                onChange={(v) => setOfferForm((f) => ({ ...f, currency: v as Currency }))}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <span className="text-sm text-ink-muted">
+              Позиции КП — вручную по документу поставщика, либо автоматически из
+              распознанного счёта в переписке (см. вкладку «Письма»)
+            </span>
+            {offerForm.items.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                {offerForm.items.map((item) => (
+                  <div key={item.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-ink">{item.name}</span>
+                      <input
+                        type="number"
+                        placeholder="Кол-во"
+                        value={item.quantity ?? ''}
+                        onChange={(e) =>
+                          updateOfferItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
+                        }
+                        className="w-16 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      />
+                      {item.unit && <span className="w-10 shrink-0 text-ink-faint">{item.unit}</span>}
+                      <input
+                        type="number"
+                        placeholder="Цена"
+                        value={item.price ?? ''}
+                        onChange={(e) =>
+                          updateOfferItem(item.id, { price: e.target.value === '' ? null : Number(e.target.value) })
+                        }
+                        className="w-24 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeOfferItem(item.id)}
+                        aria-label="Удалить позицию"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {item.note && <span className="text-xs text-ink-faint">{item.note}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Input
+                placeholder="Добавить позицию вручную"
+                value={offerManualItemName}
+                onChange={(e) => setOfferManualItemName(e.target.value)}
+              />
+              <Button type="button" variant="secondary" onClick={addManualOfferItem} disabled={!offerManualItemName.trim()}>
+                Добавить
+              </Button>
+            </div>
+            {offerItemsTotal > 0 && (
+              <div className="flex items-center gap-2 text-xs text-ink-faint">
+                <span>Сумма по позициям: {formatPrice(offerItemsTotal, offerForm.currency)}</span>
+                <button
+                  type="button"
+                  onClick={() => setOfferForm((f) => ({ ...f, price: String(offerItemsTotal) }))}
+                  className="text-primary hover:underline"
+                >
+                  Подставить в итоговую цену
+                </button>
+              </div>
+            )}
+          </div>
 
           <div className="flex flex-col gap-1.5">
             <span className="text-sm text-ink-muted">Файлы (счета, спецификации...)</span>
