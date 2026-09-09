@@ -1,5 +1,6 @@
 // Vercel serverless function: веб-поиск реальных поставщиков под список
-// материалов запроса на вкладке "Ресерч" (Suppliers.tsx).
+// материалов запроса на вкладке "Ресерч" (Suppliers.tsx) — action по
+// умолчанию/'web-search'. Второй action — 'recognize-invoice'.
 //
 // 2026-09-03: раньше этот же файл ещё обрабатывал action:'recognize-invoice'
 // — ручную кнопку "Распознать данные автоматически" в предпросмотре вложения
@@ -7,6 +8,16 @@
 // распознает данные") — автоматическое распознавание на входящих
 // (purchase-email-webhook.js, общий хелпер api/_invoiceRecognition.js)
 // осталось единственным путём, ручную ветку здесь удалили вместе с кнопкой.
+//
+// 2026-09-09: владелец вернул ручной путь — но не для типизированного ввода
+// цены (обсуждали и отвергли, "вручную не будем ничего указывать"), а для
+// поставщика, найденного вне переписки в системе (PDF/Excel/скриншот email
+// на руках у закупщицы): "добавляем его как нового поставщика и загружаем
+// КП, система распознаёт КП и записывает цену в базу". action:
+// 'recognize-invoice' восстановлен здесь же (тот же файл, не новый — Vercel
+// Hobby на пределе 12 функций) — вызывается из формы предложения сразу
+// после загрузки файла в "Файлы (счета, спецификации...)" (Suppliers.tsx),
+// не из предпросмотра письма (та кнопка остаётся убранной, как и была).
 //
 // 2026-08-31, дважды за день. Первая версия (claude-sonnet-5, Anthropic-путь
 // ProxyAPI) обошлась в 358 ₽ за 4 запроса (~90 ₽/запрос) — владелец увидел
@@ -37,6 +48,7 @@
 // больше, чем просто смена модели.
 import { proxyApiKeyProblem } from './_proxyapi.js';
 import { requireStaffAuth } from './_auth.js';
+import { recognizeInvoice } from './_invoiceRecognition.js';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 
@@ -142,6 +154,33 @@ export default async function handler(req, res) {
   }
   const user = await requireStaffAuth(req, res);
   if (!user) return;
+
+  if ((req.body ?? {}).action === 'recognize-invoice') {
+    await handleRecognizeInvoice(req, res);
+    return;
+  }
+  await handleWebSearch(req, res);
+}
+
+// fileUrl — публичная ссылка на уже загруженный в Storage файл (клиент
+// грузит его сам через uploadSupplierFile ДО вызова этого action, точно
+// так же, как и вложения писем в api/_attachments.js) — сама функция
+// recognizeInvoice файлов не хранит, только читает по URL.
+async function handleRecognizeInvoice(req, res) {
+  const { fileUrl, fileName } = req.body ?? {};
+  if (typeof fileUrl !== 'string' || !fileUrl.trim() || typeof fileName !== 'string' || !fileName.trim()) {
+    res.status(400).json({ error: 'Не передан файл для распознавания' });
+    return;
+  }
+  try {
+    const extraction = await recognizeInvoice(fileUrl.trim(), fileName.trim());
+    res.status(200).json({ extraction });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Не удалось распознать документ' });
+  }
+}
+
+async function handleWebSearch(req, res) {
   const keyProblem = proxyApiKeyProblem();
   if (keyProblem) {
     res.status(500).json({ error: keyProblem });

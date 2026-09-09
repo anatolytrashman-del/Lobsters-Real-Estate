@@ -57,7 +57,12 @@ import {
   uploadSupplierFile,
   type SupplierRequestInput,
 } from '../lib/supplierResearchApi';
-import { searchSuppliersOnline, type SupplierSearchResult } from '../lib/supplierWebSearchApi';
+import {
+  searchSuppliersOnline,
+  recognizeInvoiceFile,
+  type SupplierSearchResult,
+  type RecognizedInvoiceItem,
+} from '../lib/supplierWebSearchApi';
 import { logActivity } from '../lib/activityLogApi';
 import { purchaseItemTotal, type PurchaseItem } from '../data/purchases';
 import { emptySection, type Estimate, type EstimateMaterial, type EstimateSection } from '../data/estimates';
@@ -173,17 +178,23 @@ const emptyOfferForm = {
   websiteUrl: '',
   catalogModelName: '',
   catalogModelPhoto: null as DocumentFile | null,
+  // Владелец, 2026-09-09: файлы теперь грузятся сразу по выбору (как и
+  // catalogModelPhoto), не откладываются до сабмита — иначе распознавание
+  // счёта (см. handleOfferFilesSelect) нечем было бы вызвать: recognizeInvoice
+  // читает файл по публичному Storage-URL, у ещё не загруженного File его нет.
   existingFiles: [] as DocumentFile[],
-  newFiles: [] as File[],
   // Владелец, 2026-09-09: "у Альмиры есть сметы, которые она собрала
-  // вручную — PDF/Excel/письма с ценами" — эти три поля были убраны
-  // 2026-09-04 (тогда единственным путём попасть в базу было автораспознавание
-  // счёта из переписки, см. applyExtractionToOffer в SupplierCorrespondenceTab.tsx),
-  // теперь возвращены как РУЧНОЙ путь рядом с автоматическим — не замена,
-  // а второй способ зафиксировать цену. price — строка (не number), как и
-  // в остальных денежных полях формы этого проекта (например
-  // ContractorsResearch.tsx) — value контролируемого <input type="number">
-  // должен быть строкой, иначе пустое поле нельзя стереть до конца.
+  // вручную — PDF/Excel/письма с ценами... вручную не будем ничего
+  // указывать, система должна распознавать так же, как в переписке" —
+  // price/currency/items заполняются автораспознаванием загруженного файла
+  // (handleOfferFilesSelect → recognizeInvoiceFile → карточка "Похоже, это
+  // счёт" → confirmOfferExtraction), не вводом с клавиатуры. Поля остаются
+  // редактируемыми — как и в переписке, это доступная поправка после
+  // распознавания (например, если модель ошиблась в цифре), а не приглашение
+  // печатать всё с нуля. price — строка (не number), как и в остальных
+  // денежных полях формы этого проекта (например ContractorsResearch.tsx) —
+  // value контролируемого <input type="number"> должен быть строкой, иначе
+  // пустое поле нельзя стереть до конца.
   price: '' as string,
   currency: RESEARCH_CURRENCIES[0] as Currency,
   items: [] as PurchaseItem[],
@@ -751,6 +762,22 @@ export function Suppliers() {
   const [offerError, setOfferError] = useState<string | null>(null);
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  // Владелец, 2026-09-09: автораспознавание КП, загруженного вручную в
+  // форму предложения — offerUploadingFile крутится во время загрузки
+  // файла(ов) в Storage, offerExtractionBusy отдельно во время самого
+  // распознавания (файл уже виден в списке, распознавание может идти
+  // ещё пару секунд после этого). offerExtraction — незакрытая карточка
+  // "Похоже, это счёт" (максимум одна за раз — распознаём файлы по
+  // очереди, не параллельно, см. handleOfferFilesSelect).
+  const [offerUploadingFile, setOfferUploadingFile] = useState(false);
+  const [offerExtractionBusy, setOfferExtractionBusy] = useState(false);
+  const [offerExtractionError, setOfferExtractionError] = useState<string | null>(null);
+  const [offerExtraction, setOfferExtraction] = useState<{
+    price: number | null;
+    currency: string | null;
+    items: RecognizedInvoiceItem[];
+    fileName: string;
+  } | null>(null);
   const [emailOfferId, setEmailOfferId] = useState<string | null>(null);
   // Вся переписка по всем предложениям Ресерча разом — единственный
   // источник правды для OfferEmailModal и вкладки "Email" (см.
@@ -1242,16 +1269,16 @@ export function Suppliers() {
   function openAddOffer(request: SupplierRequest) {
     setOfferRequestId(request.id);
     setEditingOffer(null);
-    setOfferForm({
-      ...emptyOfferForm,
-      // Предзаполняем позициями категории (то же самое "что просим оценить
-      // у поставщиков") — Альмире останется только вписать цены из своего
-      // PDF/Excel/письма, не перепечатывать названия материалов заново.
-      // Свежие id (не переиспользуем id из request.items) — это отдельный,
-      // независимо редактируемый список внутри конкретного предложения.
-      items: request.items.map((i) => ({ ...i, id: crypto.randomUUID() })),
-    });
+    // Владелец, 2026-09-09: "вручную не будем ничего указывать" — items
+    // больше НЕ предзаполняются материалами категории (как было раньше в
+    // этом же заходе): пустые строки "что просим оценить" рядом с реально
+    // распознанными позициями КП только путали бы (два ряда на один
+    // материал — один пустой, один с ценой). Позиции появляются
+    // исключительно через confirmOfferExtraction.
+    setOfferForm(emptyOfferForm);
     setOfferManualItemName('');
+    setOfferExtraction(null);
+    setOfferExtractionError(null);
     setOfferError(null);
     setOfferModalOpen(true);
   }
@@ -1408,12 +1435,13 @@ export function Suppliers() {
       catalogModelName: o.catalogModelName,
       catalogModelPhoto: o.catalogModelPhoto,
       existingFiles: o.files,
-      newFiles: [],
       price: o.price > 0 ? String(o.price) : '',
       currency: o.currency,
       items: o.items,
     });
     setOfferManualItemName('');
+    setOfferExtraction(null);
+    setOfferExtractionError(null);
     setOfferError(null);
     setOfferModalOpen(true);
     setDetailOfferId(null);
@@ -1435,6 +1463,91 @@ export function Suppliers() {
     }
   }
 
+  // Только те расширения, что реально умеет читать recognizeInvoice
+  // (api/_invoiceRecognition.js — PDF или картинка) — для остального
+  // (.xlsx/.docx и т.п.) просто загружаем файл без попытки распознать.
+  function isRecognizableFileName(fileName: string): boolean {
+    const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+    return ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
+  }
+
+  function isValidOfferCurrency(value: string | null): value is Currency {
+    return !!value && (RESEARCH_CURRENCIES as readonly string[]).includes(value);
+  }
+
+  // Владелец, 2026-09-09: "у нас есть поставщик с КП, найденный вручную...
+  // добавляем его как нового поставщика и загружаем КП, система распознаёт
+  // КП и записывает цену в базу" — тот же принцип, что и на автоматике по
+  // входящим письмам (SupplierCorrespondenceTab.tsx), только без письма:
+  // распознавание запускается сразу после загрузки файла в форму. По
+  // очереди (await в цикле, не Promise.all) — иначе несколько счетов подряд
+  // дали бы несколько одновременных карточек "Похоже, это счёт", непонятно
+  // какую подтверждать первой.
+  async function handleOfferFilesSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (!picked.length) return;
+    setOfferUploadingFile(true);
+    setOfferError(null);
+    try {
+      for (const file of picked) {
+        const uploaded = await uploadSupplierFile(file);
+        setOfferForm((f) => ({ ...f, existingFiles: [...f.existingFiles, uploaded] }));
+        if (isRecognizableFileName(uploaded.fileName)) {
+          await tryRecognizeOfferFile(uploaded.url, uploaded.fileName);
+        }
+      }
+    } catch (err) {
+      setOfferError(errorMessage(err, 'Не удалось загрузить файл'));
+    } finally {
+      setOfferUploadingFile(false);
+    }
+  }
+
+  async function tryRecognizeOfferFile(fileUrl: string, fileName: string) {
+    setOfferExtractionBusy(true);
+    setOfferExtractionError(null);
+    try {
+      const result = await recognizeInvoiceFile(fileUrl, fileName);
+      if (result.isInvoice) {
+        setOfferExtraction({ price: result.price, currency: result.currency, items: result.items, fileName });
+      }
+    } catch (err) {
+      setOfferExtractionError(errorMessage(err, 'Не удалось распознать документ'));
+    } finally {
+      setOfferExtractionBusy(false);
+    }
+  }
+
+  // Тот же merge, что и у applyExtractionToOffer (SupplierCorrespondenceTab.tsx):
+  // price — из итога самого документа (не сумма позиций — реальный КП может
+  // включать доставку/скидку сверх суммы строк), currency — только если
+  // модель вернула значение из известного набора, items — добавляются к уже
+  // имеющимся, не заменяют их (несколько загруженных счетов копятся вместе).
+  function confirmOfferExtraction() {
+    if (!offerExtraction) return;
+    const newItems: PurchaseItem[] = offerExtraction.items.map((i) => ({
+      id: crypto.randomUUID(),
+      sourceMaterialId: null,
+      name: i.name,
+      unit: i.unit,
+      quantity: i.quantity,
+      price: i.price,
+      note: '',
+    }));
+    setOfferForm((f) => ({
+      ...f,
+      price: offerExtraction.price != null ? String(offerExtraction.price) : f.price,
+      currency: isValidOfferCurrency(offerExtraction.currency) ? offerExtraction.currency : f.currency,
+      items: [...f.items, ...newItems],
+    }));
+    setOfferExtraction(null);
+  }
+
+  function dismissOfferExtraction() {
+    setOfferExtraction(null);
+  }
+
   // Владелец, 2026-09-03: сначала "пусть только заголовок будет обязательным
   // полем, остальное опционально" — но у поля "Адрес сайта" остался
   // HTML required (не заметил в первый заход, браузер блокировал сабмит
@@ -1454,7 +1567,6 @@ export function Suppliers() {
       offerForm.websiteUrl.trim().length > 0 ||
       offerForm.catalogModelName.trim().length > 0 ||
       offerForm.existingFiles.length > 0 ||
-      offerForm.newFiles.length > 0 ||
       offerForm.price.trim().length > 0 ||
       offerForm.items.length > 0);
 
@@ -1472,7 +1584,6 @@ export function Suppliers() {
     setSavingOffer(true);
     setOfferError(null);
     try {
-      const uploadedNewFiles = await Promise.all(offerForm.newFiles.map(uploadSupplierFile));
       const payload = {
         requestId: offerRequestId,
         name: offerForm.name.trim(),
@@ -1487,7 +1598,9 @@ export function Suppliers() {
         price: offerForm.price.trim() ? Number(offerForm.price) : 0,
         currency: offerForm.currency,
         items: offerForm.items,
-        files: [...offerForm.existingFiles, ...uploadedNewFiles],
+        // Файлы грузятся в Storage сразу по выбору (handleOfferFilesSelect),
+        // а не откладываются до сабмита — тут уже готовый список.
+        files: offerForm.existingFiles,
         verified: true,
       };
       // Владелец, 2026-09-05: лог действий Альмиры для страницы "Метрики" —
@@ -2100,11 +2213,73 @@ export function Suppliers() {
               цена"/"Позиции КП" тогда же были убраны как "вручную это
               указывать тупо" в пользу единственного пути — автораспознавания
               счёта из переписки (applyExtractionToOffer в
-              SupplierCorrespondenceTab.tsx). Владелец, 2026-09-09: у Альмиры
-              есть сметы, собранные вручную (PDF/Excel-файлики, обычные
-              email-письма с ценами, не через переписку в самой системе) —
-              оба поля возвращены как ВТОРОЙ, ручной путь рядом с
-              автоматическим, не взамен него. */}
+              SupplierCorrespondenceTab.tsx). Владелец, 2026-09-09: "у нас есть
+              поставщик с КП, найденный вручную... добавляем его как нового
+              поставщика и загружаем КП, система распознаёт КП и записывает
+              цену в базу — вручную не будем ничего указывать" — оба поля
+              возвращены, но заполняются НЕ вводом с клавиатуры, а тем же
+              автораспознаванием, что и на входящих письмах (см.
+              handleOfferFilesSelect ниже — привязано к загрузке файла в
+              "Файлы", идёт перед этим блоком по той же причине). Поля
+              остаются редактируемыми — как и в переписке, это поправка уже
+              распознанного, а не приглашение печатать с нуля. */}
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Файлы (счета, спецификации...) — загрузите КП, цена распознается сама</span>
+            {offerForm.existingFiles.map((file, i) => (
+              <div
+                key={`existing-${i}`}
+                className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm text-ink"
+              >
+                <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOfferForm((f) => ({ ...f, existingFiles: f.existingFiles.filter((_, idx) => idx !== i) }))
+                  }
+                  aria-label="Убрать файл"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center text-ink-faint hover:text-danger"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+            <label className="flex w-fit cursor-pointer items-center gap-2 rounded-control border border-dashed border-border px-4 py-2.5 text-sm text-ink-muted hover:border-border-strong">
+              {offerUploadingFile ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {offerUploadingFile ? 'Загружаем...' : 'Добавить файлы'}
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                disabled={offerUploadingFile}
+                onChange={handleOfferFilesSelect}
+              />
+            </label>
+            {offerExtractionBusy && <p className="text-xs text-ink-faint">Распознаём документ...</p>}
+            {offerExtractionError && <p className="text-xs text-danger">{offerExtractionError}</p>}
+            {offerExtraction && (
+              <div className="flex flex-col gap-2 rounded-control border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">
+                <span className="font-medium text-ink">
+                  Похоже, это счёт («{offerExtraction.fileName}»):{' '}
+                  {offerExtraction.price != null
+                    ? formatPrice(
+                        offerExtraction.price,
+                        isValidOfferCurrency(offerExtraction.currency) ? offerExtraction.currency : offerForm.currency,
+                      )
+                    : 'сумма не распознана'}
+                  {offerExtraction.items.length > 0 ? `, ${offerExtraction.items.length} поз.` : ''}
+                </span>
+                <div className="flex gap-2">
+                  <Button type="button" onClick={confirmOfferExtraction}>
+                    Подтвердить
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={dismissOfferExtraction}>
+                    Это не счёт
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
 
           <div className="flex flex-col gap-1.5">
             <span className="text-sm text-ink-muted">Итоговая цена</span>
@@ -2126,10 +2301,7 @@ export function Suppliers() {
           </div>
 
           <div className="flex flex-col gap-2">
-            <span className="text-sm text-ink-muted">
-              Позиции КП — вручную по документу поставщика, либо автоматически из
-              распознанного счёта в переписке (см. вкладку «Письма»)
-            </span>
+            <span className="text-sm text-ink-muted">Позиции КП</span>
             {offerForm.items.length > 0 && (
               <div className="flex flex-col gap-1.5">
                 {offerForm.items.map((item) => (
@@ -2191,58 +2363,6 @@ export function Suppliers() {
                 </button>
               </div>
             )}
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <span className="text-sm text-ink-muted">Файлы (счета, спецификации...)</span>
-            {offerForm.existingFiles.map((file, i) => (
-              <div
-                key={`existing-${i}`}
-                className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm text-ink"
-              >
-                <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setOfferForm((f) => ({ ...f, existingFiles: f.existingFiles.filter((_, idx) => idx !== i) }))
-                  }
-                  aria-label="Убрать файл"
-                  className="flex h-6 w-6 shrink-0 items-center justify-center text-ink-faint hover:text-danger"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-            {offerForm.newFiles.map((file, i) => (
-              <div
-                key={`new-${i}`}
-                className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm text-ink"
-              >
-                <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                <button
-                  type="button"
-                  onClick={() => setOfferForm((f) => ({ ...f, newFiles: f.newFiles.filter((_, idx) => idx !== i) }))}
-                  aria-label="Убрать файл"
-                  className="flex h-6 w-6 shrink-0 items-center justify-center text-ink-faint hover:text-danger"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-            <label className="flex w-fit cursor-pointer items-center gap-2 rounded-control border border-dashed border-border px-4 py-2.5 text-sm text-ink-muted hover:border-border-strong">
-              <Upload className="h-4 w-4" />
-              Добавить файлы
-              <input
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  const picked = Array.from(e.target.files ?? []);
-                  e.target.value = '';
-                  if (picked.length) setOfferForm((f) => ({ ...f, newFiles: [...f.newFiles, ...picked] }));
-                }}
-              />
-            </label>
           </div>
 
           {offerError && <p className="text-sm text-danger">{offerError}</p>}
