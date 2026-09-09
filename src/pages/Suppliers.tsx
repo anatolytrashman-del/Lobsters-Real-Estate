@@ -26,6 +26,9 @@ import {
   SUPPLIER_COUNTRIES,
   SUPPLIER_REQUEST_GROUPS,
   SUPPLIER_REQUEST_GROUP_LABELS,
+  SUPPLIER_COMPARISON_MODES,
+  SUPPLIER_COMPARISON_MODE_LABELS,
+  SUPPLIER_COMPARISON_MODE_HINTS,
   guessCountryFromWebsite,
   countryFlag,
   offerCommunicationStatus,
@@ -33,6 +36,7 @@ import {
   type ResearchContactMethod,
   type SupplierRequest,
   type SupplierRequestGroup,
+  type SupplierComparisonMode,
   type SupplierOffer,
   formatRequestItemsText,
 } from '../data/supplierResearch';
@@ -167,6 +171,7 @@ const emptyRequestForm = {
   sectionTitle: '',
   items: [] as PurchaseItem[],
   legalEntityId: '' as string,
+  comparisonMode: 'material' as SupplierComparisonMode,
 };
 
 function requestToForm(r: SupplierRequest) {
@@ -178,6 +183,7 @@ function requestToForm(r: SupplierRequest) {
     sectionTitle: r.sectionTitle,
     items: r.items,
     legalEntityId: r.legalEntityId ?? '',
+    comparisonMode: r.comparisonMode,
   };
 }
 
@@ -332,9 +338,6 @@ function PriceComparisonBlock({
   const country = controlledCountry ?? internalCountry;
   const setCountry = onCountryChange ?? setInternalCountry;
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
-  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offersInCountry, rate);
-  const offersWithItems = offersInCountry.filter((o) => o.items.length > 0);
-  const itemRows = offersWithItems.length > 0 ? buildItemComparison(offersWithItems, rate) : [];
 
   return (
     <>
@@ -343,51 +346,81 @@ function PriceComparisonBlock({
       {offersInCountry.length === 0 ? (
         <p className="text-sm text-ink-faint">{offers.length === 0 ? 'Пока нет предложений.' : `Нет предложений из «${country}» — ${emptyHint}`}</p>
       ) : (
-        <div className="flex flex-col gap-2">
-          {/* Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей
-              цены" — вернули сравнение "дешевле всех" по итоговой цене
-              счёта (offer.price), список отсортирован по возрастанию цены,
-              самая низкая (может быть несколько при равенстве) подсвечена
-              зелёным + бейдж "лучшая цена" — тот же принцип, что и у
-              сравнения предложений подрядчиков (ContractorsResearch.tsx). */}
-          {sortedOffers.map((o) => {
-            const status = offerCommunicationStatus(o, emails);
-            const isCheapest = cheapestIds.has(o.id);
-            return (
-              <div
-                key={o.id}
-                className={cn(
-                  'flex flex-wrap items-center justify-between gap-3 rounded-control border px-4 py-3',
-                  isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
-                )}
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate font-medium text-ink">{o.name}</span>
-                  {o.verified ? (
-                    <Badge tone="success">Верифицирован</Badge>
-                  ) : (
-                    <Badge tone="warning">Требуется верификация</Badge>
-                  )}
-                  {isCheapest && (
-                    <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
-                      лучшая цена
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="max-w-[200px] truncate text-sm text-ink-muted">{OFFER_COMMUNICATION_STATUS_LABEL[status]}</span>
-                  <span className={cn('tabular-nums font-semibold', isCheapest ? 'text-success' : 'text-ink')}>
-                    {o.price > 0 ? formatPrice(o.price, o.currency) : '—'}
-                  </span>
-                  <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
-                    Подробнее
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <OfferTotalComparison offers={offersInCountry} emails={emails} rate={rate} onOpenDetail={onOpenDetail} />
       )}
+    </>
+  );
+}
+
+// Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей цены" —
+// сравнение "дешевле всех" по ИТОГОВОЙ цене всего КП (offer.price), список
+// отсортирован по возрастанию цены, самая низкая (может быть несколько при
+// равенстве) подсвечена зелёным + бейдж "лучшая цена" — тот же принцип, что
+// и у сравнения предложений подрядчиков (ContractorsResearch.tsx). Плюс
+// разбивка по компонентам снизу, если у сравниваемых КП есть построчная
+// структура. Вынесено в отдельный компонент — используется и в
+// PriceComparisonBlock (вкладка "Поставщики", весь список), и в
+// MaterialPriceComparisonCard для категорий с comparisonMode:'lot' (вкладка
+// "Сравнение цен", только confirmed — владелец, 2026-09-09: "Грильято, где
+// есть комплектующие, нужно оценивать полностью... мы не будем заказывать
+// несущие в одном месте, а подвесы в другом" — там сравнение "лучшая цена
+// по каждой позиции" вводило бы в заблуждение, реальный выбор — это ОДИН
+// поставщик на всю поставку целиком).
+function OfferTotalComparison({
+  offers,
+  emails,
+  rate,
+  onOpenDetail,
+}: {
+  offers: SupplierOffer[];
+  emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
+  onOpenDetail: (o: SupplierOffer) => void;
+}) {
+  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offers, rate);
+  const offersWithItems = offers.filter((o) => o.items.length > 0);
+  const itemRows = offersWithItems.length > 0 ? buildItemComparison(offersWithItems, rate) : [];
+
+  return (
+    <>
+      <div className="flex flex-col gap-2">
+        {sortedOffers.map((o) => {
+          const status = offerCommunicationStatus(o, emails);
+          const isCheapest = cheapestIds.has(o.id);
+          return (
+            <div
+              key={o.id}
+              className={cn(
+                'flex flex-wrap items-center justify-between gap-3 rounded-control border px-4 py-3',
+                isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
+              )}
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium text-ink">{o.name}</span>
+                {o.verified ? (
+                  <Badge tone="success">Верифицирован</Badge>
+                ) : (
+                  <Badge tone="warning">Требуется верификация</Badge>
+                )}
+                {isCheapest && (
+                  <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
+                    лучшая цена
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="max-w-[200px] truncate text-sm text-ink-muted">{OFFER_COMMUNICATION_STATUS_LABEL[status]}</span>
+                <span className={cn('tabular-nums font-semibold', isCheapest ? 'text-success' : 'text-ink')}>
+                  {o.price > 0 ? formatPrice(o.price, o.currency) : '—'}
+                </span>
+                <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
+                  Подробнее
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
       {itemRows.length > 0 && (
         <div className="flex flex-col gap-1.5">
@@ -549,14 +582,38 @@ function MaterialPriceComparisonCard({
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
   const confirmedOffers = offersInCountry.filter((o) => offerCommunicationStatus(o, emails) === 'confirmed');
-  const materialGroups = buildMaterialQuotes(request, confirmedOffers, rate);
+  // Владелец, 2026-09-09: "Грильято, где есть комплектующие, нужно
+  // оценивать полностью... мы не будем заказывать несущие в одном месте, а
+  // подвесы в другом. Поэтому логика такая — формируем поставку — сравниваем
+  // цену на поставку в целом. Но, в то же время, если бы позиции были
+  // штукатурка и плитка, то могли бы заказать и в разных местах" —
+  // comparisonMode:'lot' сравнивает КП целиком (OfferTotalComparison, та же
+  // логика, что и на вкладке "Поставщики"), а не по отдельным материалам.
+  const isLot = request.comparisonMode === 'lot';
+  const materialGroups = isLot ? [] : buildMaterialQuotes(request, confirmedOffers, rate);
 
   return (
     <Card className="flex flex-col gap-4 p-5">
-      <div className="text-lg font-bold text-ink">{request.title}</div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-lg font-bold text-ink">{request.title}</span>
+        {isLot && (
+          <span
+            className="rounded-full border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-muted"
+            title={SUPPLIER_COMPARISON_MODE_HINTS.lot}
+          >
+            поставка целиком
+          </span>
+        )}
+      </div>
       <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
 
-      {materialGroups.length === 0 ? (
+      {isLot ? (
+        confirmedOffers.length === 0 ? (
+          <p className="text-sm text-ink-faint">Пока никто из «{country}» не прислал КП — переключите страну выше.</p>
+        ) : (
+          <OfferTotalComparison offers={confirmedOffers} emails={emails} rate={rate} onOpenDetail={onOpenDetail} />
+        )
+      ) : materialGroups.length === 0 ? (
         <p className="text-sm text-ink-faint">Пока никто из «{country}» не прислал КП — переключите страну выше.</p>
       ) : (
         <div className="flex flex-col gap-4">
@@ -1640,6 +1697,7 @@ export function Suppliers() {
       sectionTitle: requestForm.sectionTitle,
       items: requestForm.items,
       legalEntityId: requestForm.legalEntityId || null,
+      comparisonMode: requestForm.comparisonMode,
     };
     try {
       if (editingRequest) {
@@ -2449,6 +2507,25 @@ export function Suppliers() {
               setRequestForm((f) => ({ ...f, legalEntityId: e?.id ?? '' }));
             }}
           />
+
+          {/* Владелец, 2026-09-09: "формируем поставку — сравниваем цену на
+              поставку в целом. Но, если бы позиции были штукатурка и плитка,
+              то могли бы заказать и в разных местах" — тип сравнения на
+              вкладке "Сравнение цен" выбирается один раз при создании
+              категории, не автоматика (см. SUPPLIER_COMPARISON_MODES в
+              data/supplierResearch.ts). */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Тип сравнения цен</span>
+            <ToggleGroup
+              options={SUPPLIER_COMPARISON_MODES.map((m) => SUPPLIER_COMPARISON_MODE_LABELS[m])}
+              value={SUPPLIER_COMPARISON_MODE_LABELS[requestForm.comparisonMode]}
+              onChange={(label) => {
+                const mode = SUPPLIER_COMPARISON_MODES.find((m) => SUPPLIER_COMPARISON_MODE_LABELS[m] === label);
+                if (mode) setRequestForm((f) => ({ ...f, comparisonMode: mode }));
+              }}
+            />
+            <span className="text-xs text-ink-faint">{SUPPLIER_COMPARISON_MODE_HINTS[requestForm.comparisonMode]}</span>
+          </div>
 
           {selectedRequestEstimate && (
             <Select

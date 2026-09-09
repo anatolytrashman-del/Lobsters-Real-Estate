@@ -5,6 +5,7 @@ import type {
   SupplierRequest,
   SupplierRequestRow,
   SupplierRequestGroup,
+  SupplierComparisonMode,
   SupplierOffer,
   SupplierOfferRow,
   ResearchContactMethod,
@@ -23,6 +24,7 @@ function requestFromRow(row: SupplierRequestRow): SupplierRequest {
     sectionTitle: row.section_title ?? '',
     items: row.items ?? [],
     legalEntityId: row.legal_entity_id ?? null,
+    comparisonMode: (row.comparison_mode as SupplierComparisonMode) || 'material',
     createdAt: row.created_at,
   };
 }
@@ -66,6 +68,7 @@ export interface SupplierRequestInput {
   sectionTitle: string;
   items: PurchaseItem[];
   legalEntityId: string | null;
+  comparisonMode: SupplierComparisonMode;
 }
 
 export function insertSupplierRequest(input: SupplierRequestInput): Promise<SupplierRequest> {
@@ -80,6 +83,7 @@ export function insertSupplierRequest(input: SupplierRequestInput): Promise<Supp
         section_title: input.sectionTitle,
         items: input.items,
         legal_entity_id: input.legalEntityId,
+        comparison_mode: input.comparisonMode,
       })
       .select()
       .single();
@@ -100,6 +104,7 @@ export function updateSupplierRequest(id: string, input: SupplierRequestInput): 
         section_title: input.sectionTitle,
         items: input.items,
         legal_entity_id: input.legalEntityId,
+        comparison_mode: input.comparisonMode,
       })
       .eq('id', id)
       .select()

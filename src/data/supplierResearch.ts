@@ -38,6 +38,30 @@ export const SUPPLIER_REQUEST_GROUP_LABELS: Record<SupplierRequestGroup, string>
   services: 'Сервисы',
 };
 
+// Владелец, 2026-09-09: "Грильято, где есть комплектующие, нужно оценивать
+// полностью. Мы не будем заказывать несущие в одном месте, а подвесы в
+// другом... но, если бы позиции были штукатурка и плитка, то могли бы
+// заказать и в разных местах" — не все категории одинаковы: у одних все
+// компоненты уходят ОДНОМУ поставщику единой поставкой (сравнивать нужно
+// сумму всего КП целиком, не выхватывать по позиции лучшую цену у разных
+// поставщиков — так реально закупку не оформить), у других каждая позиция
+// закупается независимо (сравнение "лучшая цена" по каждому материалу само
+// по себе корректно). Различить это по данным нельзя — оба типа документов
+// выглядят одинаково (счёт с разбивкой на несколько строк), поэтому это
+// явный выбор при создании категории, не автоматика.
+export const SUPPLIER_COMPARISON_MODES = ['material', 'lot'] as const;
+export type SupplierComparisonMode = (typeof SUPPLIER_COMPARISON_MODES)[number];
+
+export const SUPPLIER_COMPARISON_MODE_LABELS: Record<SupplierComparisonMode, string> = {
+  material: 'По материалам',
+  lot: 'Поставка целиком',
+};
+
+export const SUPPLIER_COMPARISON_MODE_HINTS: Record<SupplierComparisonMode, string> = {
+  material: 'Каждую позицию можно заказать у разного поставщика — сравниваем лучшую цену по каждому материалу отдельно.',
+  lot: 'Все позиции идут одной поставкой от одного поставщика (как компоненты Грильято) — сравниваем сумму всего КП целиком, не по отдельным строкам.',
+};
+
 // Владелец, 2026-09-03: "вместо 'Страна Беларусь'/'Страна Россия' ставь
 // просто эмодзи с флагом" — бейджи страны везде в UI показывают флаг
 // вместо текста. Для страны, добавленной вручную сверх пресета (нет в
@@ -108,6 +132,11 @@ export interface SupplierRequest {
   // (см. resolveRequestLegalEntity в lib/legalEntityAttachment.ts) — старые
   // категории, заведённые до этого поля, продолжают работать как раньше.
   legalEntityId: string | null;
+  // Владелец, 2026-09-09: тип сравнения на вкладке "Сравнение цен" — 'material'
+  // (по умолчанию, старое поведение) или 'lot' (см. комментарий у
+  // SUPPLIER_COMPARISON_MODES выше). Заводится один раз на категорию, не
+  // меняется автоматически.
+  comparisonMode: SupplierComparisonMode;
   createdAt: string;
 }
 
@@ -120,6 +149,7 @@ export interface SupplierRequestRow {
   section_title: string | null;
   items: PurchaseItem[] | null;
   legal_entity_id: string | null;
+  comparison_mode: string | null;
   created_at: string;
 }
 
