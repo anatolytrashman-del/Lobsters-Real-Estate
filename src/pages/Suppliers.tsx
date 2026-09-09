@@ -131,7 +131,16 @@ function siteLabel(url: string): string {
 // "Ресерч" переименован в "Поставщики" (владелец сам так назвал сущность),
 // "Email" — в "Письма" (то же самое: подпись вкладки — статичная строка,
 // не "Письма (N)", см. комментарий про badges выше по истории этого файла).
-const SUPPLIER_TABS = ['Поставщики', 'Ведомости материалов', 'Письма'] as const;
+//
+// Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
+// цен. И внутри уже группировка по запросам, как грильято" — то самое
+// сравнение "лучшая цена"/таблица по позициям, которое до этого жило только
+// внутри карточки запроса на вкладке "Поставщики" (см. PriceComparisonBlock
+// ниже — общий компонент для обоих мест), получило свою отдельную вкладку —
+// чистый вид только для сравнения, без кнопок управления запросом/
+// предложением, сгруппированный по тем же категориям (Материалы и
+// оборудование/Сервисы), что и "Поставщики".
+const SUPPLIER_TABS = ['Поставщики', 'Сравнение цен', 'Ведомости материалов', 'Письма'] as const;
 type SupplierTab = (typeof SUPPLIER_TABS)[number];
 
 // Владелец, 2026-09-04: "меня бесит, что у всей страницы Поставщики
@@ -142,6 +151,7 @@ type SupplierTab = (typeof SUPPLIER_TABS)[number];
 // ссылки не должны сломаться.
 const SUPPLIER_TAB_SLUGS: Record<SupplierTab, string> = {
   'Поставщики': 'suppliers',
+  'Сравнение цен': 'comparison',
   'Ведомости материалов': 'ledger',
   Письма: 'letters',
 };
@@ -282,100 +292,56 @@ function buildItemComparison(offersWithItems: SupplierOffer[], rate: ExchangeRat
   return Array.from(rows.values());
 }
 
-// Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
-// Беларуси и для России... в идеале переключение списков прямо внутри
-// самого блока, чем делать две отдельные таблицы". Переключатель — локальный
-// стейт карточки (не персистится), по умолчанию Беларусь. Предложения без
-// страны (старые записи до поля country) на всякий случай считаем
-// белорусскими — иначе они пропали бы из обеих вкладок молча.
-function RequestCard({
-  request,
+// Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
+// цен. И внутри уже группировка по запросам, как грильято" — вынесено из
+// RequestCard в отдельный переиспользуемый блок: сам RequestCard (вкладка
+// "Поставщики", с кнопками управления запросом/предложением) и новая
+// вкладка "Сравнение цен" (только просмотр, сгруппировано по категориям)
+// показывают ровно один и тот же блок сравнения, не две разные реализации.
+// Свой стейт страны — самодостаточный компонент, реюзабельный без прокидки
+// состояния через родителя.
+function PriceComparisonBlock({
   offers,
   emails,
   rate,
-  onEditRequest,
-  onDeleteRequest,
-  onAddOffer,
   onOpenDetail,
-  onWebSearch,
-  searching,
+  emptyHint,
+  country: controlledCountry,
+  onCountryChange,
 }: {
-  request: SupplierRequest;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
   rate: ExchangeRate | undefined;
-  onEditRequest: (r: SupplierRequest) => void;
-  onDeleteRequest: (r: SupplierRequest) => void;
-  onAddOffer: (r: SupplierRequest) => void;
   onOpenDetail: (o: SupplierOffer) => void;
-  onWebSearch: (r: SupplierRequest, country: string) => void;
-  searching: boolean;
+  // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
+  // Беларуси и для России... в идеале переключение списков прямо внутри
+  // самого блока" — подсказка для пустого списка отличается в зависимости
+  // от контекста (на "Поставщики" есть кнопка "Добавить предложение" рядом,
+  // на "Сравнение цен" её нет).
+  emptyHint: string;
+  // RequestCard (вкладка "Поставщики") использует этот же переключатель
+  // страны и для кнопки "Найти в сети" — там страна контролируется
+  // родителем (controlled), чтобы оба места читали одно и то же значение.
+  // На вкладке "Сравнение цен" переключатель не нужен нигде, кроме самого
+  // блока — там он остаётся несвязанным (uncontrolled), свой на каждую
+  // карточку категории.
+  country?: string;
+  onCountryChange?: (country: string) => void;
 }) {
-  const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  const [internalCountry, setInternalCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  const country = controlledCountry ?? internalCountry;
+  const setCountry = onCountryChange ?? setInternalCountry;
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
   const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offersInCountry, rate);
   const offersWithItems = offersInCountry.filter((o) => o.items.length > 0);
   const itemRows = offersWithItems.length > 0 ? buildItemComparison(offersWithItems, rate) : [];
 
   return (
-    <Card className="flex flex-col gap-4 p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-lg font-bold text-ink">{request.title}</div>
-          {request.items.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {request.items.map((item) => (
-                <span
-                  key={item.id}
-                  className="rounded-full bg-surface-muted px-2.5 py-0.5 text-xs text-ink-muted"
-                >
-                  {item.name}
-                  {item.quantity ? ` · ${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={searching}
-            icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            onClick={() => onWebSearch(request, country)}
-          >
-            {searching ? 'Ищем в сети...' : 'Найти в сети'}
-          </Button>
-          <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
-            Добавить предложение
-          </Button>
-          <button
-            type="button"
-            onClick={() => onEditRequest(request)}
-            aria-label="Переименовать запрос"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onDeleteRequest(request)}
-            aria-label="Удалить запрос"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-danger hover:text-danger"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-
+    <>
       <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
 
       {offersInCountry.length === 0 ? (
-        <p className="text-sm text-ink-faint">
-          {offers.length === 0
-            ? 'Пока нет предложений — нажмите «Добавить предложение».'
-            : `Нет предложений из «${country}» — переключите страну выше или добавьте предложение.`}
-        </p>
+        <p className="text-sm text-ink-faint">{offers.length === 0 ? 'Пока нет предложений.' : `Нет предложений из «${country}» — ${emptyHint}`}</p>
       ) : (
         <div className="flex flex-col gap-2">
           {/* Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей
@@ -469,6 +435,104 @@ function RequestCard({
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+// Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
+// Беларуси и для России... в идеале переключение списков прямо внутри
+// самого блока, чем делать две отдельные таблицы". Переключатель — локальный
+// стейт карточки (не персистится), по умолчанию Беларусь. Предложения без
+// страны (старые записи до поля country) на всякий случай считаем
+// белорусскими — иначе они пропали бы из обеих вкладок молча.
+function RequestCard({
+  request,
+  offers,
+  emails,
+  rate,
+  onEditRequest,
+  onDeleteRequest,
+  onAddOffer,
+  onOpenDetail,
+  onWebSearch,
+  searching,
+}: {
+  request: SupplierRequest;
+  offers: SupplierOffer[];
+  emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
+  onEditRequest: (r: SupplierRequest) => void;
+  onDeleteRequest: (r: SupplierRequest) => void;
+  onAddOffer: (r: SupplierRequest) => void;
+  onOpenDetail: (o: SupplierOffer) => void;
+  onWebSearch: (r: SupplierRequest, country: string) => void;
+  searching: boolean;
+}) {
+  // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
+  // PriceComparisonBlock ниже — здесь он controlled, значение общее и для
+  // фильтра сравнения, и для кнопки "Найти в сети").
+  const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-lg font-bold text-ink">{request.title}</div>
+          {request.items.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {request.items.map((item) => (
+                <span
+                  key={item.id}
+                  className="rounded-full bg-surface-muted px-2.5 py-0.5 text-xs text-ink-muted"
+                >
+                  {item.name}
+                  {item.quantity ? ` · ${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={searching}
+            icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            onClick={() => onWebSearch(request, country)}
+          >
+            {searching ? 'Ищем в сети...' : 'Найти в сети'}
+          </Button>
+          <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
+            Добавить предложение
+          </Button>
+          <button
+            type="button"
+            onClick={() => onEditRequest(request)}
+            aria-label="Переименовать запрос"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onDeleteRequest(request)}
+            aria-label="Удалить запрос"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-danger hover:text-danger"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <PriceComparisonBlock
+        offers={offers}
+        emails={emails}
+        rate={rate}
+        onOpenDetail={onOpenDetail}
+        emptyHint="переключите страну выше или добавьте предложение."
+        country={country}
+        onCountryChange={setCountry}
+      />
     </Card>
   );
 }
@@ -1886,6 +1950,60 @@ export function Suppliers() {
           <ContractorsResearch />
         </div>
       </div>
+      )}
+
+      {/* Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка
+          Сравнение цен. И внутри уже группировка по запросам, как грильято" —
+          тот же PriceComparisonBlock, что и внутри RequestCard, но без кнопок
+          управления запросом/предложением — чистый вид только для сравнения,
+          сгруппированный по тем же категориям (Материалы и оборудование/
+          Сервисы), что и вкладка "Поставщики". Категории вовсе без
+          предложений не показываются — сравнивать там нечего. */}
+      {tab === 'Сравнение цен' && (
+        <div className="mt-6 flex flex-col gap-8">
+          {loading && (
+            <Card className="flex items-center justify-center gap-2 py-10 text-sm text-ink-muted">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Загружаем поставщиков...
+            </Card>
+          )}
+          {!loading && loadError && <Card className="py-10 text-center text-sm text-danger">{loadError}</Card>}
+
+          {!loading && !loadError && (() => {
+            const groups = (['materials', 'services'] as const).map((group) => ({
+              group,
+              requestsWithOffers: requests.filter((r) => r.group === group && offers.some((o) => o.requestId === r.id)),
+            }));
+            const anyOffers = groups.some((g) => g.requestsWithOffers.length > 0);
+            if (!anyOffers) {
+              return (
+                <Card className="py-10 text-center text-sm text-ink-muted">
+                  Пока нет предложений для сравнения — добавьте их на вкладке «Поставщики».
+                </Card>
+              );
+            }
+            return groups.map(({ group, requestsWithOffers }) => {
+              if (requestsWithOffers.length === 0) return null;
+              return (
+                <div key={group} className="flex flex-col gap-6">
+                  <div className="text-lg font-bold text-ink">{SUPPLIER_REQUEST_GROUP_LABELS[group]}</div>
+                  {requestsWithOffers.map((r) => (
+                    <Card key={r.id} className="flex flex-col gap-4 p-5">
+                      <div className="text-lg font-bold text-ink">{r.title}</div>
+                      <PriceComparisonBlock
+                        offers={offers.filter((o) => o.requestId === r.id)}
+                        emails={supplierEmails}
+                        rate={rate}
+                        onOpenDetail={(o) => setDetailOfferId(o.id)}
+                        emptyHint="переключите страну выше."
+                      />
+                    </Card>
+                  ))}
+                </div>
+              );
+            });
+          })()}
+        </div>
       )}
 
       {tab === 'Ведомости материалов' && (
