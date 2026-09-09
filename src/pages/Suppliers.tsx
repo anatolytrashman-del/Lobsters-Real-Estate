@@ -17,9 +17,6 @@ import { cn } from '../lib/cn';
 import { formatPhoneDisplay } from '../lib/formatPhone';
 import { currencySymbols, type Currency } from '../data/transactions';
 import type { DocumentFile } from '../data/contractorDocuments';
-import type { ExchangeRate } from '../data/exchangeRates';
-import { fetchTodayRate } from '../lib/exchangeRatesApi';
-import { convertToUsd } from '../lib/currencyConvert';
 import {
   RESEARCH_CONTACT_METHODS,
   SUPPLIER_COUNTRIES,
@@ -44,7 +41,7 @@ import type { LedgerAttachment } from '../lib/materialLedgerXlsx';
 import type { EmailTemplate } from '../data/emailTemplates';
 import { fetchEmailTemplates } from '../lib/emailTemplatesApi';
 import type { MaterialLedger } from '../data/materialLedgers';
-import { fetchMaterialLedgers } from '../lib/materialLedgersApi';
+import { fetchMaterialLedgers, deleteMaterialLedger } from '../lib/materialLedgersApi';
 import type { SupplierOrder } from '../data/supplierOrders';
 import { fetchSupplierOrders } from '../lib/supplierOrdersApi';
 import {
@@ -68,7 +65,7 @@ import type { RealtyObject } from '../data/objects';
 import { fetchObjects } from '../lib/objectsApi';
 import type { LegalEntity } from '../data/legalEntities';
 import { fetchLegalEntities } from '../lib/legalEntitiesApi';
-import { MaterialsTable, groupMaterials, type MaterialBestPriceOption } from '../components/estimates/MaterialsTable';
+import { MaterialsTable, groupMaterials } from '../components/estimates/MaterialsTable';
 import { EstimateMaterialFormModal } from '../components/estimates/EstimateMaterialFormModal';
 import { EstimateMaterialCommentsModal } from '../components/estimates/EstimateMaterialCommentsModal';
 
@@ -692,7 +689,16 @@ export function Suppliers() {
   // MaterialLedgerModal (тот же список materialLedgers, что и у "Прикрепить
   // ведомость"/"Массовая отправка"), только без onAttach — тут нечего
   // прикреплять, только создавать/править/удалять.
-  const [ledgerTemplatesModalOpen, setLedgerTemplatesModalOpen] = useState(false);
+  //
+  // Владелец, 2026-09-09: "непонятно, зачем графа «Готовая ведомость»,
+  // когда я добавляю новый шаблон" + "не хватает отображения шаблонов на
+  // странице ведомостей" — вместо одного булева "открыта/закрыта" модалка
+  // теперь целится в конкретную ведомость: null — закрыта, 'new' — создание
+  // с нуля, id строкой — редактирование конкретной. Выбор "какую
+  // редактировать" переехал на саму страницу (список ниже), поэтому
+  // внутренний селект "Готовая ведомость" в самой модалке для этого сценария
+  // скрыт (hideLedgerPicker).
+  const [ledgerModalTarget, setLedgerModalTarget] = useState<'new' | string | null>(null);
 
   // Владелец, 2026-09-04: "давай реализуем массовую отправку... Альмира
   // сформировала универсальную большую ведомость и хочет разослать её
@@ -711,7 +717,6 @@ export function Suppliers() {
   const [offers, setOffers] = useState<SupplierOffer[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [rate, setRate] = useState<ExchangeRate | undefined>(undefined);
 
   const [estimates, setEstimates] = useState<Estimate[]>([]);
   const [objects, setObjects] = useState<RealtyObject[]>([]);
@@ -825,9 +830,6 @@ export function Suppliers() {
       })
       .catch((err) => setLoadError(errorMessage(err, 'Не удалось загрузить поставщиков')))
       .finally(() => setLoading(false));
-    fetchTodayRate()
-      .then(setRate)
-      .catch(() => setRate(undefined));
     fetchEstimates().then(setEstimates).catch(() => setEstimates([]));
     fetchObjects().then(setObjects).catch(() => setObjects([]));
     fetchLegalEntities().then(setLegalEntities).catch(() => setLegalEntities([]));
@@ -956,54 +958,6 @@ export function Suppliers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estimates, objects]);
 
-  // Владелец, 2026-09-03: "давай зашивать лучшие цены на позиции в текущую
-  // ведомость материалов" — плоский свод известных цен по каждому материалу
-  // сметы (sourceMaterialId — общий ключ, проставляется вручную при
-  // сопоставлении распознанного счёта, см. SupplierCorrespondenceTab.tsx),
-  // собранных со всех предложений (offer.items) И всех доп. заявок
-  // (order.items — "1 заявка на поставку — одна ветка"). Сортировка внутри
-  // каждой позиции — по цене в USD-эквиваленте (rate — тот же курс, что и у
-  // rankOffers в RequestCard), самая дешёвая первой.
-  const bestPricesByMaterialId = useMemo(() => {
-    const map = new Map<string, MaterialBestPriceOption[]>();
-    const push = (materialId: string, opt: MaterialBestPriceOption) => {
-      const list = map.get(materialId) ?? [];
-      list.push(opt);
-      map.set(materialId, list);
-    };
-    // Владелец, 2026-09-04: "краска идёт в литрах, а поставщик выставляет
-    // количество банок... надо пересчитывать на литр, метр, штуку, а не в
-    // целом" — сравниваем по unitPrice (цена за единицу измерения СМЕТНОГО
-    // материала, введена вручную при сопоставлении счёта, см.
-    // SupplierCorrespondenceTab.tsx), а не по сырому price/quantity со
-    // счёта (та тара поставщика — банки/упаковки — может не совпадать с
-    // единицей сметы вовсе).
-    for (const o of offers) {
-      for (const it of o.items) {
-        if (!it.sourceMaterialId || it.unitPrice == null || it.unitPrice <= 0) continue;
-        push(it.sourceMaterialId, { price: it.unitPrice, currency: o.currency, supplierName: o.name, itemName: it.name });
-      }
-    }
-    for (const ord of supplierOrders) {
-      const parentOffer = offers.find((o) => o.id === ord.offerId);
-      for (const it of ord.items) {
-        if (!it.sourceMaterialId || it.unitPrice == null || it.unitPrice <= 0) continue;
-        push(it.sourceMaterialId, {
-          price: it.unitPrice,
-          currency: ord.currency,
-          supplierName: parentOffer?.name ?? 'Поставщик',
-          itemName: it.name,
-        });
-      }
-    }
-    for (const list of map.values()) {
-      // convertToUsd может вернуть null (курс ещё не загрузился, а валюта не
-      // USD) — такие позиции уходят в конец списка, не ломая сортировку.
-      list.sort((a, b) => (convertToUsd(a.price, a.currency, rate) ?? Infinity) - (convertToUsd(b.price, b.currency, rate) ?? Infinity));
-    }
-    return map;
-  }, [offers, supplierOrders, rate]);
-
   const selectedRequestEstimate = estimates.find((e) => e.id === requestForm.estimateId) ?? null;
   const selectedRequestSection = selectedRequestEstimate?.sections.find((s) => s.id === requestForm.sectionId) ?? null;
 
@@ -1065,6 +1019,20 @@ export function Suppliers() {
     return [...set];
   }, [ledgerEstimate]);
 
+  // Владелец, 2026-09-09: "если я делаю ведомость на Зелёный, не надо
+  // выводить мне позиции для Red One" — чек-лист "Шаблонов" на этой вкладке
+  // ограничен материалами ВЫБРАННОЙ здесь сметы (ledgerEstimate), а не всем
+  // allEstimateMaterials разом (тот список нужен для остальных мест, где
+  // нет своего контекста сметы — например "Прикрепить ведомость" в
+  // одиночном письме). Если смета ещё не выбрана — общий список как фолбэк
+  // (лучше, чем пустой чек-лист).
+  const ledgerEstimateChecklistMaterials = useMemo(() => {
+    if (!ledgerEstimate) return allEstimateMaterials;
+    const objLabel = ledgerEstimate.objectId ? objectLabel(ledgerEstimate.objectId) : ledgerEstimate.title || 'без объекта';
+    return allEstimateMaterials.filter((m) => m.context.startsWith(`${objLabel} · `));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEstimateMaterials, ledgerEstimate]);
+
   async function saveLedgerSections(estimateId: string, sections: Estimate['sections']) {
     const target = estimates.find((e) => e.id === estimateId);
     if (!target) throw new Error('Смета не найдена');
@@ -1123,6 +1091,18 @@ export function Suppliers() {
       );
     } catch (err) {
       setLedgerError(errorMessage(err, 'Не удалось удалить раздел'));
+    }
+  }
+
+  // Удаление ведомости-пресета прямо из списка на странице (не только
+  // изнутри модалки редактирования) — владелец, 2026-09-09.
+  async function handleDeleteLedgerFromList(id: string, name: string) {
+    if (!window.confirm(`Удалить ведомость «${name}»?`)) return;
+    try {
+      await deleteMaterialLedger(id);
+      setMaterialLedgers((prev) => prev.filter((l) => l.id !== id));
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось удалить ведомость'));
     }
   }
 
@@ -1507,17 +1487,6 @@ export function Suppliers() {
             Шаблоны
           </Button>
         )}
-        {/* Владелец, 2026-09-04: "на этой странице делать Шаблоны, они же
-            будут синхронизированы с шаблонами в массовой отправке" — это те
-            же самые ведомости (MaterialLedger), что и в "Прикрепить
-            ведомость"/"Массовая отправка" на "Письмах" — один общий список
-            (materialLedgers), просто ещё одна точка входа для управления
-            им, без привязки к конкретной переписке. */}
-        {tab === 'Ведомости материалов' && (
-          <Button type="button" variant="secondary" icon={<FileText className="h-4 w-4" />} onClick={() => setLedgerTemplatesModalOpen(true)}>
-            Шаблоны
-          </Button>
-        )}
       </div>
 
       {tab === 'Поставщики' && (
@@ -1587,6 +1556,60 @@ export function Suppliers() {
 
       {tab === 'Ведомости материалов' && (
         <div className="mt-6 flex flex-col gap-6">
+          {/* Владелец, 2026-09-09: "не хватает отображения шаблонов готовых
+              ведомостей на странице ведомостей" — раньше список сохранённых
+              MaterialLedger был виден только внутри самой модалки "Шаблоны"
+              (через выпадающий список), тут он выведен прямо на страницу.
+              Список не зависит от выбранной ниже сметы — готовые ведомости
+              не привязаны к конкретному объекту. */}
+          <div className="flex flex-col gap-3">
+            <span className="text-lg font-bold text-ink">Готовые ведомости</span>
+            {materialLedgers.length === 0 && (
+              <p className="text-sm text-ink-faint">Пока нет ни одной сохранённой ведомости.</p>
+            )}
+            {materialLedgers.length > 0 && (
+              <div className="flex flex-col gap-2">
+                {materialLedgers.map((l) => (
+                  <div key={l.id} className="flex items-center justify-between gap-3 rounded-control border border-border px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-ink">{l.name}</div>
+                      <div className="text-xs text-ink-faint">
+                        {l.items.length} {l.items.length === 1 ? 'позиция' : 'позиций'}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setLedgerModalTarget(l.id)}
+                        aria-label="Редактировать ведомость"
+                        className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteLedgerFromList(l.id, l.name)}
+                        aria-label="Удалить ведомость"
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              icon={<Plus className="h-4 w-4" />}
+              className="w-fit"
+              onClick={() => setLedgerModalTarget('new')}
+            >
+              Новая ведомость
+            </Button>
+          </div>
+
           <Select
             label="Смета"
             placeholder="Не выбрана"
@@ -1663,7 +1686,6 @@ export function Suppliers() {
                         onEdit={(m) => openEditMaterial(section.id, m)}
                         onDelete={(m) => deleteMaterial(section.id, m.id)}
                         onOpenComments={(m) => openMaterialComments(section.id, m)}
-                        bestPricesByMaterialId={bestPricesByMaterialId}
                       />
                     )}
 
@@ -1677,7 +1699,6 @@ export function Suppliers() {
                           onEdit={(m) => openEditMaterial(section.id, m)}
                           onDelete={(m) => deleteMaterial(section.id, m.id)}
                           onOpenComments={(m) => openMaterialComments(section.id, m)}
-                          bestPricesByMaterialId={bestPricesByMaterialId}
                         />
                       </div>
                     ))}
@@ -2205,15 +2226,28 @@ export function Suppliers() {
           управление пресетами ведомостей вне контекста конкретного письма
           (нет onAttach — только создание/правка/удаление). Тот же общий
           список materialLedgers, что и у "Прикрепить ведомость"/"Массовая
-          отправка" на "Письмах" — правка здесь сразу видна там же. */}
-      <MaterialLedgerModal
-        open={ledgerTemplatesModalOpen}
-        requestItems={[]}
-        allMaterials={allEstimateMaterials}
-        ledgers={materialLedgers}
-        onClose={() => setLedgerTemplatesModalOpen(false)}
-        onLedgersChange={setMaterialLedgers}
-      />
+          отправка" на "Письмах" — правка здесь сразу видна там же.
+          Владелец, 2026-09-09: список ведомостей теперь виден прямо на
+          странице (см. блок "Готовые ведомости" выше) — модалка целится в
+          конкретную ведомость через ledgerModalTarget ('new' или id),
+          внутренний селект "Готовая ведомость" скрыт (hideLedgerPicker) —
+          выбор какую редактировать уже сделан кликом в списке на странице,
+          повторять его внутри модалки было непонятно, зачем. Чек-лист
+          материалов ограничен выбранной на странице сметой
+          (ledgerEstimateChecklistMaterials), чтобы не путать позиции Red One
+          с позициями Смета Зелёный. */}
+      {ledgerModalTarget !== null && (
+        <MaterialLedgerModal
+          open
+          hideLedgerPicker
+          initialLedgerId={ledgerModalTarget === 'new' ? undefined : ledgerModalTarget}
+          requestItems={[]}
+          allMaterials={ledgerEstimateChecklistMaterials}
+          ledgers={materialLedgers}
+          onClose={() => setLedgerModalTarget(null)}
+          onLedgersChange={setMaterialLedgers}
+        />
+      )}
 
       {bulkLedgerPickerRequest && (
         <MaterialLedgerModal

@@ -36,6 +36,8 @@ export function MaterialLedgerModal({
   onLedgersChange,
   onAttach,
   readyOnly,
+  initialLedgerId,
+  hideLedgerPicker,
 }: {
   open: boolean;
   requestItems: PurchaseItem[];
@@ -64,6 +66,19 @@ export function MaterialLedgerModal({
   // сохранённой ведомости. Одиночная переписка (EmailThread) и управление
   // пресетами вне письма — без ограничения, там readOnly не передаётся.
   readyOnly?: boolean;
+  // Владелец, 2026-09-09: "непонятно, зачем графа «Готовая ведомость»,
+  // когда я добавляю новый шаблон" — вызвано тем, что выбор "какую
+  // существующую ведомость открыть" дублировался и внутри модалки (этот
+  // селект), и снаружи (список на странице "Ведомости материалов"). Теперь
+  // выбор какую ведомость редактировать делается СНАРУЖИ, через
+  // initialLedgerId — сам селект внутри модалки в этом случае скрыт, чтобы
+  // не путать. Остальные вызовы (EmailThread "Прикрепить ведомость",
+  // управление шаблонами на "Письмах") — без этого прогана, там быстрое
+  // переключение между уже существующими ведомостями внутри модалки уместно.
+  hideLedgerPicker?: boolean;
+  // Открыть модалку сразу с предзагруженной конкретной ведомостью (правка
+  // из списка на странице), а не с чистой формой создания.
+  initialLedgerId?: string;
 }) {
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
@@ -77,14 +92,25 @@ export function MaterialLedgerModal({
   // Модалка живёт смонтированной всегда (родитель переключает только open,
   // как и TemplateFormModal) — без сброса по [open] форма подхватила бы
   // состояние только на первом рендере родителя.
+  //
+  // initialLedgerId (владелец, 2026-09-09) — предзагрузка конкретной
+  // ведомости при открытии из списка на странице. Намеренно НЕ в
+  // зависимостях эффекта `ledgers` — этот массив меняется сразу после
+  // каждого сохранения (onLedgersChange), а initialLedgerId остаётся
+  // прежним весь сеанс редактирования; если бы `ledgers` был зависимостью,
+  // эффект перезапускался бы после каждого сохранения и для режима
+  // "новая ведомость" (initialLedgerId не задан) стирал бы только что
+  // введённые название/позиции обратно в пустую форму.
   useEffect(() => {
     if (!open) return;
-    setSelectedId('');
-    setName('');
-    setItems([]);
+    const ledger = initialLedgerId ? ledgers.find((l) => l.id === initialLedgerId) : null;
+    setSelectedId(ledger?.id ?? '');
+    setName(ledger?.name ?? '');
+    setItems(ledger?.items ?? []);
     setManualName('');
     setError(null);
-  }, [open]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialLedgerId]);
 
   // Владелец, 2026-09-03, после первой версии с полем поиска: "снова
   // неудобно, мне нужно видеть весь список сразу и отмечать галочками...
@@ -204,10 +230,12 @@ export function MaterialLedgerModal({
     }
   }
 
+  const modalTitle = hideLedgerPicker ? (initialLedgerId ? 'Редактирование ведомости' : 'Новая ведомость') : 'Ведомость материалов';
+
   return (
-    <Modal open onClose={onClose} title="Ведомость материалов">
+    <Modal open onClose={onClose} title={modalTitle}>
       <div className="flex flex-col gap-4">
-        {ledgers.length > 0 && (
+        {!hideLedgerPicker && ledgers.length > 0 && (
           <Select
             label="Готовая ведомость"
             placeholder={readyOnly ? 'Выберите ведомость' : 'Новая ведомость'}
