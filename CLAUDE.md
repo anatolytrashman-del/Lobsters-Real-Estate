@@ -195,6 +195,97 @@ curl -sS -X POST "https://api.supabase.com/v1/projects/iohcdylttyuhwovztrbk/data
 Хронологический список, что уже сделано — не дублировать работу, не переспрашивать то,
 что уже решено. Дополнять новыми записями сверху, старые не переписывать.
 
+- **2026-09-10 — Переобход Яндекса/Google после расширения каталога БЦ +
+  задел под Google Search Console на странице "Показатели" (продолжение
+  темы того же дня выше — сначала попросили "запустить переобход", потом
+  "подключить Google Console в таком же формате, что и Яндекс").**
+  1. **Переобход Яндекса — сделан прямо в сессии, без участия владельца.**
+     Токен `external_api_tokens.service='yandex'` подошёл и для приоритетной
+     очереди recrawl (`POST /v4/user/{id}/hosts/{host}/recrawl/queue`) —
+     поставлено 68 страниц (все хабы: `/minsk`, `/minsk/bcminsk`,
+     `/minsk/analytics` с 12 подстраницами, `/minsk/minsk-mir` с 5
+     тематическими лендингами, рейтинг/"Строящиеся" БЦ, все 36 хабов по
+     классу и 10 по району каталога БЦ) — квота стартовала со 150, осталось
+     ~82. Карточки конкретных БЦ (142 шт.) и хабы метро/улиц/микрорайонов
+     (74 шт.) не отправлял поштучно — они достижимы по ссылкам с уже
+     поставленных в очередь хабов, найдутся сами при обычном переобходе.
+     Форсировать повторное скачивание самого sitemap.xml через API нельзя
+     (`POST .../sitemaps/` на уже существующий sitemap → `METHOD_NOT_ALLOWED`)
+     — Яндекс перечитывает его сам по расписанию (обычно 1-3 дня).
+  2. **Google — принципиальное отличие от Яндекса, доведено до конца
+     инфраструктурно, но без реального токена.** У Google нет ни publicly
+     доступного "recrawl API" для обычных страниц (официальный Indexing
+     API ограничен JobPosting/BroadcastEvent), ни готового токена в базе —
+     `external_api_tokens` содержал только Яндекс, `GOOGLE_OAUTH_CLIENT_ID/
+     _SECRET/_REFRESH_TOKEN` (Vercel-only секреты под Docs/Drive для
+     генерации документов, `api/_google.js`) в этой сессии недоступны и в
+     любом случае не тот scope. `google-site-verification` в `index.html`
+     тоже не нашлось — GSC либо не подключён вовсе, либо подтверждён через
+     DNS (домен property, не URL-префикс) — не проверено, не мой доступ.
+  3. **Подготовлена вся инфраструктура под Google Search Console "в таком
+     же формате", что и Яндекс** — она станет рабочей сразу, как только
+     владелец даст токен, без дальнейших правок кода:
+     - `external_api_tokens` расширена колонками `client_id`/`client_secret`
+       (миграция через Management API) — у Google, в отличие от Яндекса,
+       "токен" это refresh_token, который каждый раз обменивается на
+       access_token через `oauth2.googleapis.com/token`, для этого обмена
+       нужны все три значения разом, не один `access_token`, как у Яндекса.
+     - Новая таблица `google_search_console_stats` (date PK,
+       `pages_submitted`/`pages_indexed`/`impressions`/`clicks`/
+       `avg_position`, RLS `authenticated_all` — та же модель, что у
+       `yandex_webmaster_stats`).
+     - `scripts/sync-google-search-console-stats.mjs` (+ `.github/workflows/
+       sync-google-search-console-stats.yml`, суточный крон 05:15 UTC, сдвинут
+       от Яндекса 05:00) — резолвит `siteUrl` через `sites.list` (не
+       хардкодит формат property — URL-префикс vs `sc-domain:`), "сколько
+       страниц проиндексировано" берёт из `Sitemaps.get` →
+       `contents[].indexed`/`.submitted` (состояние на сегодня, как и
+       "Страниц в поиске" у Яндекса — не сумма по дням), показы/клики/
+       позицию — из `searchAnalytics.query` по дням, scope
+       `webmasters.readonly` (read-only, ничего не публикует/не меняет).
+     - **`scripts/get-google-search-console-refresh-token.mjs`** — та же
+       localhost-callback схема, что уже была в `get-google-refresh-token.mjs`
+       для Docs/Drive (порт другой — 53683, чтобы не конфликтовать, если
+       оба скрипта вдруг понадобятся одновременно), но с ДРУГИМ, более
+       узким scope (`webmasters.readonly`) — получить его может **только
+       сам владелец, разовым запуском на своей машине** (нужен настоящий
+       браузер и логин в Google под аккаунтом, за которым закреплён
+       redevelopment.pro в Search Console) — ни эта, ни любая другая
+       сессия Claude сделать это вместо него не может. Можно переиспользовать
+       тот же `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET`, что уже в Vercel для
+       Docs/Drive (тот же GCP-проект, просто нужно включить в нём "Search
+       Console API" в Google Cloud Console, если ещё не включён) — не
+       обязательно заводить новый OAuth-клиент.
+     - `src/data/googleSearchConsoleStats.ts` + `src/lib/
+       googleSearchConsoleStatsApi.ts` — стандартная связка `fromRow`/
+       `fetchGoogleSearchConsoleStats()`.
+     - `SiteMetrics.tsx` — новый блок "Индексация в Google (Search Console)"
+       сразу под блоком Яндекс.Вебмастера, тот же принцип защитного
+       `.catch(() => [])` на фетч (не роняет страницу, если сервис ещё не
+       подключён) — при пустых данных вместо блока показывается явная
+       карточка "Google Search Console пока не подключён..." со ссылкой на
+       сам скрипт авторизации, а не молчаливое отсутствие раздела.
+  4. **Что нужно от владельца, чтобы Google заработал**: (а) убедиться, что
+     redevelopment.pro добавлен и подтверждён как свойство в
+     search.google.com/search-console (без этого Search Console API нечего
+     возвращать, это отдельный от OAuth шаг); (б) `GOOGLE_OAUTH_CLIENT_ID=...
+     GOOGLE_OAUTH_CLIENT_SECRET=... node scripts/get-google-search-console-
+     refresh-token.mjs` на своей машине, зайти по ссылке из терминала под
+     тем же Google-аккаунтом; (в) прислать client_id/client_secret/
+     refresh_token в чат — следующая сессия вставит их в `external_api_tokens`
+     (service='google_search_console') через Management API тем же приёмом,
+     что и раньше с токеном Яндекса, и прогонит синк вручную через
+     `workflow_dispatch`, дальше — по расписанию.
+  Проверено: `npx tsc -b`/`npx vite build` чистые; мок-тестом (Playwright,
+  временный `/__test-metrics` роут в обход `PasswordGate`, `page.route()`
+  на все 6 таблиц включая `google_search_console_stats`) — оба состояния
+  блока Google (с данными — "Проиндексировано страниц: 91"/"Отправлено в
+  sitemap: 285" верно вычислены из строки с непустым `pages_indexed`, а не
+  из последней по дате; без данных — явное сообщение про неподключённость,
+  блок Яндекса не задет) отрендерены корректно. Живой вызов Search Console
+  API нигде не проверен — токена ни у кого ещё нет, первая реальная
+  проверка синка будет после того, как владелец пришлёт credentials.
+
 - **2026-09-10 — «Показатели»: /admin/* исключён из статистики посещаемости
   на уровне источника (не постфактум-фильтром), + фильтр в самом запросе
   Stats API почистил и уже накопленную историю.** Владелец, увидев первые

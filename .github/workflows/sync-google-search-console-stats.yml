@@ -1,0 +1,23 @@
+name: Sync Google Search Console stats
+
+on:
+  schedule:
+    # Раз в сутки — у Search Console данные по запросам и так с лагом
+    # 2-3 дня, чаще опрашивать смысла нет. Сдвинуто от sync-yandex-webmaster-
+    # stats.yml (05:00), чтобы не запускаться одновременно.
+    - cron: '15 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/sync-google-search-console-stats.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

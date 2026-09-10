@@ -13,6 +13,8 @@ import {
 import type { MetrikaDailyStat, MetrikaTrafficSource, MetrikaTopPage, MetrikaGoalCompletion } from '../data/metrikaStats';
 import { fetchYandexWebmasterStats } from '../lib/yandexWebmasterStatsApi';
 import type { YandexWebmasterStat } from '../data/yandexWebmasterStats';
+import { fetchGoogleSearchConsoleStats } from '../lib/googleSearchConsoleStatsApi';
+import type { GoogleSearchConsoleStat } from '../data/googleSearchConsoleStats';
 
 // Показатели посещаемости сайта из Яндекс.Метрики (счётчик 111858495) —
 // не отчёт по staff-активности (это отдельная /admin/metrics, RequireSuperAdmin,
@@ -35,6 +37,12 @@ import type { YandexWebmasterStat } from '../data/yandexWebmasterStats';
 // заводить отдельную. impressions/clicks/avgPosition у молодого сайта
 // почти наверняка null (сам синк-скрипт это документирует) — компонент
 // должен честно показывать "данных пока нет", а не подставлять нули.
+//
+// Второй такой же блок — "Индексация в Google" (scripts/sync-google-
+// search-console-stats.mjs, 2026-09-10) — тот же принцип: отдельный
+// try/catch на фетч (нет токена/ещё не подключено — блок просто не
+// рендерится, не роняет страницу), pagesIndexed — состояние на сегодня,
+// не сумма по дням.
 
 type PeriodDays = 7 | 30 | 90;
 const PERIOD_LABELS: Record<PeriodDays, string> = { 7: '7 дней', 30: '30 дней', 90: '90 дней' };
@@ -175,6 +183,7 @@ export function SiteMetrics() {
   const [topPages, setTopPages] = useState<MetrikaTopPage[] | null>(null);
   const [goalCompletions, setGoalCompletions] = useState<MetrikaGoalCompletion[] | null>(null);
   const [webmasterStats, setWebmasterStats] = useState<YandexWebmasterStat[] | null>(null);
+  const [googleStats, setGoogleStats] = useState<GoogleSearchConsoleStat[] | null>(null);
   const [error, setError] = useState('');
   const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
 
@@ -184,17 +193,20 @@ export function SiteMetrics() {
       fetchMetrikaTrafficSources(),
       fetchMetrikaTopPages(),
       fetchMetrikaGoalCompletions(),
-      // Отдельный try/catch: если синк Вебмастера ещё ни разу не прошёл
-      // или упал, это не должно ронять всю страницу — её главный предмет
+      // Отдельный try/catch на каждый источник поисковой индексации: если
+      // синк ещё ни разу не прошёл, упал, или сервис ещё не подключён
+      // (Google), это не должно ронять всю страницу — её главный предмет
       // всё равно Метрика.
       fetchYandexWebmasterStats().catch(() => []),
+      fetchGoogleSearchConsoleStats().catch(() => []),
     ])
-      .then(([daily, traffic, pages, goals, webmaster]) => {
+      .then(([daily, traffic, pages, goals, webmaster, google]) => {
         setDailyStats(daily);
         setTrafficSources(traffic);
         setTopPages(pages);
         setGoalCompletions(goals);
         setWebmasterStats(webmaster);
+        setGoogleStats(google);
       })
       .catch(() => setError('Не удалось загрузить показатели.'));
   }, []);
@@ -224,6 +236,16 @@ export function SiteMetrics() {
     return null;
   }, [currentWebmaster]);
   const hasSearchQueryData = currentWebmaster.some((d) => d.impressions !== null || d.clicks !== null);
+
+  const currentGoogle = useMemo(() => (googleStats ?? []).slice(-periodDays), [googleStats, periodDays]);
+  const latestGoogleCoverage = useMemo(() => {
+    for (let i = currentGoogle.length - 1; i >= 0; i--) {
+      const d = currentGoogle[i];
+      if (d.pagesIndexed !== null || d.pagesSubmitted !== null) return d;
+    }
+    return null;
+  }, [currentGoogle]);
+  const hasGoogleQueryData = currentGoogle.some((d) => d.impressions !== null || d.clicks !== null);
 
   const maxUpdatedAt = useMemo(() => {
     const dates = (trafficSources ?? []).map((s) => s.updatedAt);
@@ -394,6 +416,54 @@ export function SiteMetrics() {
                     .map((d) => ({ date: d.date, value: d.pagesInSearch as number }))}
                 />
               </div>
+            </Card>
+          )}
+
+          {currentGoogle.length > 0 && (
+            <Card className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-ink">Индексация в Google (Search Console)</h3>
+                <p className="text-xs text-ink-muted">
+                  «Проиндексировано» — по данным Sitemap в Search Console, не по всем URL сайта, а по тем, что перечислены
+                  в sitemap.xml.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiTile
+                  label="Проиндексировано страниц"
+                  value={
+                    latestGoogleCoverage?.pagesIndexed !== null && latestGoogleCoverage?.pagesIndexed !== undefined
+                      ? latestGoogleCoverage.pagesIndexed.toLocaleString('ru-RU')
+                      : '—'
+                  }
+                />
+                <KpiTile
+                  label="Отправлено в sitemap"
+                  value={
+                    latestGoogleCoverage?.pagesSubmitted !== null && latestGoogleCoverage?.pagesSubmitted !== undefined
+                      ? latestGoogleCoverage.pagesSubmitted.toLocaleString('ru-RU')
+                      : '—'
+                  }
+                />
+                {hasGoogleQueryData ? (
+                  <>
+                    <KpiTile label="Показы в поиске" value={sum(currentGoogle.map((d) => d.impressions)).toLocaleString('ru-RU')} />
+                    <KpiTile label="Клики из поиска" value={sum(currentGoogle.map((d) => d.clicks)).toLocaleString('ru-RU')} />
+                  </>
+                ) : (
+                  <div className="flex items-center sm:col-span-2">
+                    <p className="text-sm text-ink-muted">
+                      Данных по показам/кликам пока нет — сайт ещё молодой в поиске Google, либо запросов слишком мало.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </Card>
+          )}
+          {webmasterStats !== null && googleStats !== null && currentWebmaster.length > 0 && currentGoogle.length === 0 && (
+            <Card className="text-sm text-ink-muted">
+              Google Search Console пока не подключён — данные по индексации в Google появятся здесь, как только
+              владелец пройдёт разовую авторизацию (см. scripts/get-google-search-console-refresh-token.mjs).
             </Card>
           )}
 
