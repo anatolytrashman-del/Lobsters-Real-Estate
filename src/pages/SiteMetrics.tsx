@@ -70,6 +70,112 @@ function average(values: (number | null)[]): number | null {
   return sum(present) / present.length;
 }
 
+// Метрика отдаёт ym:s:lastTrafficSource английскими категориями (не
+// локализованным текстом, как ожидалось при первой реализации — см. журнал
+// CLAUDE.md 2026-09-10) — переводим на отображении, не трогая сырое
+// значение в базе (сравнение/группировка синка остаются по нему). Ключи —
+// ровно те категории, что реально документирует Метрика; неизвестное
+// значение показывается как есть, не прячется.
+const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
+  'Direct traffic': 'Прямые заходы',
+  'Internal traffic': 'Внутренние переходы',
+  'Search engine traffic': 'Переходы из поисковых систем',
+  'Link traffic': 'Переходы по ссылкам на сайтах',
+  'Referral traffic': 'Переходы по ссылкам на сайтах',
+  'Social network traffic': 'Переходы из социальных сетей',
+  'Recommendation system traffic': 'Переходы из рекомендательных систем',
+  'Ad traffic': 'Переходы по рекламе',
+  'Messenger traffic': 'Переходы из мессенджеров',
+  'Email traffic': 'Переходы с email-рассылок',
+  'QR-code traffic': 'Переходы по QR-коду',
+  'Not determined': 'Не определено',
+  'Other traffic': 'Прочие переходы',
+};
+
+function trafficSourceLabel(source: string): string {
+  return TRAFFIC_SOURCE_LABELS[source] ?? source;
+}
+
+// Понятная подпись строки в "Топ страниц" вместо сырого пути — по известным
+// маршрутам из App.tsx, регэкспы под динамические сегменты (:slug/:token и
+// т.п.). Хэш (#якорь — попадает в данные только с ПЕРВОЙ загрузки страницы,
+// см. index.html — ym('init',{url: location.href}) включает хэш, а
+// последующие SPA-хиты в App.tsx — нет) не участвует в сопоставлении
+// маршрута, но дописывается к подписи отдельно, чтобы не терять инфу о
+// конкретном якоре. Неизвестный путь — возвращается как есть, не гадаем.
+function readablePageLabel(fullPath: string): string {
+  const hashIndex = fullPath.indexOf('#');
+  const base = hashIndex === -1 ? fullPath : fullPath.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? '' : fullPath.slice(hashIndex + 1);
+  const label = resolvePageBaseLabel(base);
+  return hash ? `${label} · #${hash}` : label;
+}
+
+function resolvePageBaseLabel(base: string): string {
+  const STATIC_LABELS: Record<string, string> = {
+    '/minsk': 'Хаб /minsk (комплексы, гиды, аналитика)',
+    '/minsk/analytics': 'Аналитика рынка — хаб',
+    '/minsk/analytics/metodika': 'Аналитика — методика',
+    '/minsk/analytics/ofisy/arenda': 'Аналитика — офисы (аренда)',
+    '/minsk/analytics/ofisy/prodazha': 'Аналитика — офисы (продажа)',
+    '/minsk/analytics/torgovye/arenda': 'Аналитика — торговые (аренда)',
+    '/minsk/analytics/torgovye/prodazha': 'Аналитика — торговые (продажа)',
+    '/minsk/analytics/sklady/arenda': 'Аналитика — склады (аренда)',
+    '/minsk/analytics/sklady/prodazha': 'Аналитика — склады (продажа)',
+    '/minsk/analytics/mashinomesta/arenda': 'Аналитика — машиноместа (аренда)',
+    '/minsk/analytics/mashinomesta/prodazha': 'Аналитика — машиноместа (продажа)',
+    '/minsk/analytics/minsk-mir': 'Аналитика — Минск Мир',
+    '/minsk/analytics/rajony': 'Аналитика — сравнение районов',
+    '/minsk/minsk-mir': 'Гид района — Минск Мир',
+    '/minsk/bcminsk': 'Каталог бизнес-центров',
+    '/minsk/bcminsk/stroyashchiesya': 'БЦ — строящиеся',
+    '/minsk/bcminsk/reyting': 'Рейтинг бизнес-центров',
+    '/rayon-minsk-mir': 'Гид района (старая ссылка)',
+    '/business-upload': 'Форма загрузки организаций',
+  };
+  if (STATIC_LABELS[base]) return STATIC_LABELS[base];
+
+  // Известные объекты — с человеческим названием, остальные лендинги
+  // объектов (/minsk/:slug) — общим шаблоном по слагу.
+  const KNOWN_OBJECT_LABELS: Record<string, string> = {
+    one: 'Лендинг Red One',
+    redstorage: 'Лендинг Red Storage',
+  };
+
+  const patterns: [RegExp, (m: RegExpMatchArray) => string][] = [
+    [/^\/minsk\/minsk-mir\/([^/]+)$/, (m) => `Гид района — тема «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/class\/([^/]+)\/raion\/([^/]+)$/, (m) => `БЦ — класс «${m[1]}», район «${m[2]}»`],
+    [/^\/minsk\/bcminsk\/class\/([^/]+)$/, (m) => `БЦ — класс «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/raion\/([^/]+)$/, (m) => `БЦ — район «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/microrayon\/([^/]+)$/, (m) => `БЦ — микрорайон «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/metro\/([^/]+)$/, (m) => `БЦ — метро «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/ulitsa\/([^/]+)$/, (m) => `БЦ — улица «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/([^/]+)$/, (m) => `Бизнес-центр «${m[1]}»`],
+    [/^\/minsk\/analytics\/([^/]+)$/, (m) => `Аналитика — район «${m[1]}»`],
+    [/^\/plan\/[^/]+$/, () => 'Бронирование по ссылке'],
+    [/^\/tz\/[^/]+$/, () => 'ТЗ по ссылке'],
+    [/^\/summary\/[^/]+$/, () => 'Саммери встречи по ссылке'],
+    [/^\/estimate\/[^/]+$/, () => 'Смета по ссылке'],
+    [/^\/minsk\/([^/]+)$/, (m) => KNOWN_OBJECT_LABELS[m[1]] ?? `Лендинг «${m[1]}»`],
+  ];
+  for (const [pattern, build] of patterns) {
+    const m = base.match(pattern);
+    if (m) return build(m);
+  }
+  return base;
+}
+
+function pluralPages(n: number): string {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return 'страниц';
+  if (mod10 === 1) return 'страница';
+  if (mod10 >= 2 && mod10 <= 4) return 'страницы';
+  return 'страниц';
+}
+
+const VISIBLE_TOP_PAGES = 5;
+
 interface ChangeBadgeProps {
   current: number;
   previous: number;
@@ -177,6 +283,7 @@ export function SiteMetrics() {
   const [webmasterStats, setWebmasterStats] = useState<YandexWebmasterStat[] | null>(null);
   const [error, setError] = useState('');
   const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
+  const [topPagesExpanded, setTopPagesExpanded] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -409,7 +516,7 @@ export function SiteMetrics() {
                 {(trafficSources ?? []).map((s) => (
                   <div key={s.source} className="flex flex-col gap-1">
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-ink">{s.source}</span>
+                      <span className="text-ink">{trafficSourceLabel(s.source)}</span>
                       <span className="text-ink-muted">
                         {s.visits.toLocaleString('ru-RU')}
                         {totalTrafficVisits > 0 && (
@@ -439,20 +546,31 @@ export function SiteMetrics() {
                 </p>
               </div>
               <div className="flex flex-col divide-y divide-border">
-                {(topPages ?? []).map((p) => (
+                {(topPagesExpanded ? (topPages ?? []) : (topPages ?? []).slice(0, VISIBLE_TOP_PAGES)).map((p) => (
                   <div key={p.path} className="relative flex items-center justify-between gap-3 py-2 text-sm">
                     <div
                       className="absolute inset-y-0 left-0 -z-10 rounded bg-primary/10"
                       style={{ width: `${(p.pageviews / maxTopPageviews) * 100}%` }}
                     />
                     <span className="truncate text-ink" title={p.path}>
-                      {p.path}
+                      {readablePageLabel(p.path)}
                     </span>
                     <span className="shrink-0 font-medium text-ink">{p.pageviews.toLocaleString('ru-RU')}</span>
                   </div>
                 ))}
                 {(topPages ?? []).length === 0 && <p className="text-sm text-ink-muted">Пока нет данных по страницам.</p>}
               </div>
+              {(topPages ?? []).length > VISIBLE_TOP_PAGES && (
+                <button
+                  type="button"
+                  onClick={() => setTopPagesExpanded((v) => !v)}
+                  className="self-start text-sm text-primary hover:underline"
+                >
+                  {topPagesExpanded
+                    ? 'Свернуть'
+                    : `Показать ещё ${(topPages ?? []).length - VISIBLE_TOP_PAGES} ${pluralPages((topPages ?? []).length - VISIBLE_TOP_PAGES)}`}
+                </button>
+              )}
             </Card>
           </div>
         </div>
