@@ -102,16 +102,27 @@ function splitQuotedReply(body: string): { visible: string; quoted: string | nul
 // Владелец, тем же сообщением: "нужна возможность отвечать на это письмо,
 // чтобы сохранялся и заголовок, и вся предыдущая история" — "Ответить" на
 // конкретном письме треда подставляет в форму тему с "Re:" (если её там ещё
-// нет) и цитату этого письма целиком (как в обычном email-клиенте, ">" на
-// каждую строку + преамбула с датой/отправителем), а не пустой черновик.
-function buildQuotedReply(e: SupplierOfferEmail): { subject: string; body: string } {
+// нет) и цитату этого письма (как в обычном email-клиенте, ">" на каждую
+// строку + преамбула с датой/отправителем).
+//
+// Владелец, 2026-09-10: реальный баг предыдущей версии — цитата
+// ВСТАВЛЯЛАСЬ прямо в поле "Сообщение" (через window.confirm "Заменить
+// черновик цитатой?"), из-за чего повторный клик на "Ответить" цитировал
+// уже процитированный текст — видимого изменения не было, выглядело как
+// "ничего не добавляется". Теперь цитата — отдельное состояние
+// (quotedReplyText, см. ниже), не смешивается с тем, что печатает
+// пользователь: поле "Сообщение" остаётся только под собственный ответ
+// (как верхняя часть письма в обычном email-клиенте), а цитата показывается
+// отдельным свёрнутым блоком под ним ("под катом") и подклеивается к телу
+// только в момент отправки (см. handleSend). Больше никакого confirm().
+function buildQuotedReply(e: SupplierOfferEmail): { subject: string; quoted: string } {
   const subject = /^re:/i.test(e.subject.trim()) ? e.subject : `Re: ${e.subject}`;
   const preamble = `${new Date(e.createdAt).toLocaleString('ru-RU')}, ${e.fromAddress} писал(а):`;
   const quotedLines = e.body
     .split('\n')
     .map((line) => `> ${line}`)
     .join('\n');
-  return { subject, body: `\n\n${preamble}\n${quotedLines}` };
+  return { subject, quoted: `${preamble}\n${quotedLines}` };
 }
 
 // Распознавание счёта/КП из вложения (владелец, 2026-09-03: "давай подумаем,
@@ -413,6 +424,14 @@ export function EmailThread({
   // Открыта по умолчанию только когда в треде вообще ещё нет писем — иначе
   // первое письмо было бы физически некому "ответить".
   const [composerOpen, setComposerOpen] = useState(threadEmails.length === 0);
+  // Цитата письма, на которое отвечаем (владелец, 2026-09-10: "как в
+  // обычном email-ящике: нажал ответить, оно сохранило всю переписку под
+  // катом, а сверху уже пишешь ответ свой") — отдельно от body (то, что
+  // печатает пользователь), не смешивается с ним: подклеивается к телу
+  // только в момент отправки (см. handleSend). quotedReplyExpanded —
+  // свёрнута ли цитата в форме ("под катом" по умолчанию).
+  const [quotedReplyText, setQuotedReplyText] = useState<string | null>(null);
+  const [quotedReplyExpanded, setQuotedReplyExpanded] = useState(false);
   // Предпросмотр вложения (владелец: "мне бы предпросмотр, как договора") —
   // просто просмотр PDF/докс/картинки прямо в приложении, без ручной кнопки
   // распознавания (была здесь, убрана владельцем 2026-09-03 — см. комментарий
@@ -445,6 +464,8 @@ export function EmailThread({
     setComposerOpen(!hasHistory);
     setPendingLedger(null);
     setSkipOrgCard(false);
+    setQuotedReplyText(null);
+    setQuotedReplyExpanded(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offer.id, order?.id]);
 
@@ -469,11 +490,13 @@ export function EmailThread({
   }
 
   function handleReplyTo(e: SupplierOfferEmail) {
-    if ((subject.trim() || body.trim()) && !window.confirm('Заменить черновик цитатой этого письма?')) return;
+    // Не трогаем body — там только то, что печатает пользователь, цитата
+    // живёт отдельно (quotedReplyText) и подклеивается только при отправке
+    // (см. handleSend). Никакого confirm() — заменять здесь нечего.
     const quoted = buildQuotedReply(e);
     setSubject(quoted.subject);
-    setBody(quoted.body);
-    setSelectedTemplateId('');
+    setQuotedReplyText(quoted.quoted);
+    setQuotedReplyExpanded(false);
     setComposerOpen(true);
   }
 
@@ -570,16 +593,23 @@ export function EmailThread({
       const orgCardAttachment =
         attachOrgCard && legalEntity?.cardFile ? await fetchDocumentFileAsAttachment(legalEntity.cardFile) : null;
       const attachments = [...(pendingLedger ? [pendingLedger] : []), ...(orgCardAttachment ? [orgCardAttachment] : [])];
+      // Цитата (quotedReplyText) живёт отдельно от того, что печатает
+      // пользователь, весь черновик — только теперь, на отправку, склеиваем
+      // их в одно письмо (получатель должен видеть всю историю, как и
+      // раньше, просто пока пишем ответ — не смешано в одном textarea).
+      const fullBody = quotedReplyText ? `${body.trim()}\n\n${quotedReplyText}` : body;
       const email = await sendSupplierOfferEmail({
         offerId: offer.id,
         orderId: order?.id ?? null,
         toAddress: offer.email,
         subject,
-        body,
+        body: fullBody,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
       onEmailSent(email);
       setBody('');
+      setQuotedReplyText(null);
+      setQuotedReplyExpanded(false);
       setComposerOpen(false);
       setPendingLedger(null);
     } catch (err) {
@@ -817,6 +847,40 @@ export function EmailThread({
           <Input label="Тема" value={subject} onChange={(e) => setSubject(e.target.value)} />
           <Textarea label="Сообщение" rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
 
+          {/* Владелец, 2026-09-10: "как в обычном email-ящике: нажал
+              ответить, оно сохранило всю переписку под катом, а сверху уже
+              пишешь ответ свой" — цитата письма, на которое отвечаем,
+              показана отдельным свёрнутым блоком под полем "Сообщение", не
+              смешана с тем, что печатает пользователь (см. quotedReplyText).
+              Разворачивается тем же паттерном, что и цитаты внутри самих
+              писем выше (toggleQuoteExpanded). Крестик снимает цитирование
+              вовсе — письмо уйдёт без истории, если она не нужна. */}
+          {quotedReplyText && (
+            <div className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setQuotedReplyExpanded((v) => !v)}
+                  className="flex items-center gap-1 text-xs text-ink-faint hover:text-ink"
+                >
+                  {quotedReplyExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  {quotedReplyExpanded ? 'Скрыть историю переписки' : 'Показать историю переписки'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuotedReplyText(null)}
+                  aria-label="Не прикреплять историю переписки к ответу"
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {quotedReplyExpanded && (
+                <div className="whitespace-pre-wrap border-l-2 border-border pl-2 text-xs text-ink-faint">{quotedReplyText}</div>
+              )}
+            </div>
+          )}
+
           {/* Владелец, 2026-09-03: "функционал прикрепления ведомостей
               материалов к письму" — ведомость выбирается/собирается в
               отдельной модалке (готовый пресет или позиции запроса), здесь
@@ -880,7 +944,16 @@ export function EmailThread({
 
           {sendError && <p className="text-sm text-danger">{sendError}</p>}
           <div className="flex items-center justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setComposerOpen(false)} disabled={sending}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setComposerOpen(false);
+                setQuotedReplyText(null);
+                setQuotedReplyExpanded(false);
+              }}
+              disabled={sending}
+            >
               Отмена
             </Button>
             <Button
