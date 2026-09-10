@@ -126,13 +126,20 @@ export function PrimaryMarketProModal({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
+  // Предположительно проданные (soldAt задан) объекты сюда не должны
+  // попадать вовсе — этот блок про то, что СЕЙЧАС в продаже, тот же принцип,
+  // что и у buildPrimaryMarketPivot (data/primaryMarketOffers.ts), только
+  // модалка фильтрует сама, не через ту функцию — берёт свои разрезы
+  // (гистограмма/по площади/по домам) напрямую из сырых offers.
+  const activeOffers = useMemo(() => offers.filter((o) => !o.soldAt), [offers]);
+
   const availableTabs = useMemo(
-    () => PRIMARY_MARKET_ROW_ORDER.filter((row) => offers.some(row.filter)),
-    [offers],
+    () => PRIMARY_MARKET_ROW_ORDER.filter((row) => activeOffers.some(row.filter)),
+    [activeOffers],
   );
   const selected = availableTabs.find((row) => row.key === selectedKey) ?? availableTabs[0];
 
-  const matched = useMemo(() => (selected ? offers.filter(selected.filter) : []), [offers, selected]);
+  const matched = useMemo(() => (selected ? activeOffers.filter(selected.filter) : []), [activeOffers, selected]);
   const prices = useMemo(() => matched.map(primaryNetPricePerM2Eur), [matched]);
   const areas = useMemo(() => matched.map(primaryNetAreaM2), [matched]);
   const histogram = useMemo(() => buildHistogram(prices), [prices]);
@@ -144,14 +151,14 @@ export function PrimaryMarketProModal({
   // обе стадии в данных (иначе сравнивать не с чем).
   const stageComparison = useMemo(() => {
     if (!selected?.key.startsWith('apartments-')) return null;
-    const sdano = offers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Сдано');
-    const stroitsya = offers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Строится');
+    const sdano = activeOffers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Сдано');
+    const stroitsya = activeOffers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Строится');
     if (sdano.length === 0 || stroitsya.length === 0) return null;
     const sdanoMedian = median(sdano.map(primaryNetPricePerM2Eur));
     const stroitsyaMedian = median(stroitsya.map(primaryNetPricePerM2Eur));
     const diffPct = Math.round(((sdanoMedian - stroitsyaMedian) / stroitsyaMedian) * 100);
     return { sdanoMedian: Math.round(sdanoMedian), stroitsyaMedian: Math.round(stroitsyaMedian), diffPct };
-  }, [selected, offers]);
+  }, [selected, activeOffers]);
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">

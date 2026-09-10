@@ -493,25 +493,72 @@ async function launchBrowser() {
 
 // true — полный рендер headless-браузером (см. комментарий про быстрый/
 // полный режим в шапке файла), false — быстрое скачивание с живого прода.
+//
+// 2026-09-10 — реальный баг, пойманный владельцем на живом проде: билды
+// снова стали занимать ~9 минут вместо ~1, «рендерит вообще все страницы,
+// включая бизнес-центры». Причина — старая версия просто читала
+// triggered_at и сравнивала с окном FORCE_FULL_RECENT_MS (15 минут): КАЖДЫЙ
+// билд, попавший в это окно, уходил в полный рендер, не только тот, что
+// реально запустил Deploy Hook по сохранению объекта. Живой инцидент
+// (проверено через Vercel API + Management API): сохранение объекта в
+// 10:47:53 выставило triggered_at → ручной Redeploy владельца в 10:48:08
+// (15с спустя) попал в окно и занял 547с; следующий обычный пуш кода в
+// 10:50:24 — тоже попал в то же окно (ещё < 15 минут прошло) и тоже ушёл в
+// полный рендер, хотя не имел отношения к тому сохранению. При активной
+// работе (пуши раз в несколько минут) это означает каскад медленных
+// сборок от одного-единственного сохранения объекта.
+//
+// Настоящий инвариант, который нужен: НЕ «каждый билд в окне N минут», а
+// «хотя бы ОДИН прод-билд после сохранения объекта должен сделать полный
+// рендер с живыми данными» — дальше все остальные fast-режимные билды и
+// так корректно скопируют уже посвежевший прод (fetchPathLive читает
+// ЖИВУЮ страницу, а не конкретный git-коммит — какой именно билд сделал
+// полный рендер, не важно, лишь бы хоть один). Поэтому вместо временного
+// окна — атомарное «потребление один раз» (PATCH ... WHERE consumed_at IS
+// NULL RETURNING ...): первый прод-билд, дошедший до этой проверки после
+// триггера, забирает флаг и делает полный рендер, ВСЕ последующие видят
+// его уже потреблённым и идут быстрым путём, даже если попали в то же
+// «окно». FORCE_FULL_RECENT_MS остаётся подстраховкой на случай, если
+// очередь Vercel аномально большая — не потреблять флаг, если он старше
+// этого возраста (не зависать в полном режиме навечно из-за протухшего
+// триггера).
+//
+// Preview/dev-сборки исключены из потребления флага совсем (не SEO-
+// критичны, никто их не индексирует) — иначе гонка «кто первый прочитает»
+// между прод- и preview-билдом одного и того же пуша могла бы отдать флаг
+// preview, оставив прод на устаревшем быстром снапшоте. Неизвестный/не
+// проставленный VERCEL_ENV — НЕ считается «точно preview», падаем в общую
+// логику ниже (безопасный дефолт этой функции — при любой неуверенности
+// полный рендер, не тихая регрессия).
 async function shouldForceFullPrerender() {
   if (process.env.PRERENDER_FORCE_FULL === '1') return true;
   if (!process.env.VERCEL) return true; // локальный/ручной прогон — как и раньше, всегда полный
+  if (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') return false;
   if (!SUPABASE_SERVICE_ROLE_KEY) {
     console.warn('[prerender] SUPABASE_SERVICE_ROLE_KEY не задан — не могу проверить deploy_debounce, полный режим');
     return true;
   }
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&select=triggered_at`, {
-      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const cutoffIso = new Date(Date.now() - FORCE_FULL_RECENT_MS).toISOString();
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&consumed_at=is.null&triggered_at=gt.${encodeURIComponent(cutoffIso)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({ consumed_at: new Date().toISOString() }),
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
     if (!res.ok) return true;
     const rows = await res.json();
-    const triggeredAt = rows[0]?.triggered_at;
-    if (!triggeredAt) return false; // хук по данным ещё ни разу не срабатывал — обычный пуш, быстрый режим
-    return Date.now() - new Date(triggeredAt).getTime() < FORCE_FULL_RECENT_MS;
+    return rows.length > 0; // забрали флаг первыми — наш билд делает полный рендер
   } catch (err) {
-    console.warn('[prerender] не удалось проверить deploy_debounce — полный режим на всякий случай:', err);
+    console.warn('[prerender] не удалось проверить/потребить deploy_debounce — полный режим на всякий случай:', err);
     return true;
   }
 }

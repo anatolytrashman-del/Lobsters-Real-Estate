@@ -6,12 +6,16 @@ import type { PrimaryMarketOffer, PrimaryMarketOfferRow } from '../data/primaryM
 // PrimaryMarketProModal фактически используют только эти 6 полей из 13
 // (не house/floor/unitNumber/complex/adLink/source/externalId/scrapedAt) —
 // узкий select не только режет трафик (~6 158 строк × 13 полей → 6), но и
-// снимает часть нагрузки с pgrst на каждый заход страницы.
-const SELECT_COLUMNS = 'id, category, house, area_m2, terrace_area_m2, stage, price_total_eur';
+// снимает часть нагрузки с pgrst на каждый заход страницы. sold_at добавлен
+// 2026-09-10 — нужен и для сводки "что сейчас на рынке" (buildPrimaryMarketPivot
+// теперь сам исключает проданное), и для новой сводки "продажи застройщика"
+// (buildPrimarySalesSummary) — оба потребителя уже есть у этого фетча,
+// седьмое поле не расширяет число мест, которые его вызывают.
+const SELECT_COLUMNS = 'id, category, house, area_m2, terrace_area_m2, stage, price_total_eur, sold_at';
 
 type NarrowRow = Pick<
   PrimaryMarketOfferRow,
-  'id' | 'category' | 'house' | 'area_m2' | 'terrace_area_m2' | 'stage' | 'price_total_eur'
+  'id' | 'category' | 'house' | 'area_m2' | 'terrace_area_m2' | 'stage' | 'price_total_eur' | 'sold_at'
 >;
 
 function fromRow(row: NarrowRow): PrimaryMarketOffer {
@@ -35,6 +39,7 @@ function fromRow(row: NarrowRow): PrimaryMarketOffer {
     priceTotalEur: row.price_total_eur,
     adLink: null,
     scrapedAt: '',
+    soldAt: row.sold_at,
   };
 }
 

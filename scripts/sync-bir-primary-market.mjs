@@ -60,15 +60,27 @@
 // Проданные/снятые объекты — та же идея, что и pruneDeadOffers в
 // sync-kufar-market-offers.mjs/sync-realt-market-offers.mjs (не доверять
 // одному "не нашли в свежем скрейпе" — это может быть и сбоем скрейпа, не
-// только продажей), но проще: у primary_market_offers нет ручной верификации
-// (владелец подтвердил, что она тут не нужна), поэтому подтверждённо
-// пропавшие строки не помечаются "не подходит", а удаляются по-настоящему —
-// см. pruneStaleOffers ниже. HANDLED_CATEGORIES — категории, которые этот
-// скрипт реально собирает; "Машиноместа (крытые/подземные)" сюда НЕ входят —
-// та часть primary_market_offers дозагружена отдельным разовым запуском (см.
+// только продажей). HANDLED_CATEGORIES — категории, которые этот скрипт
+// реально собирает; "Машиноместа (крытые/подземные)" сюда НЕ входят — та
+// часть primary_market_offers дозагружена отдельным разовым запуском (см.
 // комментарий в начале файла) и этим скриптом не обновляется вовсе — если
-// не исключить эти категории явно, чистка стёрла бы их целиком при каждом
-// прогоне (в свежем скрейпе их никогда и не будет).
+// не исключить эти категории явно, чистка решила бы, что все они пропали, и
+// пометила бы их разом при каждом прогоне (в свежем скрейпе их никогда и не
+// будет).
+//
+// 2026-09-10, второй заход (владелец: "раз у нас есть инфа, сколько юнитов
+// снял с сайта застройщик, значит у нас есть инфа по продажам застройщика,
+// я бы выводил эту инфу") — первая версия этой чистки подтверждённо мёртвые
+// строки физически УДАЛЯЛА (аргумент был "у primary_market_offers нет
+// ручной верификации, сохранять для истории нечего") — но раз владелец
+// хочет считать по ним статистику продаж на публичных страницах, удалять
+// стало нельзя: вместо DELETE строка помечается `sold_at` (когда именно
+// подтвердилось снятие) и остаётся в базе — она просто перестаёт попадать
+// в сводку "что сейчас на рынке" (см. buildPrimaryMarketPivot в
+// src/data/primaryMarketOffers.ts, фильтрует по !soldAt) и начинает
+// попадать в новую сводку "продажи застройщика" (buildPrimarySalesSummary,
+// там же). Кандидаты на проверку теперь исключают уже помеченные —
+// незачем повторно бить по ссылке объект, который уже подтверждённо снят.
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -270,12 +282,14 @@ async function checkLinkAlive(url) {
   return null; // сеть не ответила дважды подряд — не судим, пропускаем строку
 }
 
-// Удаляет по-настоящему проданные/снятые объекты (см. большой комментарий в
-// начале файла про HANDLED_CATEGORIES). Скоуп — ТОЛЬКО категории, которые
+// Помечает подтверждённо проданные/снятые объекты (`sold_at`, не удаляет —
+// см. большой комментарий в начале файла). Скоуп — ТОЛЬКО категории, которые
 // этот скрипт реально собирает, и ТОЛЬКО те из них, где свежий скрейп дал
 // хоть один результат (пустой список для категории — вероятнее сбой
 // скрейпа, чем "распродали всё подчистую разом" — в этом случае существующие
-// строки этой категории не трогаем вовсе, до следующего прогона).
+// строки этой категории не трогаем вовсе, до следующего прогона). Уже
+// помеченные (`sold_at` не null) исключены из кандидатов — не бьём повторно
+// по ссылке объекта, который уже подтверждённо снят в прошлый раз.
 async function pruneStaleOffers(offers) {
   const freshIdsByCategory = new Map(HANDLED_CATEGORIES.map((c) => [c, new Set()]));
   for (const o of offers) {
@@ -295,6 +309,7 @@ async function pruneStaleOffers(offers) {
       .select('id, external_id, ad_link')
       .eq('source', 'bir.by')
       .eq('category', category)
+      .is('sold_at', null)
       .not('external_id', 'in', `(${[...freshIds].map((id) => `"${id}"`).join(',')})`);
     if (error) throw error;
     if (!candidates || candidates.length === 0) continue;
@@ -312,9 +327,10 @@ async function pruneStaleOffers(offers) {
     return;
   }
 
-  const { error: deleteError } = await supabase.from('primary_market_offers').delete().in('id', deadIds);
-  if (deleteError) throw deleteError;
-  console.log(`bir.by: ${deadIds.length} проданных/снятых объектов удалено из primary_market_offers.`);
+  const now = new Date().toISOString();
+  const { error: updateError } = await supabase.from('primary_market_offers').update({ sold_at: now }).in('id', deadIds);
+  if (updateError) throw updateError;
+  console.log(`bir.by: ${deadIds.length} объектов помечены как проданные/снятые (sold_at=${now}).`);
 }
 
 async function main() {
@@ -341,11 +357,20 @@ async function main() {
     return;
   }
 
+  // sold_at: null явно на каждой строке — всё, что попало в свежий скрейп,
+  // сейчас на 100% в продаже. Без этого объект, который был помечен
+  // проданным в прошлом прогоне, а потом ВЕРНУЛСЯ на сайт (сорвавшаяся
+  // бронь, повторный листинг) навсегда остался бы исключён из сводки "что
+  // сейчас на рынке" (buildPrimaryMarketPivot фильтрует по !soldAt) — этот
+  // upsert иначе не тронул бы sold_at вовсе (PostgREST обновляет при
+  // конфликте только колонки, реально присутствующие в payload).
+  const payload = offers.map((o) => ({ ...o, sold_at: null }));
+
   const { error } = await supabase
     .from('primary_market_offers')
-    .upsert(offers, { onConflict: 'source,external_id' });
+    .upsert(payload, { onConflict: 'source,external_id' });
   if (error) throw error;
-  console.log(`Сохранено ${offers.length} объявлений в primary_market_offers.`);
+  console.log(`Сохранено ${payload.length} объявлений в primary_market_offers.`);
 
   await pruneStaleOffers(offers);
 }

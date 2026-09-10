@@ -84,6 +84,10 @@ const FinModelReport = lazy(() => import('./pages/FinModelReport').then((m) => (
 const Financing = lazy(() => import('./pages/Financing').then((m) => ({ default: m.Financing })));
 const DesignProjects = lazy(() => import('./pages/DesignProjects').then((m) => ({ default: m.DesignProjects })));
 const Landings = lazy(() => import('./pages/Landings').then((m) => ({ default: m.Landings })));
+// "Показатели" (посещаемость сайта из Яндекс.Метрики) — SiteMetrics/
+// site-metrics, НЕ Metrics/metrics (та страница — про другое, см. её же
+// комментарий и комментарий у data/pages.ts).
+const SiteMetrics = lazy(() => import('./pages/SiteMetrics').then((m) => ({ default: m.SiteMetrics })));
 const MarketOffersReview = lazy(() => import('./pages/MarketOffersReview').then((m) => ({ default: m.MarketOffersReview })));
 const ActivityLog = lazy(() => import('./pages/ActivityLog').then((m) => ({ default: m.ActivityLog })));
 const Metrics = lazy(() => import('./pages/Metrics').then((m) => ({ default: m.Metrics })));
@@ -145,6 +149,15 @@ function usePreventPageZoom() {
 // района → /minsk/one) была невидима в статистике обоих. Штатный для SPA
 // способ — вручную слать pageview на каждую смену маршрута; первую загрузку
 // пропускаем, её уже засчитал init обоих счётчиков.
+//
+// 2026-09-10: /admin/* — внутренняя CRM, не то, что владелец хочет видеть в
+// «Показателях» как клиентский трафик (Светлана/Альмира целый день листают
+// задачи/сметы — это не посетители сайта). Хиты с /admin не шлём вовсе, ни
+// в Метрику, ни в VK-пиксель (тот же принцип: retargeting-аудитория VK-рекламы
+// не должна пополняться сотрудниками CRM). Сам счётчик на /admin может быть и
+// не инициализирован (см. index.html) — тогда metrikaHit()/vkPixelHit() и так
+// молча ничего не делают (см. их же optional chaining), эта проверка не
+// единственная защита, а явная и быстрая, без похода в чужой модуль.
 function useSpaPageviewHits() {
   const location = useLocation();
   const isFirstRender = useRef(true);
@@ -153,6 +166,7 @@ function useSpaPageviewHits() {
       isFirstRender.current = false;
       return;
     }
+    if (location.pathname.startsWith('/admin')) return;
     metrikaHit(location.pathname + location.search);
     vkPixelHit();
   }, [location.pathname, location.search]);
@@ -300,6 +314,7 @@ export default function App() {
         />
         <Route path="leads" element={<RequirePage page="leads"><Leads /></RequirePage>} />
         <Route path="landings" element={<RequirePage page="landings"><Landings /></RequirePage>} />
+        <Route path="site-metrics" element={<RequirePage page="siteMetrics"><SiteMetrics /></RequirePage>} />
         <Route
           path="market-offers"
           element={

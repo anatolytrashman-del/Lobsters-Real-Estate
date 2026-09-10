@@ -45,9 +45,47 @@ const RESEND_API_BASE = 'https://api.resend.com';
 // сбой) логируется целиком через console.error, чтобы в Vercel Runtime
 // Logs было видно точную причину при следующем реальном письме.
 
-// Тело письма (text предпочтительнее html — то же самое, что клиент и так
-// показывает как есть в whitespace-pre-wrap ленте переписки, сырой html
-// читать неудобно). candidateIds — несколько возможных id письма из
+// 2026-09-10, реальный баг: письмо от СПК "Д-Строй" (через Yandex Mail —
+// та же ситуация будет у любого клиента, публикующего html-only письмо без
+// text-части) сохранилось с сырой HTML-разметкой ("<div><div
+// style=\"background:white;font-family:...\">") прямо в теле — лента
+// переписки рендерит body через whitespace-pre-wrap (см.
+// SupplierCorrespondenceTab.tsx), то есть как обычный текст, не как HTML,
+// поэтому теги показывались буквально, а не форматировали письмо.
+// Причина — старый fetchReceivedEmailBody брал text ИЛИ (если text пуст)
+// html как есть, без какой-либо очистки. htmlToPlainText — грубый, но
+// достаточный конвертер: превращает разрывы блоков (</div>/</p>/<br>/...) в
+// переносы строк ДО вырезания остальных тегов (тот же порядок, что и в
+// api/_docxText.js для .docx-таблиц — иначе всё схлопнется в один абзац без
+// разделителей), затем декодирует именованные/числовые HTML-сущности и
+// схлопывает лишние пустые строки.
+function htmlToPlainText(html) {
+  let text = String(html || '');
+  text = text.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '');
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/(div|p|tr|li|h[1-6]|table)>/gi, '\n');
+  text = text.replace(/<[^>]+>/g, '');
+  text = text
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+  text = text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return text;
+}
+
+// Тело письма (text предпочтительнее html — если text пуст, html
+// прогоняется через htmlToPlainText, не подставляется сырой разметкой, см.
+// комментарий выше). candidateIds — несколько возможных id письма из
 // вебхука, пробуются по очереди, пока один не сработает.
 export async function fetchReceivedEmailBody(candidateIds) {
   const ids = [...new Set((Array.isArray(candidateIds) ? candidateIds : [candidateIds]).filter(Boolean))];
@@ -74,7 +112,9 @@ export async function fetchReceivedEmailBody(candidateIds) {
       // data — поддерживаем оба на всякий случай, не падаем, если формат чуть
       // отличается от задокументированного.
       const email = json?.text != null || json?.html != null ? json : (json?.data ?? json);
-      return (typeof email?.text === 'string' && email.text) || (typeof email?.html === 'string' && email.html) || '';
+      if (typeof email?.text === 'string' && email.text.trim()) return email.text;
+      if (typeof email?.html === 'string' && email.html.trim()) return htmlToPlainText(email.html);
+      return '';
     } catch (err) {
       console.error('Ошибка при получении тела письма (id-кандидат):', emailId, err);
     }
