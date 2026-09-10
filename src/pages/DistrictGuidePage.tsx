@@ -2835,7 +2835,7 @@ export function DistrictGuidePage() {
                             </span>
                           ) : (
                             <span className="shrink-0 rounded-full bg-surface-muted px-2 py-0.5 text-[10px] font-semibold text-ink-faint">
-                              Уточняется
+                              Строится
                             </span>
                           )}
                         </li>
