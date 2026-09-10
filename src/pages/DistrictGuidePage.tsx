@@ -2905,6 +2905,53 @@ export function DistrictGuidePage() {
             ))}
           </div>
         </div>
+
+        {/* Юридический дисклеймер — владелец: "не отдельным блоком, а как бы
+            на фоне серого фона сайта обычным текстом размером в половину от
+            стандартного, с кликабельными ссылками на источники". Текст
+            составлен через Gemini (тот же приём "бриф → Gemini → правки
+            владельца", что и у остальных Gemini-текстов страницы) и дополнен
+            ссылками — URL'ы источников не выдуманы, взяты из уже
+            используемых на сайте (GENERAL_DATA_SOURCES в
+            BusinessCenterDetailPage.tsx — Kufar/Realt/Яндекс.Карты;
+            DEVELOPER_LINKS/MANAGEMENT_COMPANY этого же файла — bir.by/dpm.by).
+            Без glassCardClass намеренно — не карточка, просто текст в общем
+            потоке страницы на фоне body. */}
+        <p className="pt-2 text-xs leading-relaxed text-ink-muted">
+          Все товарные знаки, логотипы и наименования компаний, упомянутые на странице — в том числе{' '}
+          <a href="https://yandex.by/maps/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Яндекс.Карты
+          </a>
+          ,{' '}
+          <a href="https://www.kufar.by/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Kufar
+          </a>
+          ,{' '}
+          <a href="https://realt.by/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Realt.by
+          </a>
+          ,{' '}
+          <a href="https://bir.by" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            bir.by
+          </a>
+          , Dana Holding и управляющая компания{' '}
+          <a href="https://dpm.by" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Happy Planet
+          </a>{' '}
+          — принадлежат их законным правообладателям и используются исключительно в информационных и описательных
+          целях, не подразумевая аффилированности или партнёрства. Представленные данные основаны на
+          общедоступной информации из открытых источников на дату публикации и могут не отражать актуальное
+          состояние рынка. Фотоматериалы заимствованы из публичного Instagram-аккаунта{' '}
+          <a
+            href="https://www.instagram.com/promir_by/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-ink"
+          >
+            @promir_by
+          </a>{' '}
+          в информационных целях и будут незамедлительно удалены по обоснованному требованию правообладателя.
+        </p>
           </div>
         </div>
       </main>
