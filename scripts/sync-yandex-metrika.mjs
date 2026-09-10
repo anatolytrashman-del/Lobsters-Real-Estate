@@ -33,6 +33,23 @@
 //
 // Флаги: --dry-run (не пишет в Supabase, только печатает сводку),
 // --json (печатает сырые ответы API целиком, для отладки).
+//
+// 2026-09-10 — исключение /admin/* (владелец: «нужна только клиентская
+// часть», внутренняя CRM не должна попадать в статистику посещаемости).
+// Основная защита теперь на уровне отправки хитов (App.tsx/index.html —
+// с /admin счётчик вообще не шлёт события в Метрику), но ЭТОТ фильтр в
+// самих запросах к Stats API нужен отдельно и не лишний: он же чистит уже
+// накопленную ДО этой правки историю визитов внутри WINDOW_DAYS (Метрика
+// хранит сырые данные по визиту независимо от того, что мы решили дальше с
+// ними не делать хитов) — без него старые admin-визиты продолжали бы
+// искажать «Показатели» ещё 90 дней. Синтаксис (`EXISTS ym:pv:...` для
+// session-уровня, прямой `!~` для pageview-уровня) — по документированному
+// формату Stats API filters, живьём с реального api-metrika.yandex.net не
+// проверен (домен закрыт прокси песочницы) — если первый прогон после этой
+// правки упадёт именно на разделах с фильтром с ошибкой формата фильтра
+// (см. текст ошибки в логе Actions), поправить синтаксис здесь же.
+const ADMIN_EXCLUDE_FILTER_SESSION = "NOT EXISTS ym:pv:URLPathFull=~'^/admin'";
+const ADMIN_EXCLUDE_FILTER_PAGEVIEW = "ym:pv:URLPathFull!~'^/admin'";
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -121,6 +138,7 @@ async function syncDailyStats(token) {
     dimensions: 'ym:s:date',
     sort: 'ym:s:date',
     limit: WINDOW_DAYS + 10,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('daily-stats raw:', JSON.stringify(body, null, 2));
@@ -160,6 +178,7 @@ async function syncTrafficSources(token) {
     dimensions: 'ym:s:lastTrafficSource',
     sort: '-ym:s:visits',
     limit: 30,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('traffic-sources raw:', JSON.stringify(body, null, 2));
@@ -189,6 +208,7 @@ async function syncTopPages(token) {
     dimensions: 'ym:pv:URLPathFull',
     sort: '-ym:pv:pageviews',
     limit: 30,
+    filters: ADMIN_EXCLUDE_FILTER_PAGEVIEW,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('top-pages raw:', JSON.stringify(body, null, 2));
@@ -221,6 +241,7 @@ async function syncGoalCompletions(token) {
     dimensions: 'ym:s:date',
     sort: 'ym:s:date',
     limit: WINDOW_DAYS + 10,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('goal-completions raw:', JSON.stringify(body, null, 2));

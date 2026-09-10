@@ -149,6 +149,15 @@ function usePreventPageZoom() {
 // района → /minsk/one) была невидима в статистике обоих. Штатный для SPA
 // способ — вручную слать pageview на каждую смену маршрута; первую загрузку
 // пропускаем, её уже засчитал init обоих счётчиков.
+//
+// 2026-09-10: /admin/* — внутренняя CRM, не то, что владелец хочет видеть в
+// «Показателях» как клиентский трафик (Светлана/Альмира целый день листают
+// задачи/сметы — это не посетители сайта). Хиты с /admin не шлём вовсе, ни
+// в Метрику, ни в VK-пиксель (тот же принцип: retargeting-аудитория VK-рекламы
+// не должна пополняться сотрудниками CRM). Сам счётчик на /admin может быть и
+// не инициализирован (см. index.html) — тогда metrikaHit()/vkPixelHit() и так
+// молча ничего не делают (см. их же optional chaining), эта проверка не
+// единственная защита, а явная и быстрая, без похода в чужой модуль.
 function useSpaPageviewHits() {
   const location = useLocation();
   const isFirstRender = useRef(true);
@@ -157,6 +166,7 @@ function useSpaPageviewHits() {
       isFirstRender.current = false;
       return;
     }
+    if (location.pathname.startsWith('/admin')) return;
     metrikaHit(location.pathname + location.search);
     vkPixelHit();
   }, [location.pathname, location.search]);
