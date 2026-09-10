@@ -31,6 +31,21 @@ import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 // были подписаны, кто есть кто; (3) добавлена разбивка по периоду —
 // сегодня/неделя/этот месяц/любой выбранный месяц, раньше был только один
 // показатель "за всё время".
+//
+// 2026-09-10 — реальный пробел, найденный по жалобе владельца ("не могу
+// понять, система не трекает или Альмира реально ничего не делает"):
+// "Верифицировано поставщиков" логируется ТОЛЬКО в submitOffer
+// (Suppliers.tsx) — то есть только когда карточку открывают и сохраняют
+// через форму "Подробнее". Самый частый на практике путь работы с уже
+// идущей перепиской — кнопка "Подтвердить и заполнить карточку" на
+// автораспознанном счёте прямо в письме (SupplierCorrespondenceTab.tsx,
+// applyExtractionToOffer/applyExtractionToOrder) — минует submitOffer
+// полностью и до этой правки не логировалась вообще, поэтому такая работа
+// была не "недосчитана", а полностью невидима. Добавлено отдельное
+// событие supplier_invoice_confirmed на эту кнопку — не смешано с
+// supplier_offer_verified (то по-прежнему означает "первая ручная
+// верификация карточки, добавленной веб-поиском"), у него другой смысл
+// ("уже N-е подтверждение присланного счёта/КП по переписке").
 
 type Period = 'today' | 'week' | 'month' | 'custom';
 
@@ -169,6 +184,10 @@ export function Metrics() {
     () => entriesInRange.filter((e) => e.action === 'supplier_offer_added_manually').length,
     [entriesInRange],
   );
+  const almiraInvoiceConfirmedCount = useMemo(
+    () => entriesInRange.filter((e) => e.action === 'supplier_invoice_confirmed').length,
+    [entriesInRange],
+  );
 
   const outgoingEmailsInRange = useMemo(
     () => (emails ?? []).filter((e) => e.direction === 'out' && inRange(e.createdAt)),
@@ -231,6 +250,11 @@ export function Metrics() {
               label="Добавлено вручную"
               value={almiraAddedManuallyCount}
               hint="Новое предложение, заполненное через форму с нуля"
+            />
+            <StatTile
+              label="Подтверждено счетов/КП"
+              value={almiraInvoiceConfirmedCount}
+              hint="Автораспознанный счёт в письме, подтверждён кнопкой"
             />
             <StatTile
               label="Уникальных писем отправлено"
