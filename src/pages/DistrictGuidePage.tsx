@@ -32,6 +32,7 @@ import {
   MapPin,
   Menu,
   Package,
+  PackageCheck,
   PawPrint,
   Phone,
   Scissors,
@@ -63,7 +64,7 @@ import { fetchPublicMarketOffers } from '../lib/marketOffersApi';
 import { AREA_BUCKET_ORDER, areaBucket, MARKET_PROPERTY_TYPES, netSize, netPricePerSqm } from '../data/marketOffers';
 import type { MarketOffer } from '../data/marketOffers';
 import { fetchPrimaryMarketOffers } from '../lib/primaryMarketOffersApi';
-import { buildPrimaryMarketPivot } from '../data/primaryMarketOffers';
+import { buildPrimaryMarketPivot, buildPrimarySalesSummary, earliestSoldAt } from '../data/primaryMarketOffers';
 import type { PrimaryMarketOffer } from '../data/primaryMarketOffers';
 import { fetchTodayRateOrLatestCached } from '../lib/exchangeRatesApi';
 import { convertToEur, convertFromEur } from '../lib/currencyConvert';
@@ -801,6 +802,18 @@ function formatLatestUpdate(offers: MarketOffer[]): string {
   return `${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
 }
 
+// "Зафиксировано с {дата}" у блока "Продажи застройщика" — берётся из
+// earliestSoldAt (data/primaryMarketOffers.ts), не хардкодится: если
+// когда-нибудь отслеживание перезапустят с нуля, подпись сама подстроится
+// под реальные данные. День перед месяцем требует родительного падежа
+// ("10 сентября", не "10 сентябрь") — MONTH_NAMES выше в именительном
+// (годится для "Обновлено: сентябрь 2026", где месяц не после числа), для
+// этого случая проще и надёжнее взять готовый Intl, чем заводить ещё один
+// массив склонений в файле, где их и так уже несколько.
+function formatSoldSinceDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
 // "Не указано" убрано из переключателя (владелец, 2026-08-25: "убирай
 // категорию 'Не указано', у меня всё будет указано") — предполагается,
 // что владелец сам доведёт finish_status до одного из двух реальных
@@ -1332,6 +1345,7 @@ const SECTION_NAV: { id: string; label: string; icon: LucideIcon }[] = [
   { id: 'property-types', label: 'Виды недвижимости', icon: Layers },
   { id: 'business-centers', label: 'Бизнес-центры', icon: Building2 },
   { id: 'primary-market', label: 'Первичный рынок', icon: Banknote },
+  { id: 'developer-sales', label: 'Продажи застройщика', icon: PackageCheck },
   { id: 'market', label: 'Вторичный рынок', icon: TrendingUp },
   { id: 'business-analytics', label: 'Аналитика по сферам бизнеса', icon: LayoutGrid },
   { id: 'transport', label: 'Транспорт', icon: TrainFront },
@@ -2271,6 +2285,92 @@ export function DistrictGuidePage() {
               </span>
             </button>
           )}
+        </div>
+
+        {/* Продажи застройщика (владелец, 2026-09-10: "раз у нас есть инфа,
+            сколько юнитов снял с сайта застройщик, значит у нас есть инфа по
+            продажам застройщика — я бы выводил эту инфу"). Источник —
+            PrimaryMarketOffer.soldAt, который проставляет
+            scripts/sync-bir-primary-market.mjs (pruneStaleOffers), когда
+            объект подтверждённо пропадает с bir.by (реальная HTTP-проверка
+            ссылки на 404, не просто "не нашли в скрейпе"). Честная оговорка
+            в тексте — снятие с продажи не то же самое, что подтверждённая
+            сделка (см. комментарий у PrimaryMarketOffer.soldAt в
+            data/primaryMarketOffers.ts), формулировки на странице
+            намеренно осторожные ("предположительно"), не "продано". */}
+        <div id="developer-sales" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
+          <div className="flex min-w-0 items-center gap-3">
+            <PackageCheck className="h-5 w-5 shrink-0 text-ink" />
+            <h2 className="text-lg font-bold text-ink">Продажи застройщика</h2>
+          </div>
+          <p className="text-sm text-ink-muted">
+            Объекты первичного рынка (bir.by), которые пропали из продажи после того, как ранее там числились —
+            предположительно проданы или переданы в бронь. Не факт сделки: сумма ниже — по последней известной
+            цене объявления на момент снятия, не по цене реального договора.
+          </p>
+
+          {primaryMarketOffers === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
+
+          {primaryMarketOffers !== null && (() => {
+            const salesRows = buildPrimarySalesSummary(primaryMarketOffers);
+            const since = earliestSoldAt(primaryMarketOffers);
+            const totalCount = salesRows.reduce((sum, r) => sum + r.soldCount, 0);
+            const totalValueEur = salesRows.reduce((sum, r) => sum + r.soldValueEur, 0);
+
+            if (totalCount === 0) {
+              return (
+                <p className="text-sm text-ink-muted">
+                  Автоматическое отслеживание запущено — пока ни один объект не зафиксирован как проданный/снятый
+                  с продажи. Данные обновляются раз в месяц (1-го числа).
+                </p>
+              );
+            }
+
+            return (
+              <>
+                {since && <p className="-mt-1 text-xs text-ink-muted">Зафиксировано с {formatSoldSinceDate(since)}</p>}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                    <span className="text-xs text-ink-faint">Продано/снято с продажи</span>
+                    <span className="text-lg font-extrabold text-ink">{totalCount.toLocaleString('ru-RU')}</span>
+                  </div>
+                  <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                    <span className="text-xs text-ink-faint">Оценочная сумма</span>
+                    <span className="text-lg font-extrabold text-ink">
+                      {formatPricePerM2(totalValueEur, primaryMarketCurrency, exchangeRate)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[420px] border-collapse text-sm">
+                    <caption className="sr-only">Продажи застройщика по категориям — количество и оценочная сумма</caption>
+                    <thead>
+                      <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                        <th scope="col" className="py-2 pr-3 text-left">Категория</th>
+                        <th scope="col" className="py-2 px-2 text-right font-semibold">Продано/снято</th>
+                        <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь, м²</th>
+                        <th scope="col" className="py-2 pl-2 text-right font-semibold">Сумма</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {salesRows.map((row) => (
+                        <tr key={row.key}>
+                          <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
+                          <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.soldCount}</td>
+                          <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.soldAreaM2}</td>
+                          <td className="py-2.5 pl-2 text-right tabular-nums font-semibold text-ink">
+                            {formatPricePerM2(row.soldValueEur, primaryMarketCurrency, exchangeRate)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
         </div>
 
         <div id="market" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
