@@ -15,7 +15,7 @@ import { CategoryToggle } from './CategoryToggle';
 // заносятся вручную по одной категории), эта считается по факту — сколько
 // организаций реально собрано в каждом квартале, независимо от корзины.
 const LIVE_ALL_KEY = 'live-all';
-const LIVE_ALL_LABEL = 'Все организации (исчерпывающий сбор)';
+const LIVE_ALL_LABEL = 'Все организации';
 
 interface QuarterOrg {
   title: string;
