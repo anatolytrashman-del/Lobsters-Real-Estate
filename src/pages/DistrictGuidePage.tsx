@@ -1536,7 +1536,7 @@ export function DistrictGuidePage() {
       {/* <main> — единственный main-landmark страницы (PageSpeed
           Accessibility «Document does not have a main landmark»): шапка с
           логотипом/меню и hero выше остаются вне него, как и положено. */}
-      <main className="mx-auto max-w-6xl px-4 pt-4 pb-12 sm:px-8 sm:pt-12">
+      <main className="mx-auto max-w-6xl px-4 pt-6 pb-12 sm:px-8 sm:pt-12">
         <div className="lg:grid lg:grid-cols-[200px_1fr] lg:gap-10">
           <aside ref={navAsideRef} className="hidden lg:block">
             <nav
@@ -1566,12 +1566,22 @@ export function DistrictGuidePage() {
             </nav>
           </aside>
 
-          <div className="mx-auto flex max-w-3xl flex-col gap-4 sm:gap-6">
+          <div className="mx-auto flex max-w-3xl flex-col gap-6">
         {/* Логотип на мобильном — часть обычного потока колонки (см.
             комментарий у шапки выше), не отдельный бар: тот же логотип, что
-            в шапке на sm+, просто с обычным отступом gap-4 колонки вместо
+            в шапке на sm+, просто с обычным отступом колонки вместо
             фиксированной высоты бара. На sm+ скрыт (там уже виден полноценный
-            бар с меню выше). */}
+            бар с меню выше).
+            Отступы этой колонки (и внутри hero-карточки ниже) — владелец,
+            после того как фото стало коротким: "добавь воздуха в целом по
+            блоку, пропорционально между всеми блоками первого экрана... у
+            нас по-прежнему влезает блок «Ключевые цифры», за счёт него
+            можно добавить места, он не нужен на первом экране" — то есть
+            дальше НЕ пытаемся уместить hero+«Ключевые цифры» в один экран
+            любой ценой (см. отменённую логику в истории коммитов), gap-6/
+            p-6 везде без урезанных мобильных gap-4/p-4 из более ранних
+            заходов — если «Ключевые цифры» уедет за экран, это ожидаемо
+            и хорошо. */}
         <Link to="/minsk" className="text-base font-extrabold tracking-wide text-ink sm:hidden">
           <span className="font-black text-primary-hover">RED</span>EVELOPMENT
         </Link>
@@ -1607,7 +1617,7 @@ export function DistrictGuidePage() {
             колонке, портрет уместнее. */}
         <div
           className={cn(
-            'flex flex-col gap-4 overflow-hidden p-4 sm:grid sm:grid-cols-[3fr_2fr] sm:items-center sm:gap-6 sm:p-8',
+            'flex flex-col gap-6 overflow-hidden p-6 sm:grid sm:grid-cols-[3fr_2fr] sm:items-center sm:p-8',
             glassCardClass,
           )}
           style={glassCardShadow}
