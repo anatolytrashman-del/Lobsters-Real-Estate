@@ -2038,11 +2038,13 @@ export function DistrictGuidePage() {
 
 
         <div id="primary-market" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
-          {/* flex-col на мобильном — длинный заголовок + пилюля валюты в
-              одну строку не помещались на 375px, заголовок вылезал в 4
-              строки, сжатый пилюлей (тот же фикс, что и у заголовка карты
-              конкуренции по кварталам выше). */}
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Владелец, скриншот: пилюля валюты помещается справа от
+              заголовка даже на мобильном — раньше уводили в отдельную
+              строку под заголовком (flex-col), решив, что не влезет; на
+              деле заголовок в 3 строки, а пилюля короткая — items-start
+              (не items-center) держит её у ПЕРВОЙ строки заголовка, не
+              по центру всего трёхстрочного блока. */}
+          <div className="flex flex-row items-start justify-between gap-3 sm:items-center">
             <div className="flex min-w-0 items-center gap-3">
               <Banknote className="h-5 w-5 shrink-0 text-ink" />
               <h2 className="text-lg font-bold text-ink">Первичный рынок коммерческой недвижимости</h2>
