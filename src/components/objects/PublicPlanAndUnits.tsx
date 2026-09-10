@@ -65,19 +65,25 @@ interface PublicPlanAndUnitsProps {
   // См. src/lib/glass.ts. Включено на продающей странице /:slug; на
   // легаси-странице /plan/:token остаётся выключенным (старый плоский стиль).
   glass?: boolean;
+  // На продающей странице владелец решил убрать саму возможность смотреть
+  // планировку — остаётся только список кабинетов (без кнопки "Показать на
+  // плане" и без переключателя план/список, переключать не на что). Страница
+  // /plan/:token — про то, чтобы прислать клиенту именно план, там не передаём.
+  hidePlanView?: boolean;
 }
 
 // Планировка + таблица доступных кабинетов — общий блок для всех публичных
 // поверхностей объекта (/plan/:token и продающая страница /:slug), чтобы
 // подсветка, переключение этажей, кнопка "Посмотреть на плане" и
 // бронирование кабинета вели себя одинаково и не расходились между копиями.
-export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass }: PublicPlanAndUnitsProps) {
+export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass, hidePlanView }: PublicPlanAndUnitsProps) {
   const PlanWrapper: ElementType = glass ? 'div' : Card;
   const [activePlanId, setActivePlanId] = useState<string | null>(object.buildingPlanIds[0] ?? null);
   // План и список кабинетов теперь вкладки одного блока — "Список" в
   // trailing-слоте BuildingPlanTabs переключает viewMode отдельно от
   // activePlanId (какой план показывать, когда viewMode === 'plan').
-  const [viewMode, setViewMode] = useState<'plan' | 'list'>('plan');
+  // При hidePlanView переключать не на что — сразу и всегда список.
+  const [viewMode, setViewMode] = useState<'plan' | 'list'>(hidePlanView ? 'list' : 'plan');
   const [selectedZone, setSelectedZone] = useState<BuildingPlanZone | null>(null);
   const [hoveredZoneId, setHoveredZoneId] = useState<string | null>(null);
   const [pinnedZoneId, setPinnedZoneId] = useState<string | null>(null);
@@ -279,6 +285,17 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass 
 
           {objectPlans.length === 0 ? (
             <p className="text-sm text-ink-muted">Планировка для этого объекта пока не добавлена.</p>
+          ) : hidePlanView ? (
+            <AvailableUnitsTable
+              plans={objectPlans}
+              zones={zones}
+              highlightedZoneId={highlightZoneId}
+              onRowClick={handleZoneSelect}
+              onRowHover={(zone) => setHoveredZoneId(zone?.id ?? null)}
+              onBookClick={handleBookClick}
+              glass={glass}
+              bare
+            />
           ) : (
             <>
               <BuildingPlanTabs

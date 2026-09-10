@@ -416,6 +416,7 @@ export function ObjectLandingPage() {
           zones={zones}
           onZoneUpdated={(z) => setZones((prev) => prev.map((x) => (x.id === z.id ? z : x)))}
           glass
+          hidePlanView
         />
 
         <BookingTermsCard agreement={object.intentAgreementFile} />
