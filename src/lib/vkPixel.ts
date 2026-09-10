@@ -25,8 +25,14 @@ export function vkPixelGoal(goal: string) {
 // Поэтому под каждую нужную аудиторию явно шлём свой reachGoal с той
 // страницы, которая должна в неё попасть (тот же набор путей, что и у
 // целей "Смотрел аналитику"/"Смотрел лендинг Red One" в Метрике).
+// "Смотрел аналитику" — гид по Минск Миру, вся аналитика (хабы+сегменты)
+// и весь каталог бизнес-центров, владелец явно попросил учитывать все три.
 export function vkPageGoalForPath(pathname: string): string | null {
-  if (pathname.startsWith('/minsk/analytics') || pathname.startsWith('/minsk/bcminsk')) {
+  if (
+    pathname.startsWith('/minsk/minsk-mir') ||
+    pathname.startsWith('/minsk/analytics') ||
+    pathname.startsWith('/minsk/bcminsk')
+  ) {
     return 'viewed_analytics';
   }
   if (pathname.startsWith('/minsk/one')) {
