@@ -222,23 +222,33 @@ export function ObjectLandingPage() {
 
   return (
     <div className="min-h-svh bg-bg">
-      <div className="border-b border-border py-5">
-        <div className="mx-auto flex max-w-5xl items-center justify-center gap-3 px-4 sm:justify-between sm:px-8">
+      <header className="border-b border-border py-5">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 sm:px-8">
           <div>
             <span className="text-lg font-extrabold tracking-wide text-ink">
               <span className="font-black text-primary">RED</span>EVELOPMENT
             </span>
           </div>
+          {/* Раньше на мобильном это был отдельный fixed-виджет в правом нижнем
+              углу — при определённых позициях скролла он наезжал на контент
+              под ним (факты об объекте, варианты рассрочки). Перенесена в
+              шапку, как и на десктопе — всегда на виду без риска перекрыть
+              что-то ниже. На мобильном текст скрыт (иконка + онлайн-индикатор
+              с достаточным тап-таргетом), чтобы не сжимать лого в узкой шапке. */}
           <a
             href={OWNER_TELEGRAM_URL}
             target="_blank"
             rel="noreferrer"
             title={ownerOnline ? 'Онлайн — на связи' : 'Офлайн — отвечу завтра'}
-            className={cn('hidden items-center gap-2 px-3 py-1.5 text-sm font-medium text-ink hover:border-primary hover:text-primary sm:flex', glassPillClass)}
+            aria-label={`Написать собственнику в Telegram — ${ownerOnline ? 'онлайн' : 'офлайн'}`}
+            className={cn(
+              'flex items-center gap-2 px-3 py-2 text-sm font-medium text-ink hover:border-primary hover:text-primary sm:py-1.5',
+              glassPillClass,
+            )}
             style={glassPillShadow}
           >
-            <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
-              <TelegramLogo className="h-5 w-5" />
+            <span className="relative flex h-7 w-7 shrink-0 items-center justify-center sm:h-5 sm:w-5">
+              <TelegramLogo className="h-7 w-7 sm:h-5 sm:w-5" />
               <span
                 className={cn(
                   'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-white',
@@ -246,37 +256,12 @@ export function ObjectLandingPage() {
                 )}
               />
             </span>
-            Написать собственнику
+            <span className="hidden sm:inline">Написать собственнику</span>
           </a>
         </div>
-      </div>
+      </header>
 
-      {/* На мобильном кнопка уходит из шапки (там теперь просто центрированное
-          лого) и становится плавающим виджетом в правом нижнем углу — всегда
-          доступна независимо от скролла, как обычный чат-виджет. */}
-      <a
-        href={OWNER_TELEGRAM_URL}
-        target="_blank"
-        rel="noreferrer"
-        title={ownerOnline ? 'Онлайн — на связи' : 'Офлайн — отвечу завтра'}
-        className={cn(
-          'fixed bottom-5 right-4 z-40 flex items-center gap-2 py-2 pl-2 pr-4 text-sm font-medium text-ink sm:hidden',
-          glassPillClass,
-        )}
-        style={glassPillShadow}
-      >
-        <span className="relative flex h-9 w-9 shrink-0 items-center justify-center">
-          <TelegramLogo className="h-9 w-9" />
-          <span
-            className={cn(
-              'absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white',
-              ownerOnline ? 'bg-success' : 'bg-ink-faint',
-            )}
-          />
-        </span>
-        Написать собственнику
-      </a>
-
+      <main>
       <div className="mx-auto grid max-w-5xl grid-cols-1 items-center gap-10 px-4 py-12 sm:px-8 lg:grid-cols-2">
         <div className="flex flex-col gap-6">
           <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">
@@ -312,7 +297,11 @@ export function ObjectLandingPage() {
       <div className="mx-auto flex max-w-5xl flex-col gap-5 px-4 py-8 sm:px-8">
         <div className={cn('flex flex-col gap-5 p-5', glassCardClass)} style={glassCardShadow}>
           <div className="text-xl font-extrabold text-ink">Клубный деловой центр Red One</div>
-          <div className="grid grid-cols-1 gap-y-4 sm:grid-cols-2 sm:gap-x-6 sm:gap-y-5 md:grid-cols-4">
+          {/* 4 колонки только с lg (1024px) — на md (768px, планшет) длинные
+              слова вроде "Видеонаблюдение"/"коммуникации" не помещались в
+              колонку и break-words рвал их посередине символов, не по
+              границе слова (UX-аудит, скриншот планшета). */}
+          <div className="grid grid-cols-1 gap-y-4 sm:grid-cols-2 sm:gap-x-6 sm:gap-y-5 lg:grid-cols-4">
             {complexFeatures.map(({ icon: Icon, text }) => (
               <div key={text} className="flex min-w-0 items-center gap-3">
                 <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center text-ink', glassPillClass)}>
@@ -423,6 +412,7 @@ export function ObjectLandingPage() {
 
         <FaqCard />
       </div>
+      </main>
     </div>
   );
 }
