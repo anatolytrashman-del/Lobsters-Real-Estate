@@ -132,7 +132,7 @@ export function EstimateMaterialsPanel({
                   href={f.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="min-w-0 flex-1 truncate text-primary hover:underline"
+                  className="min-w-0 flex-1 truncate text-primary-hover hover:underline"
                 >
                   {f.fileName}
                 </a>
@@ -164,7 +164,7 @@ export function EstimateMaterialsPanel({
                   href={f.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="min-w-0 flex-1 truncate text-primary hover:underline"
+                  className="min-w-0 flex-1 truncate text-primary-hover hover:underline"
                 >
                   {f.fileName}
                 </a>

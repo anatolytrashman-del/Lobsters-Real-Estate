@@ -265,7 +265,7 @@ export function AvailableUnitsTable({
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
-              className="flex w-fit items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+              className="flex w-fit items-center gap-1.5 text-sm font-medium text-primary-hover hover:underline"
             >
               {expanded ? (
                 <>

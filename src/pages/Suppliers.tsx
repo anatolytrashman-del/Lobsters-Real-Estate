@@ -391,7 +391,7 @@ function OfferTotalComparison({
                 <div className="mt-2 overflow-x-auto rounded-control border border-border">
                   <table className="w-full min-w-[360px] border-collapse text-sm">
                     <thead>
-                      <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                      <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-muted">
                         <th className="px-3 py-2">Название</th>
                         <th className="px-3 py-2 text-right">Кол-во</th>
                         <th className="px-3 py-2 text-right">Цена</th>
@@ -611,7 +611,7 @@ function MaterialPriceComparisonCard({
                             const offer = offers.find((o) => o.id === q.offerId);
                             if (offer) onOpenDetail(offer);
                           }}
-                          className="shrink-0 text-xs font-medium text-primary hover:underline"
+                          className="shrink-0 text-xs font-medium text-primary-hover hover:underline"
                         >
                           Подробнее
                         </button>
@@ -806,7 +806,7 @@ function SupplierWebSearchModal({
               type="button"
               onClick={onToggleSelectAll}
               disabled={selectableCount === 0}
-              className="text-sm font-medium text-primary hover:underline disabled:opacity-50 disabled:no-underline"
+              className="text-sm font-medium text-primary-hover hover:underline disabled:opacity-50 disabled:no-underline"
             >
               {allSelected ? 'Снять выбор' : `Выбрать все (${selectableCount})`}
             </button>
@@ -865,7 +865,7 @@ function SupplierWebSearchModal({
                     href={/^https?:\/\//.test(r.website) ? r.website : `https://${r.website}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="flex items-center gap-1.5 text-primary hover:underline"
+                    className="flex items-center gap-1.5 text-primary-hover hover:underline"
                   >
                     <Globe className="h-3.5 w-3.5 shrink-0" />
                     {siteLabel(r.website)}
@@ -989,7 +989,7 @@ function OfferDetailModal({
               href={/^https?:\/\//.test(offer.websiteUrl) ? offer.websiteUrl : `https://${offer.websiteUrl}`}
               target="_blank"
               rel="noreferrer"
-              className="flex w-fit items-center gap-1.5 text-primary hover:underline"
+              className="flex w-fit items-center gap-1.5 text-primary-hover hover:underline"
             >
               <Globe className="h-3.5 w-3.5 shrink-0" />
               {siteLabel(offer.websiteUrl)}
@@ -1021,7 +1021,7 @@ function OfferDetailModal({
             <div className="overflow-x-auto rounded-control border border-border">
               <table className="w-full min-w-[420px] border-collapse text-sm">
                 <thead>
-                  <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                  <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-muted">
                     <th className="px-3 py-2">Название</th>
                     <th className="px-3 py-2 text-right">Кол-во</th>
                     <th className="px-3 py-2 text-right">Цена</th>
@@ -1059,7 +1059,7 @@ function OfferDetailModal({
                 href={f.url}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-control border border-border px-3 py-2 text-sm text-primary hover:underline"
+                className="flex items-center gap-1.5 rounded-control border border-border px-3 py-2 text-sm text-primary-hover hover:underline"
               >
                 <Paperclip className="h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{f.fileName}</span>
@@ -2796,7 +2796,7 @@ export function Suppliers() {
                     type="button"
                     onClick={() => tryRecognizeOfferFile(file.url, file.fileName)}
                     disabled={offerExtractionBusy}
-                    className="shrink-0 text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                    className="shrink-0 text-xs font-medium text-primary-hover hover:underline disabled:opacity-50"
                   >
                     Распознать
                   </button>
@@ -2932,7 +2932,7 @@ export function Suppliers() {
                 <button
                   type="button"
                   onClick={() => setOfferForm((f) => ({ ...f, price: String(offerItemsTotal) }))}
-                  className="text-primary hover:underline"
+                  className="text-primary-hover hover:underline"
                 >
                   Подставить в итоговую цену
                 </button>

@@ -438,7 +438,7 @@ export function ObjectDetail() {
                   href={object.listingUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex w-fit items-center gap-2 text-sm font-medium text-primary hover:underline"
+                  className="inline-flex w-fit items-center gap-2 text-sm font-medium text-primary-hover hover:underline"
                 >
                   <LinkIcon className="h-4 w-4" />
                   Открыть объявление

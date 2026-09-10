@@ -377,7 +377,7 @@ export function BusinessCentersAdminTab() {
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-ink-muted">
           Список объектов на публичной странице{' '}
-          <a href="/minsk/bcminsk" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+          <a href="/minsk/bcminsk" target="_blank" rel="noopener noreferrer" className="text-primary-hover hover:underline">
             /minsk/bcminsk
           </a>
           {centers && <> · {centers.length} объектов</>}
@@ -748,7 +748,7 @@ export function BusinessCentersAdminTab() {
             </p>
             {form.mapSnapshotFiles.map((file, i) => (
               <div key={file.url} className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm text-ink">
-                <a href={file.url} target="_blank" rel="noopener noreferrer" className="min-w-0 flex-1 truncate text-primary hover:underline">
+                <a href={file.url} target="_blank" rel="noopener noreferrer" className="min-w-0 flex-1 truncate text-primary-hover hover:underline">
                   {file.fileName}
                 </a>
                 <button
