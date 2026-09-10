@@ -23,6 +23,7 @@ import { AnalyticsMethodologyPage } from './pages/AnalyticsMethodologyPage';
 import { BriefPublicPage } from './pages/BriefPublicPage';
 import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
+import { metrikaHit } from './lib/metrika';
 
 // Вся админка (CRM с десятком разделов — финмодели, сметы, документы и т.д.)
 // нужна только за PasswordGate на /admin/*, но раньше грузилась тем же JS-
@@ -142,8 +143,7 @@ function usePreventPageZoom() {
 // навигация (в т.ч. конверсионный переход гид района → /minsk/one) была
 // невидима в статистике. Штатный для SPA способ от Яндекса — вручную слать
 // hit на каждую смену маршрута; первую загрузку пропускаем, её уже засчитал
-// init. window.ym может отсутствовать (пререндер с ?prerender=1, блокировщик
-// рекламы) — опциональный вызов, без падений.
+// init.
 function useMetrikaSpaHits() {
   const location = useLocation();
   const isFirstRender = useRef(true);
@@ -152,11 +152,7 @@ function useMetrikaSpaHits() {
       isFirstRender.current = false;
       return;
     }
-    (window as unknown as { ym?: (id: number, action: string, url: string) => void }).ym?.(
-      111858495,
-      'hit',
-      location.pathname + location.search,
-    );
+    metrikaHit(location.pathname + location.search);
   }, [location.pathname, location.search]);
 }
 

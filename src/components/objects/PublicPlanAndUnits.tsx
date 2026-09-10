@@ -25,6 +25,7 @@ import { NEW_BOOKING_LEAD_STATUS } from '../../data/leads';
 import { insertPublicLead } from '../../lib/leadsApi';
 import { updateZone } from '../../lib/buildingPlansApi';
 import { insertWorkstationSeatLead } from '../../lib/workstationSeatLeadsApi';
+import { reachGoal } from '../../lib/metrika';
 import { cn } from '../../lib/cn';
 
 // Тот же id используется в BookingTermsCard.tsx (PLAN_AND_UNITS_ANCHOR_ID) —
@@ -261,6 +262,10 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass 
       onZoneUpdated(updatedZone);
       setBookedLeadId(leadId);
       setBookingDone(true);
+      // Цель "Бронь кабинета" в Метрике (JS-событие, не смена URL — форма
+      // не уходит на отдельную страницу) — идентификатор совпадает с
+      // "url" у цели типа action, заведённой через Management API.
+      reachGoal('booking_submitted');
     } catch (err) {
       setBookingError(errorMessage(err, 'Не удалось отправить заявку'));
     } finally {
