@@ -2437,7 +2437,14 @@ export function Suppliers() {
       )}
 
       {tab === 'Письма' && (
-        <div className="mt-6">
+        // Владелец, 2026-09-10: "надо, чтобы влезало полностью, вне
+        // зависимости от экрана... даже если боковой список поставщиков
+        // будет как-то скрываться" — вкладка "Письма" на lg+ занимает всю
+        // высоту, доступную от AppLayout (main теперь overflow-y-auto, не
+        // документ целиком), дальше цепочка flex-1/min-h-0 идёт вниз до
+        // самого списка писем внутри SupplierCorrespondenceTab/EmailThread —
+        // композер всегда виден целиком, скроллится только лента писем.
+        <div className="mt-6 flex flex-col lg:min-h-0 lg:flex-1">
           <SupplierCorrespondenceTab
             requests={requests}
             offers={offers}

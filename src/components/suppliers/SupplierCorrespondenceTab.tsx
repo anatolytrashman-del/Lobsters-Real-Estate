@@ -536,8 +536,16 @@ export function EmailThread({
     // requestAnimationFrame, не сразу — composerRef.current в момент этого
     // клика ещё может быть null (композер только что открылся тем же
     // setComposerOpen(true) выше, DOM обновится после коммита рендера).
+    // Владелец, 2026-09-10: "не видно кнопки отправки" — было block:'start'
+    // (верх композера к верху видимой области), из-за чего на невысоких
+    // экранах кнопка "Отправить" (самый низ композера) всё равно оставалась
+    // за кадром — сам композер выше доступной высоты, "верх" и "низ" не
+    // помещаются одновременно. block:'end' решает именно её жалобу: если
+    // композер целиком помещается — результат тот же, что и раньше (нечего
+    // подрезать ни сверху, ни снизу); если нет — в кадре остаётся низ с
+    // кнопкой "Отправить", а не шапка формы.
     requestAnimationFrame(() => {
-      composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     });
   }
 
@@ -666,7 +674,14 @@ export function EmailThread({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    // Владелец, 2026-09-10: "весь блок письма был виден на экране" — на lg+
+    // сам композер (ниже) остаётся обычным shrink-0 (не растягивается,
+    // видим целиком), а лента писем ("Переписка" ниже) забирает всю
+    // оставшуюся высоту и сама скроллится — так кнопка "Отправить" никогда
+    // не уезжает за нижний край экрана. Работает и внутри модалки быстрого
+    // "Написать" (OfferEmailModal — max-h-[90vh] + overflow-y-auto на самой
+    // модалке), не только на вкладке "Письма".
+    <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
       {/* Владелец, 2026-09-03: флаг страны из заголовка карточки убран
           (слишком много флагов на экране, см. запись про список слева),
           категория (раньше отдельным бейджем у заголовка выше, см.
@@ -681,12 +696,12 @@ export function EmailThread({
         {offer.country && <span title={offer.country}>{countryFlag(offer.country)}</span>}
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
         <span className="text-sm font-semibold text-ink">Переписка</span>
         {extractionError && <p className="text-sm text-danger">{extractionError}</p>}
         {threadEmails.length === 0 && <p className="text-sm text-ink-faint">Писем пока нет.</p>}
         {threadEmails.length > 0 && (
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
             {/* Владелец, 2026-09-03: "когда много писем, приходится листать в
                 самый низ... я бы делал обратную хронологию — последнее письмо
                 наверху" — [...emails] копия перед reverse(), исходный emails
@@ -1595,9 +1610,16 @@ export function SupplierCorrespondenceTab({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-4 lg:flex-row">
-        <div className="flex flex-col gap-3 lg:w-80 lg:shrink-0">
+    // Владелец, 2026-09-10: "весь блок письма должен быть виден на экране,
+    // вне зависимости от экрана... даже если список поставщиков как-то
+    // скроется" — цепочка lg:min-h-0/lg:flex-1 вниз до EmailThread не
+    // растягивает список поставщиков поверх экрана, а даёт ему свою
+    // прокрутку (см. ниже), композер письма остаётся всегда видимым целиком.
+    // Ниже lg — как раньше, обычная прокрутка страницы, список и переписка
+    // друг под другом.
+    <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
+      <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1 lg:flex-row">
+        <div className="flex flex-col gap-3 lg:min-h-0 lg:w-80 lg:shrink-0">
           <Select
             label="Категория"
             options={categoryOptions.map((o) => o.label)}
@@ -1653,7 +1675,12 @@ export function SupplierCorrespondenceTab({
             </Button>
           )}
 
-          <div className="flex flex-col gap-1">
+          {/* Владелец, 2026-09-10: "боковой список поставщиков будет как-то
+              скрываться за кнопку" — сюда список не влезал бы полностью,
+              поэтому вместо скрытия за кнопкой (список нужен сразу) он
+              просто получил свою прокрутку — Select/тумблер страны/кнопка
+              рассылки сверху всегда на виду. */}
+          <div className="flex flex-col gap-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
             {isUnreadView
               ? unreadEntries.map((entry) => {
                   const key = `${entry.offer.id}:${entry.orderId ?? 'main'}`;
@@ -1711,11 +1738,11 @@ export function SupplierCorrespondenceTab({
           </div>
         </div>
 
-        <Card className="flex-1 p-5">
+        <Card className="flex-1 p-5 lg:flex lg:min-h-0 lg:flex-col lg:overflow-y-auto">
           {!selected ? (
             <p className="text-sm text-ink-faint">Выберите поставщика слева, чтобы открыть переписку.</p>
           ) : (
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1">
               {/* Владелец, 2026-09-03: флаг и бейдж категории убраны отсюда —
                   флаг был лишним (слишком много флагов на экране), категория
                   переехала в блок реквизитов внутри EmailThread. */}
