@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Mail, Paperclip, Send, FileText, Save, ChevronDown, ChevronUp, Reply, FileSearch, CheckCircle2, Eye, FileSpreadsheet, X, Plus, Users } from 'lucide-react';
 import { Card } from '../ui/Card';
@@ -17,7 +17,7 @@ import type { SupplierOfferEmail, EmailExtractionItem } from '../../data/supplie
 import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
 import { sendSupplierOfferEmail, setSupplierOfferEmailExtractionStatus } from '../../lib/supplierOfferEmailsApi';
 import type { LegalEntity } from '../../data/legalEntities';
-import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment } from '../../lib/legalEntityAttachment';
+import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment, fileToAttachment } from '../../lib/legalEntityAttachment';
 import type { EmailTemplate } from '../../data/emailTemplates';
 import { renderEmailTemplate } from '../../lib/emailTemplates';
 import { TemplateFormModal, TemplateManagerModal } from './EmailTemplates';
@@ -398,6 +398,32 @@ export function EmailThread({
   // реально уходит вместе с письмом только по нажатию "Отправить".
   const [ledgerModalOpen, setLedgerModalOpen] = useState(false);
   const [pendingLedger, setPendingLedger] = useState<LedgerAttachment | null>(null);
+  // Владелец, 2026-09-10: "мне нужна возможность прикреплять файлы к
+  // письму: картинки, таблицы, не ограничивай форматы лучше" — обычные
+  // файловые вложения, отдельно от ведомости (та собирается в своей
+  // модалке из позиций сметы) — тут просто то, что выбрали в проводнике,
+  // любых форматов, можно несколько штук подряд. Тот же принцип "черновик
+  // до отправки", что и у pendingLedger.
+  const [manualAttachments, setManualAttachments] = useState<LedgerAttachment[]>([]);
+  const [attachingFiles, setAttachingFiles] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleFilesPicked(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setAttachingFiles(true);
+    try {
+      const attached = await Promise.all(Array.from(files).map((f) => fileToAttachment(f)));
+      setManualAttachments((prev) => [...prev, ...attached]);
+    } catch {
+      setSendError('Не удалось прикрепить файл — попробуйте ещё раз');
+    } finally {
+      setAttachingFiles(false);
+    }
+  }
+
+  function removeManualAttachment(index: number) {
+    setManualAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
   // Владелец, 2026-09-06: "по умолчанию прикреплять карточку организации...
   // но только к первому письму" — isFirstOutgoingToOffer смотрит на ВСЕ
   // письма поставщика (emails, не threadEmails — карточка нужна один раз на
@@ -432,6 +458,14 @@ export function EmailThread({
   // свёрнута ли цитата в форме ("под катом" по умолчанию).
   const [quotedReplyText, setQuotedReplyText] = useState<string | null>(null);
   const [quotedReplyExpanded, setQuotedReplyExpanded] = useState(false);
+  // Владелец, 2026-09-10: "не очевидно, что внизу появилось окошко для
+  // написания письма. Пусть страницу туда сама перебрасывает" — композер
+  // может открыться далеко под уже прочитанной лентой писем (особенно у
+  // длинных тредов), сам по себе он не попадает в область видимости.
+  // Скроллим к нему только по явному клику "Ответить" (handleReplyTo), не
+  // при обычном открытии/первом рендере — иначе страница дёргалась бы и
+  // тогда, когда композер и так уже виден.
+  const composerRef = useRef<HTMLDivElement>(null);
   // Предпросмотр вложения (владелец: "мне бы предпросмотр, как договора") —
   // просто просмотр PDF/докс/картинки прямо в приложении, без ручной кнопки
   // распознавания (была здесь, убрана владельцем 2026-09-03 — см. комментарий
@@ -463,6 +497,7 @@ export function EmailThread({
     setSelectedTemplateId('');
     setComposerOpen(!hasHistory);
     setPendingLedger(null);
+    setManualAttachments([]);
     setSkipOrgCard(false);
     setQuotedReplyText(null);
     setQuotedReplyExpanded(false);
@@ -498,6 +533,12 @@ export function EmailThread({
     setQuotedReplyText(quoted.quoted);
     setQuotedReplyExpanded(false);
     setComposerOpen(true);
+    // requestAnimationFrame, не сразу — composerRef.current в момент этого
+    // клика ещё может быть null (композер только что открылся тем же
+    // setComposerOpen(true) выше, DOM обновится после коммита рендера).
+    requestAnimationFrame(() => {
+      composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   }
 
   function toggleQuoteExpanded(emailId: string) {
@@ -592,7 +633,11 @@ export function EmailThread({
     try {
       const orgCardAttachment =
         attachOrgCard && legalEntity?.cardFile ? await fetchDocumentFileAsAttachment(legalEntity.cardFile) : null;
-      const attachments = [...(pendingLedger ? [pendingLedger] : []), ...(orgCardAttachment ? [orgCardAttachment] : [])];
+      const attachments = [
+        ...(pendingLedger ? [pendingLedger] : []),
+        ...manualAttachments,
+        ...(orgCardAttachment ? [orgCardAttachment] : []),
+      ];
       // Цитата (quotedReplyText) живёт отдельно от того, что печатает
       // пользователь, весь черновик — только теперь, на отправку, склеиваем
       // их в одно письмо (получатель должен видеть всю историю, как и
@@ -612,6 +657,7 @@ export function EmailThread({
       setQuotedReplyExpanded(false);
       setComposerOpen(false);
       setPendingLedger(null);
+      setManualAttachments([]);
     } catch (err) {
       setSendError(errorMessage(err, 'Не удалось отправить письмо'));
     } finally {
@@ -822,7 +868,7 @@ export function EmailThread({
       {!offer.email ? (
         <p className="text-sm text-ink-faint">У предложения не указан email — добавьте его через «Редактировать», чтобы писать отсюда.</p>
       ) : !composerOpen ? null : (
-        <div className="flex flex-col gap-2 border-t border-border pt-3">
+        <div ref={composerRef} className="flex flex-col gap-2 border-t border-border pt-3">
           {orderedTemplates.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <span className="text-sm text-ink-muted">Шаблон</span>
@@ -912,6 +958,56 @@ export function EmailThread({
             </Button>
           )}
 
+          {/* Владелец, 2026-09-10: "мне нужна возможность прикреплять файлы
+              к письму: картинки, таблицы, не ограничивай форматы лучше. Как
+              прикрепить ведомость, только кнопка Прикрепить файл" — обычный
+              файловый инпут без accept (любой формат), можно выбрать сразу
+              несколько; каждый выбранный файл — своя пилюля с крестиком,
+              список растёт при повторном клике (не заменяет уже выбранные).
+              Реально уходят вместе с письмом только на "Отправить" (см.
+              handleSend) — здесь только черновик вложений. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void handleFilesPicked(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          {manualAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {manualAttachments.map((att, i) => (
+                <div
+                  key={`${att.fileName}-${i}`}
+                  className="flex w-fit items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-1.5 text-sm text-ink"
+                >
+                  <Paperclip className="h-4 w-4 shrink-0 text-ink-faint" />
+                  <span className="max-w-[220px] truncate">{att.fileName}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeManualAttachment(i)}
+                    aria-label={`Убрать вложение ${att.fileName}`}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <Button
+            type="button"
+            variant="secondary"
+            icon={<Paperclip className="h-4 w-4" />}
+            className="w-fit"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={attachingFiles}
+          >
+            {attachingFiles ? 'Прикрепляем...' : 'Прикрепить файл'}
+          </Button>
+
           {/* Владелец, 2026-09-06: "пусть это будет видно в интерфейсе, что
               она прикреплена" — карточка организации прикладывается
               автоматически к первому письму поставщику (isFirstOutgoingToOffer
@@ -951,6 +1047,7 @@ export function EmailThread({
                 setComposerOpen(false);
                 setQuotedReplyText(null);
                 setQuotedReplyExpanded(false);
+                setManualAttachments([]);
               }}
               disabled={sending}
             >
