@@ -122,8 +122,20 @@ export function AvailableUnitsTable({
         <>
           {/* От md и шире — таблица-грид с колонками. На узких экранах горизонтальный
               скролл таблицы неудобен, поэтому ниже md те же данные рендерятся как
-              стопка карточек (см. блок md:hidden). */}
-          <div className={cn('hidden overflow-x-auto rounded-control border md:block', glass ? 'border-white/50' : 'border-border')}>
+              стопка карточек (см. блок ниже). С колонкой "Забронировать"
+              (onBookClick) минимальная ширина таблицы — 760px, а на 768px
+              (типичный планшет-портрет) после отступов страницы остаётся
+              меньше — кнопка обрезалась по правому краю карточки (UX-аудит).
+              Порог переключения сдвинут до lg (1024px) именно для этого
+              случая — без кнопки брони (админка/просмотр плана) 560px и
+              так помещаются на md, трогать не нужно. */}
+          <div
+            className={cn(
+              'hidden overflow-x-auto rounded-control border',
+              onBookClick ? 'lg:block' : 'md:block',
+              glass ? 'border-white/50' : 'border-border',
+            )}
+          >
             <div
               className={cn(
                 'grid min-w-[560px] grid-cols-[120px_100px_110px_120px_1fr] gap-4 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-ink-faint',
@@ -192,8 +204,9 @@ export function AvailableUnitsTable({
             ))}
           </div>
 
-          {/* Ниже md — карточки вместо строк таблицы, без горизонтального скролла. */}
-          <div className="flex flex-col gap-2.5 md:hidden">
+          {/* Ниже порога таблицы (см. комментарий выше) — карточки вместо строк
+              таблицы, без горизонтального скролла. */}
+          <div className={cn('flex flex-col gap-2.5', onBookClick ? 'lg:hidden' : 'md:hidden')}>
             {visibleUnits.map((u) => (
               <div
                 key={u.zone.id}

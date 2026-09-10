@@ -64,7 +64,11 @@ export function AppLayout() {
             <Menu className="h-5 w-5" />
           </button>
           <span className="text-base font-extrabold tracking-wide text-ink">
-            <span className="font-black text-primary">RED</span>EVELOPMENT
+            {/* text-primary-hover, не text-primary — тот же фикс, что уже
+                применён на гиде района (DistrictGuidePage.tsx) для этого же
+                логотипа: базовый красный на этом фоне даёт контраст ниже
+                4,5:1 (Accessibility, UX-аудит мобильной шапки админки). */}
+            <span className="font-black text-primary-hover">RED</span>EVELOPMENT
           </span>
         </div>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
