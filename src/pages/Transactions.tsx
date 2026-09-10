@@ -643,7 +643,7 @@ export function Transactions() {
                 <button
                   type="button"
                   onClick={() => openAdjustModal(soloPayers[0], 'USD')}
-                  className="flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+                  className="flex items-center gap-1.5 text-sm font-medium text-primary-hover hover:underline"
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   Скорректировать остаток

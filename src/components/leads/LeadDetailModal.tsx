@@ -185,7 +185,7 @@ export function LeadDetailModal({
           </Field>
           <Field label="Телефон">
             {lead.phone ? (
-              <a href={`tel:${lead.phone.replace(/[^\d+]/g, '')}`} className="text-primary hover:underline">
+              <a href={`tel:${lead.phone.replace(/[^\d+]/g, '')}`} className="text-primary-hover hover:underline">
                 {lead.phone}
               </a>
             ) : null}
@@ -198,7 +198,7 @@ export function LeadDetailModal({
             {object ? (
               <Link
                 to={`/admin/objects/${object.landingSlug || object.id}`}
-                className="inline-flex items-center gap-1 text-primary hover:underline"
+                className="inline-flex items-center gap-1 text-primary-hover hover:underline"
               >
                 {object.address}
                 <ArrowRight className="h-3.5 w-3.5" />

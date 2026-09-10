@@ -98,7 +98,10 @@ function WarmBadge({ lead, onToggle, disabled }: { lead: Lead; onToggle: () => v
       disabled={disabled}
       className={cn(
         'w-fit shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold disabled:opacity-50',
-        lead.isWarm ? 'bg-warning/15 text-warning' : 'bg-surface-muted text-ink-muted',
+        // bg-warning-bg, не bg-warning/15 — та же пара, что везде в проекте
+        // (Badge.tsx/Documents.tsx/MarketOffersReview.tsx), даёт нужный
+        // контраст; самодельная 15%-прозрачность давала 2.68:1 (UX-аудит).
+        lead.isWarm ? 'bg-warning-bg text-warning' : 'bg-surface-muted text-ink-muted',
       )}
     >
       {lead.isWarm ? 'Важный' : 'Интересант'}
@@ -569,7 +572,13 @@ export function Leads() {
                   </span>
                 )}
               </div>
-              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-faint">
+              {/* text-ink-muted, не text-ink-faint — это не декоративный
+                  элемент, а рабочая информация для сотрудника (когда в
+                  последний раз связывались, когда следующий контакт,
+                  просрочка подсвечивается красным ниже) — text-ink-faint
+                  давал 2.62:1 (UX-аудит), внутри карточки text-ink-muted
+                  уже безопасно используется по всему проекту. */}
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-muted">
                 <span>Посл. контакт: {formatDate(l.lastContactedAt)}</span>
                 {l.nextContactAt && (
                   <span className={cn(isOverdue(l.nextContactAt) && 'font-semibold text-danger')}>

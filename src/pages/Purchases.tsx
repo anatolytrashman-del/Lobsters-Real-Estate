@@ -488,7 +488,7 @@ export function Purchases({
               <div className="overflow-x-auto rounded-control border border-border">
                 <table className="w-full min-w-[520px] border-collapse text-sm">
                   <thead>
-                    <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-muted">
                       <th className="px-3 py-2">Название</th>
                       <th className="px-3 py-2 text-right">Кол-во</th>
                       <th className="px-3 py-2 text-right">Цена</th>
@@ -676,7 +676,7 @@ function PurchaseDetailModal({
                           href={f.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="flex items-center gap-1.5 rounded-control border border-border bg-surface px-2.5 py-1.5 text-xs text-primary hover:underline"
+                          className="flex items-center gap-1.5 rounded-control border border-border bg-surface px-2.5 py-1.5 text-xs text-primary-hover hover:underline"
                         >
                           <Paperclip className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
                           <span className="min-w-0 flex-1 truncate">{f.fileName}</span>

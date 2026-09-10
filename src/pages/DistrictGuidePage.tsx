@@ -3157,7 +3157,7 @@ export function DistrictGuidePage() {
             DEVELOPER_LINKS/MANAGEMENT_COMPANY этого же файла — bir.by/dpm.by).
             Без glassCardClass намеренно — не карточка, просто текст в общем
             потоке страницы на фоне body. */}
-        <p className="pt-2 text-xs leading-relaxed text-ink-muted">
+        <p className="pt-2 text-xs leading-relaxed text-ink">
           Все товарные знаки, логотипы и наименования компаний, упомянутые на странице — в том числе{' '}
           <a href="https://yandex.by/maps/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
             Яндекс.Карты

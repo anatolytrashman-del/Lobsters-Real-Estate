@@ -83,7 +83,7 @@ export function MaterialsTable({
     <div className="overflow-x-auto rounded-control border border-border">
       <table className="w-full min-w-[560px] border-collapse text-sm">
         <thead>
-          <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+          <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-muted">
             <th className="px-3 py-2">Название</th>
             <th className="px-3 py-2 text-right">Кол-во</th>
             <th className="px-3 py-2">{showPrices ? 'Лучшая цена' : 'Особенности'}</th>

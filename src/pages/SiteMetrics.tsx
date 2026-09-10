@@ -662,7 +662,7 @@ export function SiteMetrics() {
                 <button
                   type="button"
                   onClick={() => setTopPagesExpanded((v) => !v)}
-                  className="self-start text-sm text-primary hover:underline"
+                  className="self-start text-sm text-primary-hover hover:underline"
                 >
                   {topPagesExpanded
                     ? 'Свернуть'

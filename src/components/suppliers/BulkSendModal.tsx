@@ -277,7 +277,7 @@ export function BulkSendModal({
               <>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-ink-muted">Получатели ({selected.size} из {candidates.length})</span>
-                  <button type="button" onClick={toggleAll} className="text-sm font-medium text-primary hover:underline">
+                  <button type="button" onClick={toggleAll} className="text-sm font-medium text-primary-hover hover:underline">
                     {selected.size === candidates.length ? 'Снять выбор' : 'Выбрать всех'}
                   </button>
                 </div>

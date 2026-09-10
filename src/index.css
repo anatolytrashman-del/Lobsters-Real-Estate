@@ -82,11 +82,17 @@
   --color-info-bg: #dfeafd;
   --color-info-text: #1f4c8f;
 
-  --color-success: #1aa053;
+  /* Затемнены от исходных #1aa053/#e0293f/#b8842a (UX-аудит) — на своём
+     -bg токене (типичная пара для бейджей/пилюль) исходные давали
+     3.03:1 / 3.95:1 / 2.94:1 вместо нужных для текста 4.5:1. Каждое
+     значение подобрано минимальным затемнением по той же самой яркости
+     (HLS lightness), которое даёт ровно ≥4.5:1 — тот же оттенок, не
+     смена цвета. */
+  --color-success: #157f42;
   --color-success-bg: #e6f6ed;
-  --color-danger: #e0293f;
+  --color-danger: #d21e34;
   --color-danger-bg: #fce9eb;
-  --color-warning: #b8842a;
+  --color-warning: #906721;
   --color-warning-bg: #fbf1de;
 
   --radius-card: 1.25rem;
