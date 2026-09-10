@@ -19,9 +19,44 @@
 // секретностью ключа) за всеми объектами с непустым landing_slug — новые
 // объекты с продающей страницей подхватываются сами, без правки скрипта.
 //
-// Один HTML-снапшот на слаг не протухнет молча: рабочий процесс — трекнуть
-// сборку с Vercel Deploy Hook при сохранении объекта в админке (см.
-// lib/objectsApi.ts, api/trigger-rebuild.js), не расписание.
+// 2026-09-09 — БЫСТРЫЙ/ПОЛНЫЙ режим (владелец: "разделим маркетинговые
+// страницы и платформу... чтобы можно было быстро править платформу, не
+// ожидая полного рендера всего сервака на 250+ страниц"). Полный рендер
+// (headless-браузер на каждый путь) — единственная по-настоящему долгая
+// часть всей сборки (минуты, не секунды — запуск браузера на страницу,
+// см. историю WORKER_COUNT ниже), и раньше выполнялся на КАЖДЫЙ пуш,
+// включая пуши, не трогающие ни одну публичную страницу (правки CRM/API).
+//
+// Теперь по умолчанию (обычный пуш кода) — БЫСТРЫЙ режим: вместо рендера
+// каждый путь просто СКАЧИВАЕТСЯ с уже живого прода (redevelopment.pro) —
+// на порядок быстрее (голый HTTP, без браузера) и не оставляет ни одну
+// страницу без снапшота (копируется актуальный на данный момент прод, не
+// пусто). Если для конкретного пути живой копии нет/она невалидна (совсем
+// новая страница, сетевая ошибка) — для НЕЁ ОДНОЙ делается настоящий
+// рендер (fetchPathLive → renderPath как fallback), не всей сборки целиком.
+//
+// ПОЛНЫЙ режим (настоящий рендер каждого пути свежими данными) включается
+// автоматически, когда сборку запустил Vercel Deploy Hook по сохранению
+// объекта в админке (lib/objectsApi.ts → api/trigger-rebuild.js) — та же
+// таблица deploy_debounce, что и debounce хука, служит вторым сигналом:
+// свежий triggered_at (< FORCE_FULL_RECENT_MS) означает "эту сборку
+// запустило реальное изменение данных, нужен настоящий рендер", а не
+// просто пуш кода. Дополнительно — явный env `PRERENDER_FORCE_FULL=1` (для
+// ручного полного прогона) и локальные/дев-запуски (без process.env.VERCEL)
+// — там всегда полный режим, как и было. Любая ошибка при проверке флага
+// (нет SUPABASE_SERVICE_ROLE_KEY, сеть подвела) — безопасный дефолт: полный
+// рендер, не быстрый (чтобы баг в этой логике никогда не стал тихой SEO-
+// регрессией).
+//
+// Важное следствие: страницы БЕЗ своего триггера обновления (каталог БЦ,
+// хабы, аналитика — только лендинги объектов дёргают хук) больше не
+// освежаются попутно от каждого пуша кода, как раньше — держать в голове,
+// если понадобится гарантированная свежесть для них: либо завести им
+// такой же вызов trigger-rebuild.js, либо гонять полный прогон по
+// расписанию (см. вариант с крон-воркфлоу, ещё не заведён). Частично закрыто
+// 2026-09-09 через ALWAYS_FULL_RENDER_PATHS ниже — короткий ручной список
+// часто правящихся руками страниц, которые всегда получают настоящий рендер
+// даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -36,6 +71,18 @@ const BASE_URL = `http://localhost:${PORT}`;
 // клиентский бандл, отдельного секрета для сборки не требует.
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL ?? 'https://iohcdylttyuhwovztrbk.supabase.co';
 const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_EQwXLOy5TmSPj5tzKjbSeg_xj6SM2Iz';
+// Только для проверки deploy_debounce (см. быстрый/полный режим ниже) —
+// эта таблица закрыта RLS даже на select для anon (P0.2 аудита
+// безопасности), нужен сервисный ключ. Он уже есть в Vercel env (используют
+// api/*.js) — новый секрет от владельца не требуется.
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+const SITE_ORIGIN = 'https://redevelopment.pro';
+// Сборка, запущенная Deploy Hook'ом (реальное изменение данных), должна
+// успеть дойти до этой проверки, пока triggered_at ещё «свежий» — щедрый
+// запас на очередь Vercel + предыдущие шаги сборки (tsc/vite build/сгенери-
+// рованные html/sitemap), которые все идут ДО prerender.mjs.
+const FORCE_FULL_RECENT_MS = 15 * 60_000;
 
 // Все публичные страницы теперь под /minsk/... (см. CLAUDE.md, урл-
 // структура) — переменная переименована из STATIC_SLUGS в STATIC_PATHS:
@@ -70,12 +117,76 @@ const DISTRICT_HUB_SLUGS = [
 // массивом по той же причине, что и хабы каталога ниже).
 const MINSK_MIR_TOPIC_SLUGS = ['biznes-centr', 'kovorking', 'kupit-ofis', 'arenda-ofisa', 'kommercheskie-pomeshcheniya'];
 
+// Владелец, 2026-09-09 — прямой вопрос после правки контента
+// /minsk/minsk-mir: "это лендинг, они парсятся отдельно, да? Как бы
+// перезапустить только одну страницу, а не все сотни". Реальная причина
+// вопроса — правка КОДА содержания (текст/структура таблицы) не то же
+// самое, что правка ДАННЫХ через сохранение объекта в админке: у последней
+// есть свой триггер (lib/objectsApi.ts → api/trigger-rebuild.js →
+// deploy_debounce → ПОЛНЫЙ режим на следующей сборке), а у первой — нет
+// никакого (см. комментарий "Важное следствие" в шапке файла, это был
+// известный, но не закрытый пробел). Без явного полного режима обычный
+// пуш кода идёт БЫСТРЫМ путём — а тот для уже существующего пути просто
+// СКАЧИВАЕТ текущую живую (ещё СТАРУЮ) страницу с прода, значит свежий
+// текст рискует не попасть в сохранённый снапшот именно на той сборке,
+// где его правили (реальным посетителям с JS не мешает — React
+// перерисует поверх снапшота, — но боты/соцсети до следующего полного
+// прогона видели бы старый текст).
+//
+// Решение — не гонять полный рендер ВСЕХ ~250 путей ради одной правленой
+// страницы (дорого и не нужно), а держать здесь короткий список "всегда
+// рендерить по-настоящему, даже в быстром режиме" — эти несколько страниц
+// правятся руками достаточно часто, чтобы цена лишних секунд рендера на
+// каждую сборку была разумной платой за гарантированную свежесть. Хабы
+// каталога БЦ/лендинги объектов сюда сознательно не входят — их сотни, и
+// у объектов уже есть свой триггер выше.
+//
+// 2026-09-10 — найден реальный, более тяжёлый баг того же механизма,
+// затронувший /minsk/one: `fetchPathLive` копирует HTML живой страницы
+// КАК ЕСТЬ, включая её ссылки на JS-чанки (`/assets/index-<hash>.js` и
+// т.д.) — а хэши этих файлов у КАЖДОЙ новой сборки перегенерируются
+// заново (обычный content-hash Vite), даже если сама эта страница
+// внешне не менялась, стоит поменяться хоть одному файлу общего бандла
+// (публичные страницы не lazy — см. "Код-сплиттинг админки" в другой
+// части журнала). Итог — снапшот путей БЕЗ полного рендера ссылается на
+// JS-файлы уже ПРЕДЫДУЩЕЙ сборки, которых в текущем деплое физически
+// нет: `/assets/index-<старый-hash>.js` отдаёт 404 → общий SPA-рерайт
+// vercel.json подменяет его на index.html → браузер получает вместо
+// JS-модуля HTML и не может его выполнить → JS вообще не запускается.
+// Это ОПРОВЕРГАЕТ прежнее допущение в комментарии выше ("реальным
+// посетителям с JS не мешает — React перерисует поверх снапшота") — на
+// самом деле мешает, React ничего не перерисовывает, если сам его код
+// не смог загрузиться. Живой пример: коммит, убравший вкладки "План/
+// Список" с лендинга Red One (/minsk/one), ушёл в деплой, где эта
+// страница пошла быстрым путём — посетители час спустя всё ещё видели
+// старые вкладки с планировкой, потому что снапшот страницы был
+// заморожен на JS предыдущей сборки. `minsk/one` добавлен в этот же
+// список по той же логике, что и minsk-mir — это не рядовой лендинг
+// объекта, а флагманская продающая страница, которую правят часто и
+// которой критично не зависать на устаревшем JS. Если тот же симптом
+// повторится на других лендингах объектов — добавлять их сюда по
+// одному, не переводить всю сотню сразу.
+const ALWAYS_FULL_RENDER_PATHS = new Set(['minsk/minsk-mir', 'minsk/one']);
+
 const STATIC_PATHS = [
   'minsk',
+  'minsk/analytics',
+  'minsk/analytics/metodika',
+  'minsk/analytics/ofisy/arenda',
+  'minsk/analytics/ofisy/prodazha',
+  'minsk/analytics/torgovye/arenda',
+  'minsk/analytics/torgovye/prodazha',
+  'minsk/analytics/sklady/arenda',
+  'minsk/analytics/sklady/prodazha',
+  'minsk/analytics/mashinomesta/arenda',
+  'minsk/analytics/mashinomesta/prodazha',
+  'minsk/analytics/minsk-mir',
+  'minsk/analytics/rajony',
   'minsk/minsk-mir',
   ...MINSK_MIR_TOPIC_SLUGS.map((s) => `minsk/minsk-mir/${s}`),
   'minsk/bcminsk',
   'minsk/bcminsk/stroyashchiesya',
+  'minsk/bcminsk/reyting',
   ...CLASS_HUB_SLUGS.map((s) => `minsk/bcminsk/class/${s}`),
   ...DISTRICT_HUB_SLUGS.map((s) => `minsk/bcminsk/raion/${s}`),
 ];
@@ -167,6 +278,69 @@ const METRO_HUB_SLUG_BY_STATION = {
   Автозаводская: 'avtozavodskaya',
   Могилёвская: 'mogilevskaya',
 };
+
+// Хабы по улицам (аудит поиска 2026-09-07) — та же карта slug'ов, что в
+// src/lib/businessCenterHubs.ts (STREET_SLUGS — продублировано, скрипт без
+// TS-загрузчика), тот же streetOfAddress (businessCenterDisplay.ts,
+// продублирован как streetOfAddressJs — чистая синтаксическая функция от
+// адреса, не тянет БД). Хаб — только для улиц с 2+ БЦ (STREET_HUB_SLUG_BY_NAME
+// содержит только уже подтверждённые slug'и таких улиц).
+const STREET_HUB_SLUG_BY_NAME = {
+  'пр-т Победителей': 'pr-t-pobediteley',
+  'пр-т Независимости': 'pr-t-nezavisimosti',
+  'пр-т Дзержинского': 'pr-t-dzerzhinskogo',
+  'ул. Притыцкого': 'ul-pritytskogo',
+  'ул. Сурганова': 'ul-surganova',
+  'ул. Платонова': 'ul-platonova',
+  'ул. Клары Цеткин': 'ul-klary-tsetkin',
+  'пер. Козлова': 'per-kozlova',
+  'пр-т Партизанский': 'pr-t-partizanskiy',
+  'Логойский тракт': 'logoyskiy-trakt',
+  'ул. Хоружей': 'ul-horuzhey',
+  'ул. Филимонова': 'ul-filimonova',
+  'ул. Немига': 'ul-nemiga',
+  'ул. Мележа': 'ul-melezha',
+  'ул. Толбухина': 'ul-tolbuhina',
+  'ул. Железнодорожная': 'ul-zheleznodorozhnaya',
+  'ул. Интернациональная': 'ul-internatsionalnaya',
+  'ул. Лобанка': 'ul-lobanka',
+  'ул. Ольшевского': 'ul-olshevskogo',
+  'ул. Свердлова': 'ul-sverdlova',
+  'ул. Скрыганова': 'ul-skryganova',
+  'ул. Тимирязева': 'ul-timiryazeva',
+  'ул. Скорины': 'ul-skoriny',
+};
+
+function shortAddressJs(a) {
+  return a
+    .replace(/^г\.\s*Минск,\s*/i, '')
+    .replace(/^Минская\s+область,\s*/i, '')
+    .replace(/^[А-ЯЁ][а-яё]+\s+район,\s*/, '')
+    .trim();
+}
+
+function streetOfAddressJs(fullAddress) {
+  const short = shortAddressJs(fullAddress);
+  const parts = short.split(',').map((p) => p.trim());
+  const houseIndex = parts.findIndex((p) => /^\d/.test(p));
+  if (houseIndex > 0) return parts.slice(0, houseIndex).join(', ');
+  if (houseIndex === 0) return short;
+  return parts.length > 1 ? parts.slice(0, -1).join(', ') : short;
+}
+
+async function fetchStreetHubPaths() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=address`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_centers.address`);
+  const rows = await res.json();
+  const slugs = new Set();
+  for (const r of rows) {
+    const slug = STREET_HUB_SLUG_BY_NAME[streetOfAddressJs(r.address)];
+    if (slug) slugs.add(`minsk/bcminsk/ulitsa/${slug}`);
+  }
+  return [...slugs];
+}
 
 async function fetchMetroHubStations() {
   const res = await fetch(
@@ -317,6 +491,100 @@ async function launchBrowser() {
   return chromium.launch(options);
 }
 
+// true — полный рендер headless-браузером (см. комментарий про быстрый/
+// полный режим в шапке файла), false — быстрое скачивание с живого прода.
+//
+// 2026-09-10 — реальный баг, пойманный владельцем на живом проде: билды
+// снова стали занимать ~9 минут вместо ~1, «рендерит вообще все страницы,
+// включая бизнес-центры». Причина — старая версия просто читала
+// triggered_at и сравнивала с окном FORCE_FULL_RECENT_MS (15 минут): КАЖДЫЙ
+// билд, попавший в это окно, уходил в полный рендер, не только тот, что
+// реально запустил Deploy Hook по сохранению объекта. Живой инцидент
+// (проверено через Vercel API + Management API): сохранение объекта в
+// 10:47:53 выставило triggered_at → ручной Redeploy владельца в 10:48:08
+// (15с спустя) попал в окно и занял 547с; следующий обычный пуш кода в
+// 10:50:24 — тоже попал в то же окно (ещё < 15 минут прошло) и тоже ушёл в
+// полный рендер, хотя не имел отношения к тому сохранению. При активной
+// работе (пуши раз в несколько минут) это означает каскад медленных
+// сборок от одного-единственного сохранения объекта.
+//
+// Настоящий инвариант, который нужен: НЕ «каждый билд в окне N минут», а
+// «хотя бы ОДИН прод-билд после сохранения объекта должен сделать полный
+// рендер с живыми данными» — дальше все остальные fast-режимные билды и
+// так корректно скопируют уже посвежевший прод (fetchPathLive читает
+// ЖИВУЮ страницу, а не конкретный git-коммит — какой именно билд сделал
+// полный рендер, не важно, лишь бы хоть один). Поэтому вместо временного
+// окна — атомарное «потребление один раз» (PATCH ... WHERE consumed_at IS
+// NULL RETURNING ...): первый прод-билд, дошедший до этой проверки после
+// триггера, забирает флаг и делает полный рендер, ВСЕ последующие видят
+// его уже потреблённым и идут быстрым путём, даже если попали в то же
+// «окно». FORCE_FULL_RECENT_MS остаётся подстраховкой на случай, если
+// очередь Vercel аномально большая — не потреблять флаг, если он старше
+// этого возраста (не зависать в полном режиме навечно из-за протухшего
+// триггера).
+//
+// Preview/dev-сборки исключены из потребления флага совсем (не SEO-
+// критичны, никто их не индексирует) — иначе гонка «кто первый прочитает»
+// между прод- и preview-билдом одного и того же пуша могла бы отдать флаг
+// preview, оставив прод на устаревшем быстром снапшоте. Неизвестный/не
+// проставленный VERCEL_ENV — НЕ считается «точно preview», падаем в общую
+// логику ниже (безопасный дефолт этой функции — при любой неуверенности
+// полный рендер, не тихая регрессия).
+async function shouldForceFullPrerender() {
+  if (process.env.PRERENDER_FORCE_FULL === '1') return true;
+  if (!process.env.VERCEL) return true; // локальный/ручной прогон — как и раньше, всегда полный
+  if (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') return false;
+  if (!SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn('[prerender] SUPABASE_SERVICE_ROLE_KEY не задан — не могу проверить deploy_debounce, полный режим');
+    return true;
+  }
+  try {
+    const cutoffIso = new Date(Date.now() - FORCE_FULL_RECENT_MS).toISOString();
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&consumed_at=is.null&triggered_at=gt.${encodeURIComponent(cutoffIso)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({ consumed_at: new Date().toISOString() }),
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!res.ok) return true;
+    const rows = await res.json();
+    return rows.length > 0; // забрали флаг первыми — наш билд делает полный рендер
+  } catch (err) {
+    console.warn('[prerender] не удалось проверить/потребить deploy_debounce — полный режим на всякий случай:', err);
+    return true;
+  }
+}
+
+// Быстрый путь: вместо рендера — скачать уже готовый снапшот с прода как
+// есть. Валидным считаем только страницу с реальным <h1> (то же условие,
+// что renderPath ждёт от headless-рендера) — «голый» SPA-шелл (например,
+// если путь на проде почему-то ещё не был пререндерен) не проходит, и
+// вызывающий код делает настоящий рендер именно для этого пути.
+async function fetchPathLive(path) {
+  try {
+    const res = await fetch(`${SITE_ORIGIN}/${path}`, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return false;
+    const html = await res.text();
+    if (!/<h1[\s>]/i.test(html)) return false;
+    const dir = join(DIST_DIR, path);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'index.html'), html);
+    console.log(`[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(html.length / 1024)} КБ)`);
+    return true;
+  } catch (err) {
+    console.warn(`[prerender] /${path}: не удалось скачать живую копию (${err instanceof Error ? err.message : err}), рендерю`);
+    return false;
+  }
+}
+
 async function main() {
   if (!existsSync(DIST_DIR)) throw new Error('dist/ не найден — запускать после vite build');
 
@@ -327,6 +595,7 @@ async function main() {
     ...(await fetchClassDistrictComboPaths()),
     ...(await fetchMicrodistrictHubPaths()),
     ...(await fetchMetroHubPaths()),
+    ...(await fetchStreetHubPaths()),
     ...STATIC_PATHS,
   ];
   if (paths.length === 0) {
@@ -377,6 +646,16 @@ async function main() {
   //    параллелизмом (WORKER_COUNT воркеров, каждый в своём цикле). Не
   //    красивее, зато без единой лишней проваленной попытки на страницу.
   const WORKER_COUNT = 4;
+  // Быстрый режим — просто HTTP GET, без единого браузера: constraint выше
+  // (single-process Chromium) тут ни при чём, можно куда больше параллелизма.
+  const FAST_WORKER_COUNT = 16;
+
+  const fullMode = await shouldForceFullPrerender();
+  console.log(
+    fullMode
+      ? '[prerender] ПОЛНЫЙ режим — рендерю каждый путь headless-браузером (реальное изменение данных или ручной прогон)'
+      : '[prerender] БЫСТРЫЙ режим — копирую уже живые страницы с прода, рендерю только то, чего там ещё нет',
+  );
 
   const serverProc = startPreviewServer();
 
@@ -468,16 +747,31 @@ async function main() {
     }
   }
 
+  // Быстрый режим: сперва пробуем скачать живую копию с прода, и только если
+  // её нет/не прошла проверку — настоящий рендер именно для этого пути
+  // (тот же renderPath, что и в полном режиме, с его же ретраями/failedPaths).
+  async function processPathFast(path) {
+    // ALWAYS_FULL_RENDER_PATHS — см. комментарий у самой константы: эти
+    // несколько страниц правятся кодом достаточно часто, чтобы не
+    // полагаться на "скачать текущую (возможно ещё старую) живую копию".
+    if (ALWAYS_FULL_RENDER_PATHS.has(path)) {
+      await renderPath(path);
+      return;
+    }
+    const ok = await fetchPathLive(path);
+    if (!ok) await renderPath(path);
+  }
+
   try {
     await waitForServer();
     let cursor = 0;
     async function worker() {
       while (cursor < paths.length) {
         const path = paths[cursor++];
-        await renderPath(path);
+        await (fullMode ? renderPath(path) : processPathFast(path));
       }
     }
-    await Promise.all(Array.from({ length: WORKER_COUNT }, worker));
+    await Promise.all(Array.from({ length: fullMode ? WORKER_COUNT : FAST_WORKER_COUNT }, worker));
   } finally {
     serverProc.kill();
   }

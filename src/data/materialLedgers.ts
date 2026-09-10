@@ -8,10 +8,19 @@ import type { PurchaseItem } from './purchases';
 // название/ед./кол-во), не привязанный ни к категории, ни к поставщику —
 // выбирается в композере письма (см. components/suppliers/
 // MaterialLedgerModal.tsx) независимо от того, кому пишем.
+// Владелец, 2026-09-09: "шаблон ведомости материала привязывался к смете...
+// когда выбран Red One, всё равно видны шаблоны Зелёного" — ведомость,
+// созданная на вкладке "Ведомости материалов" при выбранной конкретной
+// смете, привязывается к ней (estimateId); список на этой вкладке
+// показывает только ведомости ВЫБРАННОЙ там сметы. Ведомости, созданные
+// вне этого контекста (например "Прикрепить ведомость" в одиночном
+// письме, EmailThread) — estimateId=null, остаются общими/универсальными
+// и видны в тех пикерах как были (там своей "текущей сметы" нет).
 export interface MaterialLedger {
   id: string;
   name: string;
   items: PurchaseItem[];
+  estimateId: string | null;
   createdAt: string;
 }
 
@@ -19,5 +28,6 @@ export interface MaterialLedgerRow {
   id: string;
   name: string;
   items: PurchaseItem[] | null;
+  estimate_id: string | null;
   created_at: string;
 }

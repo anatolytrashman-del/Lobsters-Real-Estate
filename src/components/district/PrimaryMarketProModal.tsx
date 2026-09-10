@@ -10,6 +10,7 @@ import {
   primaryNetPricePerM2Eur,
 } from '../../data/primaryMarketOffers';
 import type { PrimaryMarketOffer } from '../../data/primaryMarketOffers';
+import { AREA_BUCKET_ORDER, areaBucket } from '../../data/marketOffers';
 
 // Pro-режим блока "Первичный рынок" (владелец, 2026-08-24: "у нас же много
 // данных для отображения, давай сделаем таблицу более подробной... может
@@ -39,6 +40,41 @@ function buildHistogram(prices: number[]): { rangeLabel: string; count: number }
     const from = Math.round(min + i * step);
     const to = Math.round(min + (i + 1) * step);
     return { rangeLabel: `${from.toLocaleString('ru-RU')}–${to.toLocaleString('ru-RU')} €`, count };
+  });
+}
+
+interface AreaBucketRow {
+  bucket: string;
+  count: number;
+  priceMin: number;
+  priceAvg: number;
+  priceMax: number;
+}
+
+// Владелец: "в аналитике первички не хватает разделения помещений на
+// площади... давай как ты сделал во вторичке" — те же 4 диапазона и та же
+// функция бакетинга (AREA_BUCKET_ORDER/areaBucket из data/marketOffers.ts),
+// что уже используется в сводной таблице вторичного рынка на гиде района —
+// не придумывали новую градацию, переиспользовали существующую. Пустые
+// бакеты (для категории просто нет предложений такой площади) не
+// показываются — не то же самое, что "0 предложений", это честное
+// отсутствие данных для диапазона.
+function buildAreaBreakdown(offers: PrimaryMarketOffer[]): AreaBucketRow[] {
+  const byBucket = new Map<string, number[]>();
+  for (const o of offers) {
+    const bucket = areaBucket(primaryNetAreaM2(o));
+    if (!byBucket.has(bucket)) byBucket.set(bucket, []);
+    byBucket.get(bucket)!.push(primaryNetPricePerM2Eur(o));
+  }
+  return AREA_BUCKET_ORDER.filter((bucket) => byBucket.has(bucket)).map((bucket) => {
+    const prices = byBucket.get(bucket)!;
+    return {
+      bucket,
+      count: prices.length,
+      priceMin: Math.round(Math.min(...prices)),
+      priceAvg: Math.round(prices.reduce((sum, p) => sum + p, 0) / prices.length),
+      priceMax: Math.round(Math.max(...prices)),
+    };
   });
 }
 
@@ -90,16 +126,24 @@ export function PrimaryMarketProModal({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
+  // Предположительно проданные (soldAt задан) объекты сюда не должны
+  // попадать вовсе — этот блок про то, что СЕЙЧАС в продаже, тот же принцип,
+  // что и у buildPrimaryMarketPivot (data/primaryMarketOffers.ts), только
+  // модалка фильтрует сама, не через ту функцию — берёт свои разрезы
+  // (гистограмма/по площади/по домам) напрямую из сырых offers.
+  const activeOffers = useMemo(() => offers.filter((o) => !o.soldAt), [offers]);
+
   const availableTabs = useMemo(
-    () => PRIMARY_MARKET_ROW_ORDER.filter((row) => offers.some(row.filter)),
-    [offers],
+    () => PRIMARY_MARKET_ROW_ORDER.filter((row) => activeOffers.some(row.filter)),
+    [activeOffers],
   );
   const selected = availableTabs.find((row) => row.key === selectedKey) ?? availableTabs[0];
 
-  const matched = useMemo(() => (selected ? offers.filter(selected.filter) : []), [offers, selected]);
+  const matched = useMemo(() => (selected ? activeOffers.filter(selected.filter) : []), [activeOffers, selected]);
   const prices = useMemo(() => matched.map(primaryNetPricePerM2Eur), [matched]);
   const areas = useMemo(() => matched.map(primaryNetAreaM2), [matched]);
   const histogram = useMemo(() => buildHistogram(prices), [prices]);
+  const areaRows = useMemo(() => buildAreaBreakdown(matched), [matched]);
   const houseRows = useMemo(() => buildHouseBreakdown(matched), [matched]);
   const maxBucketCount = Math.max(1, ...histogram.map((b) => b.count));
 
@@ -107,14 +151,14 @@ export function PrimaryMarketProModal({
   // обе стадии в данных (иначе сравнивать не с чем).
   const stageComparison = useMemo(() => {
     if (!selected?.key.startsWith('apartments-')) return null;
-    const sdano = offers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Сдано');
-    const stroitsya = offers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Строится');
+    const sdano = activeOffers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Сдано');
+    const stroitsya = activeOffers.filter((o) => o.category === 'Бизнес-апартаменты' && o.stage === 'Строится');
     if (sdano.length === 0 || stroitsya.length === 0) return null;
     const sdanoMedian = median(sdano.map(primaryNetPricePerM2Eur));
     const stroitsyaMedian = median(stroitsya.map(primaryNetPricePerM2Eur));
     const diffPct = Math.round(((sdanoMedian - stroitsyaMedian) / stroitsyaMedian) * 100);
     return { sdanoMedian: Math.round(sdanoMedian), stroitsyaMedian: Math.round(stroitsyaMedian), diffPct };
-  }, [selected, offers]);
+  }, [selected, activeOffers]);
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6">
@@ -209,6 +253,40 @@ export function PrimaryMarketProModal({
                     <span className="w-10 shrink-0 text-xs font-semibold tabular-nums text-ink">{bucket.count}</span>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <h3 className="text-sm font-bold text-ink">По площади</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[420px] border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                      <th className="py-2 pr-3 text-left">Площадь</th>
+                      <th className="py-2 px-2 text-right font-semibold">Кол-во</th>
+                      <th className="py-2 px-2 text-right font-semibold">Мин, €/м²</th>
+                      <th className="py-2 px-2 text-right font-semibold">Средняя, €/м²</th>
+                      <th className="py-2 pl-2 text-right font-semibold">Макс, €/м²</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {areaRows.map((row) => (
+                      <tr key={row.bucket}>
+                        <td className="py-2 pr-3 font-medium text-ink">{row.bucket}</td>
+                        <td className="py-2 px-2 text-right tabular-nums text-ink">{row.count}</td>
+                        <td className="py-2 px-2 text-right tabular-nums text-ink-faint">
+                          {row.priceMin.toLocaleString('ru-RU')} €
+                        </td>
+                        <td className="py-2 px-2 text-right tabular-nums font-semibold text-ink">
+                          {row.priceAvg.toLocaleString('ru-RU')} €
+                        </td>
+                        <td className="py-2 pl-2 text-right tabular-nums text-ink-faint">
+                          {row.priceMax.toLocaleString('ru-RU')} €
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
 

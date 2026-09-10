@@ -1,0 +1,22 @@
+name: Sync citywide warehouse offers (Kufar + Realt)
+
+on:
+  schedule:
+    # 3-го числа, тот же час, что и у розницы (0 5 3 * *) — оба скрипта
+    # независимы (разные категории), гонять их одновременно безопасно.
+    - cron: '0 5 3 * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/sync-citywide-warehouse-offers.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

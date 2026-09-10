@@ -26,13 +26,50 @@ export interface SupplierSearchResult {
   note: string;
 }
 
-export async function searchSuppliersOnline(itemsText: string, sectionTitle: string, extra: string): Promise<SupplierSearchResult[]> {
+// Владелец, 2026-09-09: распознавание КП, загруженного вручную в форму
+// предложения (не из переписки) — тот же серверный хелпер, что и у
+// автоматики на входящих письмах (api/_invoiceRecognition.js), только
+// вызванный напрямую по URL уже загруженного в Storage файла. Без
+// withRetry (как и у поиска выше) — распознавание одного документа не
+// такое долгое, но повторный вызов при сетевой икоте всё равно не то, что
+// хочется молча ждать второй раз подряд.
+export interface RecognizedInvoiceItem {
+  name: string;
+  quantity: number | null;
+  unit: string;
+  price: number | null;
+}
+
+export interface RecognizedInvoice {
+  isInvoice: boolean;
+  price: number | null;
+  currency: string | null;
+  items: RecognizedInvoiceItem[];
+}
+
+export async function recognizeInvoiceFile(fileUrl: string, fileName: string): Promise<RecognizedInvoice> {
+  const resp = await authFetch('/api/supplier-web-search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'recognize-invoice', fileUrl, fileName }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `Не удалось распознать документ (${resp.status})`);
+  return data.extraction;
+}
+
+export async function searchSuppliersOnline(
+  itemsText: string,
+  sectionTitle: string,
+  extra: string,
+  country: string,
+): Promise<SupplierSearchResult[]> {
   return withRetry(
     async () => {
       const resp = await authFetch('/api/supplier-web-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ itemsText, sectionTitle, extra }),
+        body: JSON.stringify({ itemsText, sectionTitle, extra, country }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.error || `Ошибка веб-поиска (${resp.status})`);

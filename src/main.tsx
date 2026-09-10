@@ -3,6 +3,12 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
+import { ErrorBoundary, clearCrashReloadFlag } from './components/ErrorBoundary'
+import { initSentry } from './lib/sentry'
+
+// P1.3 аудита безопасности — как можно раньше в жизненном цикле приложения,
+// до первого рендера (см. src/lib/sentry.ts).
+initSentry()
 
 const container = document.getElementById('root')!
 
@@ -50,9 +56,17 @@ function waitForPrerenderedPaint(): Promise<void> {
 waitForPrerenderedPaint().then(() => {
   createRoot(container).render(
     <StrictMode>
-      <BrowserRouter basename={import.meta.env.BASE_URL}>
-        <App />
-      </BrowserRouter>
+      <ErrorBoundary>
+        <BrowserRouter basename={import.meta.env.BASE_URL}>
+          <App />
+        </BrowserRouter>
+      </ErrorBoundary>
     </StrictMode>,
   )
+  // ErrorBoundary.componentDidCatch перезагружает страницу один раз за
+  // сессию вкладки при первом же непойманном крахе (см. комментарий в самом
+  // компоненте) — снимаем этот флаг спустя несколько секунд успешной работы,
+  // чтобы СЛЕДУЮЩИЙ, отдельный крах (даже позже в той же вкладке) снова
+  // получил свою "тихую" попытку, а не сразу экран с кнопкой.
+  setTimeout(clearCrashReloadFlag, 5000)
 })

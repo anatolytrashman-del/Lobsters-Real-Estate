@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Grid2x2 } from 'lucide-react';
-import { cn } from '../../lib/cn';
+import { Grid2x2 } from 'lucide-react';
 import { loadYmaps } from '../../lib/yandexMaps';
 import { DISTRICT_PLACE_CATEGORIES, MAP_HIDDEN_CATEGORY_KEYS } from '../../data/districtPlaces';
 import { DISTRICT_QUARTERS } from '../../data/districtQuarters';
 import { DISTRICT_BUSINESS_CATEGORIES } from '../../data/districtBusinessCategories';
 import { countsByQuarter, quarterIdForAddress } from '../../lib/districtQuarterMatch';
+import { CategoryToggle } from './CategoryToggle';
 
 // Псевдо-категория поверх исчерпывающего снепшота (district_business_points →
 // data/districtBusinessCategories.ts, тот же датасет, что и у location
@@ -15,7 +15,7 @@ import { countsByQuarter, quarterIdForAddress } from '../../lib/districtQuarterM
 // заносятся вручную по одной категории), эта считается по факту — сколько
 // организаций реально собрано в каждом квартале, независимо от корзины.
 const LIVE_ALL_KEY = 'live-all';
-const LIVE_ALL_LABEL = 'Все организации (исчерпывающий сбор)';
+const LIVE_ALL_LABEL = 'Все организации';
 
 interface QuarterOrg {
   title: string;
@@ -136,74 +136,27 @@ function pluralOrganizations(n: number): string {
   return 'организаций';
 }
 
-function CategoryToggle({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: { key: string; label: string }[];
-  onChange: (key: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const current = options.find((c) => c.key === value);
-
-  useEffect(() => {
-    if (!open) return;
-    function onClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative shrink-0">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded-full border border-border bg-surface-muted px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-border"
-      >
-        {current?.label ?? 'Категория'}
-        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 transition-transform', open && 'rotate-180')} />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-20 pt-2">
-          <div className="flex max-h-80 w-56 flex-col gap-0.5 overflow-y-auto rounded-control border border-border bg-surface p-1.5 shadow-card">
-            {options.map((category) => (
-              <button
-                key={category.key}
-                type="button"
-                onClick={() => {
-                  onChange(category.key);
-                  setOpen(false);
-                }}
-                className={cn(
-                  'rounded-control px-3 py-1.5 text-left text-xs font-semibold transition-colors',
-                  value === category.key ? 'bg-surface-muted text-primary' : 'text-ink-muted hover:bg-surface-muted hover:text-ink',
-                )}
-              >
-                {category.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Все кварталы в DISTRICT_QUARTERS теперь размечены владельцем лично своим
 // инструментом (клики по углам на живой карте) — фильтр на "только
 // проверенные" (был здесь раньше, см. историю) больше не нужен.
 const VISIBLE_QUARTERS = DISTRICT_QUARTERS;
 
+// Паркинги — не бизнес, конкурировать за нишу им не с кем (владелец,
+// 2026-09-10: "удали паркинги из конкуренции"). Раньше это скрывалось
+// отдельным набором ключей именно здесь, потому что на обычной карте
+// района (DistrictMap.tsx) паркинги оставались — но владелец тем же днём
+// чуть позже попросил убрать паркинги и оттуда тоже ("убирай паркинги с
+// карты района, и обычные, и крытые"), так что теперь оба ключа уже есть
+// в общем MAP_HIDDEN_CATEGORY_KEYS и отдельный набор здесь избыточен.
+//
 // Опции селектора категории — живая псевдо-категория первой (она же
 // дефолт), дальше старые фрагментарные категории застройщика как раньше.
 const CATEGORY_OPTIONS = [
   { key: LIVE_ALL_KEY, label: LIVE_ALL_LABEL },
-  ...DISTRICT_PLACE_CATEGORIES.filter((c) => !MAP_HIDDEN_CATEGORY_KEYS.has(c.key)).map((c) => ({ key: c.key, label: c.label })),
+  ...DISTRICT_PLACE_CATEGORIES.filter((c) => !MAP_HIDDEN_CATEGORY_KEYS.has(c.key)).map((c) => ({
+    key: c.key,
+    label: c.label,
+  })),
 ];
 
 // Опции селектора квартала — "Весь район" (дефолт, прежнее поведение карты
@@ -424,12 +377,7 @@ export function DistrictQuarterMap() {
             : `точек категории «${categoryLabel}»`}
           .
         </p>
-      ) : categoryKey === LIVE_ALL_KEY ? (
-        <p className="text-xs text-ink-muted">
-          Учтено {matchedTotal} {pluralOrganizations(matchedTotal)} — исчерпывающий поквартирный сбор (вкладка "Дома"
-          на /admin/market-offers), собирается постепенно, не все дома района ещё загружены.
-        </p>
-      ) : (
+      ) : categoryKey === LIVE_ALL_KEY ? null : (
         <p className="text-xs text-ink-muted">
           Учтено {matchedTotal} из {categoryTotal} точек категории «{categoryLabel}» — справочник застройщика
           покрывает не все дома района (например, паркинги и часть коммерческих зданий вне жилых кварталов в него не

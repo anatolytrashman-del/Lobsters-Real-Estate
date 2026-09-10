@@ -17,6 +17,7 @@ import {
   Globe,
   ClipboardCheck,
   ShoppingCart,
+  BarChart3,
 } from 'lucide-react';
 
 // Единый список страниц админки — здесь и маршрут, и ключ доступа (см.
@@ -31,6 +32,7 @@ export type PageKey =
   | 'transactions'
   | 'leads'
   | 'landings'
+  | 'siteMetrics'
   | 'marketOffers'
   | 'contractors'
   | 'objects'
@@ -66,6 +68,11 @@ export const ADMIN_PAGES: AdminPage[] = [
   { key: 'designProjects', to: '/admin/design-projects', label: 'Дизайн-проекты', icon: Palette },
   { key: 'leads', to: '/admin/leads', label: 'Лиды', icon: Users },
   { key: 'landings', to: '/admin/landings', label: 'Лендинги', icon: Globe },
+  // "Показатели" — посещаемость сайта из Яндекс.Метрики (2026-09-10). Урл и
+  // компонент (SiteMetrics/site-metrics) намеренно НЕ /admin/metrics —
+  // тот путь уже занят другой, не связанной страницей ("Метрики" Альмиры/
+  // Светланы, staff-активность, RequireSuperAdmin, не в меню — см. Metrics.tsx).
+  { key: 'siteMetrics', to: '/admin/site-metrics', label: 'Показатели', icon: BarChart3 },
   { key: 'marketOffers', to: '/admin/market-offers', label: 'Аналитика рынка', icon: ClipboardCheck },
   // "Команда" (бывшие "Подрядчики") — отдельный пункт сразу после "Объекты",
   // владелец явно поправил после первой версии (2026-08-29): "это страница
@@ -103,6 +110,7 @@ export const VISIBLE_PAGE_KEYS: PageKey[] = [
   'financing',
   'designProjects',
   'landings',
+  'siteMetrics',
   'marketOffers',
   'leads',
   'transactions',
@@ -124,7 +132,7 @@ export const SIDEBAR_LAYOUT: SidebarEntry[] = [
   { type: 'page', key: 'contractors' },
   { type: 'group', label: 'Стройка', keys: ['tz', 'estimates', 'purchases', 'designProjects'] },
   { type: 'group', label: 'Финансы', keys: ['finModels', 'financing', 'transactions', 'documents'] },
-  { type: 'group', label: 'Маркетинг', keys: ['landings', 'marketOffers', 'leads'] },
+  { type: 'group', label: 'Маркетинг', keys: ['landings', 'siteMetrics', 'marketOffers', 'leads'] },
   { type: 'page', key: 'meetingSummaries' },
   { type: 'page', key: 'settings' },
 ];

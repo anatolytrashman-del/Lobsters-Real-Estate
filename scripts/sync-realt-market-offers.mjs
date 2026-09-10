@@ -102,6 +102,10 @@ function isPlausiblePrice(dealType, pricePerSqm) {
 // одинаковая проблема и одинаковое решение для обоих источников. Разовая
 // чистка (33 мёртвые ссылки, 26 из них — Realt) сделана вручную, здесь —
 // постоянная защита на будущее.
+//
+// 2026-09-10: расширено на все строки источника (не только необработанные) —
+// тот же самый комментарий, что и в sync-kufar-market-offers.mjs, объясняет
+// причину подробнее.
 async function checkLinkAlive(url) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -119,14 +123,13 @@ async function pruneDeadOffers(adIdsThisRun) {
     .from('market_offers')
     .select('id, ad_id, ad_link')
     .eq('source', 'Realt')
-    .eq('reviewed', false)
     .eq('rejected', false)
     .eq('flagged_for_discussion', false)
     .not('ad_id', 'in', `(${adIdsThisRun.length ? adIdsThisRun.map((id) => `"${id}"`).join(',') : '""'})`);
   if (error) throw error;
   if (!candidates || candidates.length === 0) return;
 
-  console.log(`Realt: ${candidates.length} необработанных строк пропали из свежего скрейпа — проверяю ссылки...`);
+  console.log(`Realt: ${candidates.length} строк (обработанных и нет) пропали из свежего скрейпа — проверяю ссылки...`);
   const deadIds = [];
   for (const c of candidates) {
     const alive = await checkLinkAlive(c.ad_link);
@@ -282,13 +285,25 @@ async function main() {
 
   const reviewedByAdId = new Map((existing ?? []).filter((e) => e.reviewed).map((e) => [e.ad_id, e]));
 
+  // Реальный баг, пойманный на живом прогоне (2026-09-09) — упавший синк
+  // и здесь, и в Kufar-скрипте с ОДНОЙ и той же ошибкой: PostgREST строит
+  // один INSERT на весь batch по объединению ключей ВСЕХ объектов массива —
+  // если хотя бы у одной строки в этом же вызове upsert() есть has_terrace/
+  // terrace_area (у reviewedRow — есть, т.к. они дочитаны из базы), а у
+  // остальных (новых, ещё не проверенных) объектов o этих ключей нет вовсе,
+  // PostgREST подставляет им NULL, а не DEFAULT false колонки — ломает
+  // ВЕСЬ batch на NOT NULL constraint (не только конкретную новую строку).
+  // Раньше это не проявлялось, пока в одном синке не оказывались рядом и
+  // проверенные, и новые строки — сейчас это уже почти всегда так. Фикс —
+  // явно задавать has_terrace/terrace_area у КАЖДОЙ строки, чтобы все
+  // объекты массива несли одинаковый набор ключей.
   const now = new Date().toISOString();
   const payload = offers.map((o) => {
     const reviewedRow = reviewedByAdId.get(o.ad_id);
     if (reviewedRow) {
       return { ...o, ...reviewedRow, reviewed: true, updated_at: now };
     }
-    return { ...o, reviewed: false, updated_at: now };
+    return { ...o, has_terrace: false, terrace_area: null, reviewed: false, updated_at: now };
   });
 
   const { error } = await supabase.from('market_offers').upsert(payload, { onConflict: 'source,ad_id' });

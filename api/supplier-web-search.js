@@ -1,5 +1,6 @@
 // Vercel serverless function: веб-поиск реальных поставщиков под список
-// материалов запроса на вкладке "Ресерч" (Suppliers.tsx).
+// материалов запроса на вкладке "Ресерч" (Suppliers.tsx) — action по
+// умолчанию/'web-search'. Второй action — 'recognize-invoice'.
 //
 // 2026-09-03: раньше этот же файл ещё обрабатывал action:'recognize-invoice'
 // — ручную кнопку "Распознать данные автоматически" в предпросмотре вложения
@@ -7,6 +8,16 @@
 // распознает данные") — автоматическое распознавание на входящих
 // (purchase-email-webhook.js, общий хелпер api/_invoiceRecognition.js)
 // осталось единственным путём, ручную ветку здесь удалили вместе с кнопкой.
+//
+// 2026-09-09: владелец вернул ручной путь — но не для типизированного ввода
+// цены (обсуждали и отвергли, "вручную не будем ничего указывать"), а для
+// поставщика, найденного вне переписки в системе (PDF/Excel/скриншот email
+// на руках у закупщицы): "добавляем его как нового поставщика и загружаем
+// КП, система распознаёт КП и записывает цену в базу". action:
+// 'recognize-invoice' восстановлен здесь же (тот же файл, не новый — Vercel
+// Hobby на пределе 12 функций) — вызывается из формы предложения сразу
+// после загрузки файла в "Файлы (счета, спецификации...)" (Suppliers.tsx),
+// не из предпросмотра письма (та кнопка остаётся убранной, как и была).
 //
 // 2026-08-31, дважды за день. Первая версия (claude-sonnet-5, Anthropic-путь
 // ProxyAPI) обошлась в 358 ₽ за 4 запроса (~90 ₽/запрос) — владелец увидел
@@ -37,6 +48,7 @@
 // больше, чем просто смена модели.
 import { proxyApiKeyProblem } from './_proxyapi.js';
 import { requireStaffAuth } from './_auth.js';
+import { recognizeInvoice } from './_invoiceRecognition.js';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 
@@ -49,8 +61,28 @@ const MODEL = 'claude-haiku-4-5-20251001';
 // единого ответа клиенту.
 const MAX_SEARCHES = 10;
 
-const SYSTEM_PROMPT = `Ты помогаешь найти реальных поставщиков строительных материалов в Беларуси
-(преимущественно Минск) через веб-поиск для девелоперской компании.
+// 2026-09-07: раньше страна поиска была жёстко зашита текстом прямо в
+// системный промт ("в Беларуси, преимущественно Минск") И финальной строкой
+// buildUserQuery ("Найди поставщиков... в Минске/Беларуси") — независимо от
+// того, что реально выбрано на странице (вкладка страны "Беларусь"/"Россия"
+// у конкретного запроса) или написано в "Дополнительные пожелания" (например,
+// город "Москва"). Из-за этого выбор "Россия" + "Москва" в пожеланиях всё
+// равно уходил в поиск белорусских поставщиков — сама модель получала два
+// противоречащих требования и слушалась жёстко прописанного. Теперь страна —
+// параметр запроса (см. Suppliers.tsx, ToggleGroup в модалке "Найти в сети"),
+// подставляется в промт вместо того, чтобы быть вкопанной константой.
+const COUNTRY_SEARCH_HINTS = {
+  Беларусь: 'в Беларуси (если в пожеланиях не указан конкретный город — ищи прежде всего в Минске)',
+  Россия: 'в России (если в пожеланиях не указан конкретный город — ищи прежде всего в Москве и других крупных городах)',
+};
+const DEFAULT_COUNTRY = 'Беларусь';
+
+function buildSystemPrompt(country) {
+  const hint = COUNTRY_SEARCH_HINTS[country] || COUNTRY_SEARCH_HINTS[DEFAULT_COUNTRY];
+  return `Ты помогаешь найти реальных поставщиков строительных материалов ${hint}
+через веб-поиск для девелоперской компании. Если в "Дополнительные пожелания"
+указан другой город, регион или страна — ищи именно там, это имеет приоритет
+над регионом по умолчанию.
 Ищи ОСНОВАТЕЛЬНО — используй инструмент web_search до ${MAX_SEARCHES} раз,
 разными запросами (конкретные позиции по отдельности, синонимы, категории,
 разные каталоги/маркетплейсы/агрегаторы), чтобы найти МАКСИМУМ реальных
@@ -66,13 +98,15 @@ const SYSTEM_PROMPT = `Ты помогаешь найти реальных по�
 
 "note" — одна короткая фраза по-русски: что продают/чем подходят под запрос.
 Если ничего подходящего не нашёл — верни пустой массив [].`;
+}
 
-function buildUserQuery(itemsText, sectionTitle, extra) {
+function buildUserQuery(itemsText, sectionTitle, extra, country) {
   const parts = [];
   if (sectionTitle) parts.push(`Раздел: ${sectionTitle}.`);
   parts.push(`Материалы: ${itemsText}.`);
   if (extra) parts.push(`Дополнительные пожелания: ${extra}.`);
-  parts.push('Найди поставщиков этих материалов в Минске/Беларуси.');
+  const hint = COUNTRY_SEARCH_HINTS[country] || COUNTRY_SEARCH_HINTS[DEFAULT_COUNTRY];
+  parts.push(`Найди поставщиков этих материалов ${hint}, если пожелания не указывают иное.`);
   return parts.join(' ');
 }
 
@@ -120,17 +154,45 @@ export default async function handler(req, res) {
   }
   const user = await requireStaffAuth(req, res);
   if (!user) return;
+
+  if ((req.body ?? {}).action === 'recognize-invoice') {
+    await handleRecognizeInvoice(req, res);
+    return;
+  }
+  await handleWebSearch(req, res);
+}
+
+// fileUrl — публичная ссылка на уже загруженный в Storage файл (клиент
+// грузит его сам через uploadSupplierFile ДО вызова этого action, точно
+// так же, как и вложения писем в api/_attachments.js) — сама функция
+// recognizeInvoice файлов не хранит, только читает по URL.
+async function handleRecognizeInvoice(req, res) {
+  const { fileUrl, fileName } = req.body ?? {};
+  if (typeof fileUrl !== 'string' || !fileUrl.trim() || typeof fileName !== 'string' || !fileName.trim()) {
+    res.status(400).json({ error: 'Не передан файл для распознавания' });
+    return;
+  }
+  try {
+    const extraction = await recognizeInvoice(fileUrl.trim(), fileName.trim());
+    res.status(200).json({ extraction });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Не удалось распознать документ' });
+  }
+}
+
+async function handleWebSearch(req, res) {
   const keyProblem = proxyApiKeyProblem();
   if (keyProblem) {
     res.status(500).json({ error: keyProblem });
     return;
   }
 
-  const { itemsText, sectionTitle, extra } = req.body ?? {};
+  const { itemsText, sectionTitle, extra, country } = req.body ?? {};
   if (typeof itemsText !== 'string' || !itemsText.trim()) {
     res.status(400).json({ error: 'Список материалов пуст' });
     return;
   }
+  const resolvedCountry = typeof country === 'string' && COUNTRY_SEARCH_HINTS[country] ? country : DEFAULT_COUNTRY;
 
   try {
     const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
@@ -147,7 +209,7 @@ export default async function handler(req, res) {
         // места и на сами tool_use-блоки поисков, и на развёрнутый ответ.
         max_tokens: 6000,
         tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES, allowed_callers: ['direct'] }],
-        system: SYSTEM_PROMPT,
+        system: buildSystemPrompt(resolvedCountry),
         messages: [
           {
             role: 'user',
@@ -155,6 +217,7 @@ export default async function handler(req, res) {
               itemsText.trim(),
               typeof sectionTitle === 'string' ? sectionTitle.trim() : '',
               typeof extra === 'string' ? extra.trim() : '',
+              resolvedCountry,
             ),
           },
         ],

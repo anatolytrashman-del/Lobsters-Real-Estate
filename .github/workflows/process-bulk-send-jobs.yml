@@ -1,0 +1,37 @@
+name: Process bulk send jobs
+
+on:
+  schedule:
+    # Каждые 5 минут — минимально возможный интервал для scheduled workflow
+    # в GitHub Actions. Владелец, 2026-09-09: "можем сделать отправку
+    # фоновым процессом, чтобы вкладку можно было закрыть?" — от постановки
+    # в очередь (BulkSendModal) до первого письма может пройти до 5 минут
+    # (следующий тик), сам скрипт дальше шлёт все накопленные письма с
+    # паузой 25-35с между ними за один запуск (см. scripts/
+    # process-bulk-send-jobs.mjs).
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Один прогон может идти по несколько минут (пауза между письмами внутри
+  # самого скрипта) — не даём следующему тику крона стартовать поверх ещё
+  # не завершившегося, иначе одно и то же письмо теоретически могло бы уйти
+  # дважды. cancel-in-progress: false — ждём завершения текущего запуска,
+  # не обрываем половину рассылки.
+  group: process-bulk-send-jobs
+  cancel-in-progress: false
+
+jobs:
+  process-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/process-bulk-send-jobs.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}

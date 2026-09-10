@@ -76,6 +76,66 @@ const METRO_HUB_SLUG_BY_STATION = {
   Могилёвская: 'mogilevskaya',
 };
 
+// Хабы по улицам (аудит поиска 2026-09-07) — тот же принцип, что и хабы
+// метро выше: только улицы с 2+ БЦ (STREET_HUB_SLUG_BY_NAME), список
+// продублирован из src/lib/businessCenterHubs.ts (скрипт без TS-загрузчика).
+const STREET_HUB_SLUG_BY_NAME = {
+  'пр-т Победителей': 'pr-t-pobediteley',
+  'пр-т Независимости': 'pr-t-nezavisimosti',
+  'пр-т Дзержинского': 'pr-t-dzerzhinskogo',
+  'ул. Притыцкого': 'ul-pritytskogo',
+  'ул. Сурганова': 'ul-surganova',
+  'ул. Платонова': 'ul-platonova',
+  'ул. Клары Цеткин': 'ul-klary-tsetkin',
+  'пер. Козлова': 'per-kozlova',
+  'пр-т Партизанский': 'pr-t-partizanskiy',
+  'Логойский тракт': 'logoyskiy-trakt',
+  'ул. Хоружей': 'ul-horuzhey',
+  'ул. Филимонова': 'ul-filimonova',
+  'ул. Немига': 'ul-nemiga',
+  'ул. Мележа': 'ul-melezha',
+  'ул. Толбухина': 'ul-tolbuhina',
+  'ул. Железнодорожная': 'ul-zheleznodorozhnaya',
+  'ул. Интернациональная': 'ul-internatsionalnaya',
+  'ул. Лобанка': 'ul-lobanka',
+  'ул. Ольшевского': 'ul-olshevskogo',
+  'ул. Свердлова': 'ul-sverdlova',
+  'ул. Скрыганова': 'ul-skryganova',
+  'ул. Тимирязева': 'ul-timiryazeva',
+  'ул. Скорины': 'ul-skoriny',
+};
+
+function shortAddressJs(a) {
+  return a
+    .replace(/^г\.\s*Минск,\s*/i, '')
+    .replace(/^Минская\s+область,\s*/i, '')
+    .replace(/^[А-ЯЁ][а-яё]+\s+район,\s*/, '')
+    .trim();
+}
+
+function streetOfAddressJs(fullAddress) {
+  const short = shortAddressJs(fullAddress);
+  const parts = short.split(',').map((p) => p.trim());
+  const houseIndex = parts.findIndex((p) => /^\d/.test(p));
+  if (houseIndex > 0) return parts.slice(0, houseIndex).join(', ');
+  if (houseIndex === 0) return short;
+  return parts.length > 1 ? parts.slice(0, -1).join(', ') : short;
+}
+
+async function fetchStreetHubSlugs() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=address`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_centers.address`);
+  const rows = await res.json();
+  const slugs = new Set();
+  for (const r of rows) {
+    const slug = STREET_HUB_SLUG_BY_NAME[streetOfAddressJs(r.address)];
+    if (slug) slugs.add(slug);
+  }
+  return [...slugs];
+}
+
 async function fetchMetroHubStations() {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null`,
@@ -114,8 +174,15 @@ async function main() {
   } catch (err) {
     console.warn(`[generate-sitemap] хабы метро не добавлены: ${err instanceof Error ? err.message : err}`);
   }
+  let streetSlugs = [];
+  try {
+    streetSlugs = await fetchStreetHubSlugs();
+  } catch (err) {
+    console.warn(`[generate-sitemap] хабы улиц не добавлены: ${err instanceof Error ? err.message : err}`);
+  }
   const entries = [
     ...metroSlugs.map((slug) => `${SITE}/minsk/bcminsk/metro/${slug}`),
+    ...streetSlugs.map((slug) => `${SITE}/minsk/bcminsk/ulitsa/${slug}`),
     ...slugs.map((slug) => `${SITE}/minsk/bcminsk/${slug}`),
   ]
     .filter((url) => !existing.has(url))
@@ -131,7 +198,7 @@ async function main() {
   if (closing === -1) throw new Error('dist/sitemap.xml: не найден закрывающий </urlset>');
   const out = `${xml.slice(0, closing)}${entries.join('\n')}\n</urlset>\n`;
   writeFileSync(SITEMAP_PATH, out);
-  console.log(`[generate-sitemap] добавлено URL (хабы метро + карточки БЦ): ${entries.length} (всего <loc>: ${existing.size + entries.length})`);
+  console.log(`[generate-sitemap] добавлено URL (хабы метро/улиц + карточки БЦ): ${entries.length} (всего <loc>: ${existing.size + entries.length})`);
 }
 
 main().catch((err) => {

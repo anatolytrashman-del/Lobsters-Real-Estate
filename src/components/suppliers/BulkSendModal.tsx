@@ -1,18 +1,18 @@
-import { useState } from 'react';
-import { Send, Loader2, CheckCircle2, XCircle, TriangleAlert, Paperclip } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Send, Loader2, TriangleAlert, Paperclip, FileText, Plus } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Textarea } from '../ui/Textarea';
-import type { SupplierRequest, SupplierOffer } from '../../data/supplierResearch';
-import type { SupplierOrder } from '../../data/supplierOrders';
-import { insertSupplierOrder } from '../../lib/supplierOrdersApi';
+import { Select } from '../ui/Select';
+import { countryFlag, SUPPLIER_COUNTRIES, type SupplierRequest, type SupplierOffer } from '../../data/supplierResearch';
 import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
-import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
-import { sendSupplierOfferEmail } from '../../lib/supplierOfferEmailsApi';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
-import { ORGANIZATION_CARD_ATTACHMENT } from '../../data/organizationCard';
+import type { LegalEntity } from '../../data/legalEntities';
+import type { EmailTemplate } from '../../data/emailTemplates';
+import { insertBulkSendJob } from '../../lib/bulkSendJobsApi';
 import { emailSignature } from './SupplierCorrespondenceTab';
+import { TemplateFormModal } from './EmailTemplates';
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
@@ -24,24 +24,25 @@ function errorMessage(err: unknown, fallback: string): string {
 // Владелец, 2026-09-04: "Альмира сформировала универсальную большую
 // ведомость и хочет разослать её нескольким универсальным поставщикам...
 // чтобы не было похоже на массовую отправку — можем отправлять всего
-// 2 письма в минуту, как будто это делает человек" — выбрал именно этот
-// вариант (не AI-уникализация текста): "плейсхолдеры мне вообще не нужны,
-// список материала — это и есть ведомость" — письмо у всех получателей
-// буквально одинаковое (кроме адреса и заявки, в которую оно попадает),
-// весь анти-спам эффект — только в темпе отправки. ~30с между письмами
-// (случайный разброс 25-35с, не ровный интервал) — не жёстко "2/мин", а
-// "не быстрее, чем мог бы вручную нажимать человек".
-const MIN_DELAY_MS = 25000;
-const MAX_DELAY_MS = 35000;
+// 2 письма в минуту, как будто это делает человек" — плейсхолдеры не нужны,
+// список материала — это и есть ведомость. Владелец, 2026-09-09: "можем
+// сделать отправку фоновым процессом, чтобы вкладку можно было закрыть?" —
+// эта модалка больше НЕ гоняет цикл отправки сама (раньше — прямо в
+// браузере, с паузами 25-35с между письмами, закрыл вкладку — рассылка
+// обрывается) — она только СТАВИТ задание в очередь (bulk_send_jobs +
+// bulk_send_job_items, insertBulkSendJob), а реальную отправку с тем же
+// темпом делает scripts/process-bulk-send-jobs.mjs через крон-воркфлоу
+// (.github/workflows/process-bulk-send-jobs.yml, раз в 5 минут) — вкладку
+// можно закрыть сразу после постановки в очередь.
 const WARN_THRESHOLD = 8;
 
-function randomDelay(): number {
-  return MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// Владелец, 2026-09-09: "юрлицо и страну нужно выбирать вручную, ООО
+// Матрёшка не должна подставляться по умолчанию" — оба поля начинаются
+// пустыми (плейсхолдер в Select), эти сентинелы — явный осознанный выбор
+// "без карточки"/"все страны", отличный от "ещё не выбрано" (пустая
+// строка), который блокирует отправку и список получателей.
+const NO_LEGAL_ENTITY = 'Без карточки организации';
+const ALL_COUNTRIES = 'Все страны';
 
 function defaultBulkBody(): string {
   return `Добрый день.
@@ -53,53 +54,129 @@ function defaultBulkBody(): string {
 ${emailSignature()}`;
 }
 
-type SendState = 'idle' | 'sending' | 'sent' | 'error';
-
 // Владелец, 2026-09-04, доп. правка: "заголовок ведет на плейсхолдеры мне
 // вообще не нужны" — тема/текст одинаковы для всех получателей, поэтому
 // достаточно одной формы на всю рассылку, без превью на конкретном
 // получателе. Каждый получатель получает СВОЮ новую заявку (SupplierOrder)
 // — та же логика, что и у "1 заявка на поставку — одна ветка": если
 // получатель когда-нибудь уже переписывался по другому поводу, массовая
-// рассылка не подмешивается в старый тред.
+// рассылка не подмешивается в старый тред. Персонализация {компания}/
+// {контакт} и вложение карточки организации (только первому письму
+// конкретному поставщику) теперь считаются в worker-скрипте на отправке,
+// не здесь.
 export function BulkSendModal({
   request,
+  requests,
   attachment,
   offers,
   emails,
+  templates,
+  legalEntities,
   onClose,
-  onOrderCreated,
-  onEmailSent,
+  onTemplatesChange,
 }: {
   request: SupplierRequest;
+  // Владелец, 2026-09-09: "нельзя добавить новый шаблон" — полный список
+  // запросов нужен форме создания шаблона (TemplateFormModal), чтобы можно
+  // было привязать шаблон к любому запросу, не только к текущему. Он же,
+  // 2026-09-09 (второй заход): "непонятно, как ты выбираешь категорию
+  // поставщиков... нужен ручной выбор" — категория теперь выбирается прямо
+  // в этой модалке (Select ниже), а не жёстко фиксирована тем, по какой
+  // категории кликнули "Массовая отправка" снаружи.
+  requests: SupplierRequest[];
   attachment: LedgerAttachment;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  templates: EmailTemplate[];
+  legalEntities: LegalEntity[];
   onClose: () => void;
-  onOrderCreated: (order: SupplierOrder) => void;
-  onEmailSent: (email: SupplierOfferEmail) => void;
+  onTemplatesChange: (templates: EmailTemplate[]) => void;
 }) {
+  // Категория — стартует с той, по которой кликнули "Массовая отправка"
+  // снаружи (это уже осознанный клик), но её можно сменить, не закрывая
+  // модалку — владелец: "нужен ручной выбор категории поставщиков".
+  const [selectedRequestId, setSelectedRequestId] = useState(request.id);
+  const selectedRequest = requests.find((r) => r.id === selectedRequestId) ?? request;
+
+  // Владелец, 2026-09-09: "ООО Матрёшка будет не по умолчанию. Выбор
+  // юрлица и страны нужен ручной" — обе пустые, пока человек сам не
+  // выберет (Select показывает плейсхолдер), никакого resolveRequestLegalEntity
+  // с фолбэком на юрлицо по умолчанию.
+  const [selectedLegalEntityId, setSelectedLegalEntityId] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState('');
+  const legalEntityChosen = selectedLegalEntityId !== '';
+  const countryChosen = selectedCountry !== '';
+  const legalEntity =
+    selectedLegalEntityId && selectedLegalEntityId !== 'none'
+      ? legalEntities.find((e) => e.id === selectedLegalEntityId) ?? null
+      : null;
+
+  // Владелец, 2026-09-09: "если выбираем ИП Трэшмен или Матрешка, страна
+  // автоматически Россия; а если ЛАВЭ — Беларусь" — юрлицо однозначно
+  // определяет страну поставки (LegalEntity.country, см. карточку юрлица),
+  // поэтому выбор юрлица сразу подставляет страну в соседний Select — не
+  // нарушает "ручной выбор" из предыдущей правки (страна по-прежнему видна
+  // и остаётся обычным Select, можно поправить вручную), просто убирает
+  // лишний клик там, где ответ и так предопределён.
+  useEffect(() => {
+    if (legalEntity?.country) setSelectedCountry(legalEntity.country);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLegalEntityId]);
+
   // Владелец, 2026-09-04: "поставщик становится доступен для email-переписок"
   // только после верификации (см. более раннюю правку) — рассылать
   // неверифицированным просто некуда, то же самое ограничение, что и на
-  // вкладке "Письма" целиком.
-  const candidates = offers.filter((o) => o.requestId === request.id && o.email && o.verified);
+  // вкладке "Письма" целиком. Владелец, 2026-09-09: страна теперь ФИЛЬТРУЕТ
+  // список — пока страна не выбрана, получателей не показываем вовсе
+  // (не смысла демонстрировать список, который может тут же перефильтроваться).
+  const candidates = countryChosen
+    ? offers.filter(
+        (o) =>
+          o.requestId === selectedRequestId &&
+          o.email &&
+          o.verified &&
+          (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
+      )
+    : [];
 
-  // Родитель монтирует этот компонент заново на каждую новую рассылку
-  // (bulkSendConfig в Suppliers.tsx — свежий объект на каждое открытие, а не
-  // toggle одного и того же), поэтому ленивые инициализаторы useState вместо
-  // эффекта сброса — в отличие от MaterialLedgerModal/TemplateFormModal,
-  // которые родитель держит смонтированными всегда между открытиями.
-  const [selected, setSelected] = useState<Set<string>>(() => {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Пересобираем список отмеченных получателей при смене категории/страны —
+  // прежний набор id мог относиться к другому фильтру. По умолчанию отмечены
+  // те, с кем ещё не переписывались.
+  useEffect(() => {
     const contactedIds = new Set(emails.map((e) => e.offerId));
-    return new Set(candidates.filter((o) => !contactedIds.has(o.id)).map((o) => o.id));
-  });
+    setSelected(new Set(candidates.filter((o) => !contactedIds.has(o.id)).map((o) => o.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRequestId, selectedCountry]);
+
   const [subject, setSubject] = useState(() => request.title || 'Поставка материалов');
   const [body, setBody] = useState(() => defaultBulkBody());
-  const [sending, setSending] = useState(false);
-  const [states, setStates] = useState<Record<string, SendState>>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [sentCount, setSentCount] = useState(0);
+  const [queuing, setQueuing] = useState(false);
+  const [queuedCount, setQueuedCount] = useState<number | null>(null);
+  const [queueError, setQueueError] = useState<string | null>(null);
+
+  // Владелец, 2026-09-09: "отправка единичных и массовых писем должна быть
+  // максимально похожа" — тот же выбор шаблона, что и в EmailThread (own
+  // request первыми, общие следом). Текст шаблона подставляется как есть, с
+  // НЕразрешёнными плейсхолдерами {компания}/{контакт} — единого "офера" на
+  // всю рассылку нет, каждый получатель получает свою подстановку в момент
+  // отправки (worker-скрипт), а не один и тот же текст на всех.
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [addTemplateOpen, setAddTemplateOpen] = useState(false);
+  const orderedTemplates = useMemo(() => {
+    const own = templates.filter((t) => t.requestId === selectedRequestId);
+    const shared = templates.filter((t) => t.requestId !== selectedRequestId);
+    return [...own, ...shared];
+  }, [templates, selectedRequestId]);
+
+  function handlePickTemplate(templateId: string) {
+    setSelectedTemplateId(templateId);
+    const template = templates.find((t) => t.id === templateId);
+    if (!template) return;
+    if (body.trim() && !window.confirm('Заменить уже введённый текст письма шаблоном?')) return;
+    setSubject(template.subject);
+    setBody(template.body);
+  }
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -114,148 +191,223 @@ export function BulkSendModal({
     setSelected((prev) => (prev.size === candidates.length ? new Set() : new Set(candidates.map((o) => o.id))));
   }
 
-  async function handleSend() {
-    if (sending || selected.size === 0 || !subject.trim() || !body.trim()) return;
-    setSending(true);
-    const targets = candidates.filter((o) => selected.has(o.id));
-    setStates(Object.fromEntries(targets.map((o) => [o.id, 'idle' as SendState])));
-    setSentCount(0);
-
-    for (let i = 0; i < targets.length; i++) {
-      const offer = targets[i];
-      setStates((prev) => ({ ...prev, [offer.id]: 'sending' }));
-      try {
-        const order = await insertSupplierOrder({
-          offerId: offer.id,
-          title: request.title ? `Рассылка: ${request.title}` : 'Массовая рассылка',
-          communicationStatus: '',
-          price: 0,
-          currency: 'USD',
-          deadline: '',
-          requirements: '',
-          items: [],
-          files: [],
-        });
-        onOrderCreated(order);
-        // Владелец, 2026-09-06: карточка организации — только к первому
-        // письму конкретному поставщику (не к каждой новой рассылке ему же).
-        const attachments = [attachment, ...(isFirstOutgoingToOffer(emails, offer.id) ? [ORGANIZATION_CARD_ATTACHMENT] : [])];
-        const email = await sendSupplierOfferEmail({
-          offerId: offer.id,
-          orderId: order.id,
-          toAddress: offer.email,
-          subject: subject.trim(),
-          body,
-          attachments,
-        });
-        onEmailSent(email);
-        setStates((prev) => ({ ...prev, [offer.id]: 'sent' }));
-        setSentCount((n) => n + 1);
-      } catch (err) {
-        setStates((prev) => ({ ...prev, [offer.id]: 'error' }));
-        setErrors((prev) => ({ ...prev, [offer.id]: errorMessage(err, 'Не удалось отправить') }));
-      }
-      if (i < targets.length - 1) await sleep(randomDelay());
+  async function handleQueue() {
+    if (queuing || selected.size === 0 || !subject.trim() || !body.trim() || !legalEntityChosen || !countryChosen) return;
+    setQueuing(true);
+    setQueueError(null);
+    try {
+      await insertBulkSendJob({
+        requestId: selectedRequestId,
+        legalEntityId: legalEntity?.id ?? null,
+        subject,
+        body,
+        attachment,
+        offerIds: [...selected],
+      });
+      setQueuedCount(selected.size);
+    } catch (err) {
+      setQueueError(errorMessage(err, 'Не удалось поставить рассылку в очередь'));
+    } finally {
+      setQueuing(false);
     }
-    setSending(false);
   }
 
-  const done = !sending && sentCount > 0;
-  const estimatedMinutes = Math.ceil((selected.size * (MIN_DELAY_MS + MAX_DELAY_MS)) / 2 / 60000);
-
   return (
-    <Modal open onClose={sending ? () => {} : onClose} title={`Разослать «${attachment.fileName}»`}>
+    <Modal open onClose={onClose} title="Массовая рассылка">
       <div className="flex flex-col gap-4">
-        {candidates.length === 0 ? (
-          <p className="text-sm text-ink-faint">
-            В категории «{request.title}» нет верифицированных поставщиков с email — рассылать некому.
+        {queuedCount !== null ? (
+          <p className="text-sm text-success">
+            Готово: {queuedCount} писем поставлено в очередь. Можно закрыть вкладку — рассылка идёт в фоне, с паузами между
+            письмами.
           </p>
         ) : (
           <>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm text-ink-muted">Получатели ({selected.size} из {candidates.length})</span>
-              <button type="button" onClick={toggleAll} disabled={sending} className="text-sm font-medium text-primary hover:underline disabled:opacity-50">
-                {selected.size === candidates.length ? 'Снять выбор' : 'Выбрать всех'}
-              </button>
-            </div>
-            <div className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-control bg-surface-muted p-2">
-              {candidates.map((o) => {
-                const state = states[o.id];
-                const hadEmails = emails.some((e) => e.offerId === o.id);
-                return (
-                  <label key={o.id} className="flex items-center gap-2.5 rounded-control px-1.5 py-1.5 text-sm hover:bg-surface">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(o.id)}
-                      disabled={sending}
-                      onChange={() => toggle(o.id)}
-                      className="h-4 w-4 shrink-0 rounded border-border accent-primary disabled:opacity-50"
-                    />
-                    <span className="min-w-0 flex-1 truncate text-ink">
-                      {o.name}
-                      {hadEmails && <span className="text-ink-faint"> · уже переписывались</span>}
-                      {isFirstOutgoingToOffer(emails, o.id) && (
-                        <span className="text-ink-faint" title={`${ORGANIZATION_CARD_ATTACHMENT.fileName} — первое письмо этому поставщику`}>
-                          {' '}· + карточка организации
-                        </span>
-                      )}
-                    </span>
-                    {state === 'sending' && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ink-muted" />}
-                    {state === 'sent' && <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
-                    {state === 'error' && (
-                      <span className="flex shrink-0 items-center gap-1 text-xs text-danger" title={errors[o.id]}>
-                        <XCircle className="h-4 w-4" />
-                        ошибка
-                      </span>
-                    )}
-                  </label>
-                );
-              })}
-            </div>
+            <Select
+              label="Категория поставщиков"
+              placeholder="Не выбрана"
+              options={requests.map((r) => r.title)}
+              value={selectedRequest.title}
+              onChange={(label) => {
+                const r = requests.find((x) => x.title === label);
+                if (r) setSelectedRequestId(r.id);
+              }}
+            />
 
-            <Input label="Тема" value={subject} onChange={(e) => setSubject(e.target.value)} disabled={sending} />
-            <Textarea label="Сообщение" rows={5} value={body} onChange={(e) => setBody(e.target.value)} disabled={sending} />
-
-            <div className="flex items-center gap-2 rounded-control border border-border-strong bg-surface-muted p-3 text-xs text-ink-muted">
-              <Paperclip className="h-4 w-4 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">{attachment.fileName} — уйдёт вложением каждому получателю</span>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Select
+                label="Юрлицо"
+                placeholder="Выберите юрлицо"
+                options={[NO_LEGAL_ENTITY, ...legalEntities.map((e) => e.shortName || e.name)]}
+                value={
+                  selectedLegalEntityId === ''
+                    ? ''
+                    : selectedLegalEntityId === 'none'
+                      ? NO_LEGAL_ENTITY
+                      : legalEntities.find((e) => e.id === selectedLegalEntityId)?.shortName ||
+                        legalEntities.find((e) => e.id === selectedLegalEntityId)?.name ||
+                        ''
+                }
+                onChange={(label) => {
+                  if (label === NO_LEGAL_ENTITY) {
+                    setSelectedLegalEntityId('none');
+                    return;
+                  }
+                  const e = legalEntities.find((x) => (x.shortName || x.name) === label);
+                  setSelectedLegalEntityId(e?.id ?? '');
+                }}
+              />
+              <Select
+                label="Страна получателей"
+                placeholder="Выберите страну"
+                options={[ALL_COUNTRIES, ...SUPPLIER_COUNTRIES]}
+                value={selectedCountry}
+                onChange={(label) => setSelectedCountry(label)}
+              />
             </div>
 
-            {selected.size > WARN_THRESHOLD && (
-              <div className="flex items-start gap-2 rounded-control border border-warning/30 bg-warning-bg p-3 text-xs text-warning">
-                <TriangleAlert className="h-4 w-4 shrink-0 translate-y-0.5" />
-                <span>
-                  {selected.size} получателей — чтобы не выглядело как массовая рассылка, письма уходят по одному с паузой
-                  ~30с. Вся отправка займёт примерно {estimatedMinutes} мин, не закрывайте вкладку.
-                </span>
-              </div>
-            )}
-
-            {sending && (
-              <p className="text-sm text-ink-muted">
-                Отправлено {sentCount} из {selected.size} — идёт рассылка, не закрывайте вкладку.
+            {!legalEntityChosen || !countryChosen ? (
+              <p className="text-sm text-ink-faint">Выберите юрлицо и страну получателей, чтобы увидеть список поставщиков.</p>
+            ) : candidates.length === 0 ? (
+              <p className="text-sm text-ink-faint">
+                В категории «{selectedRequest.title}»
+                {selectedCountry !== ALL_COUNTRIES ? ` и стране «${selectedCountry}»` : ''} нет верифицированных поставщиков
+                с email — рассылать некому.
               </p>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-ink-muted">Получатели ({selected.size} из {candidates.length})</span>
+                  <button type="button" onClick={toggleAll} className="text-sm font-medium text-primary hover:underline">
+                    {selected.size === candidates.length ? 'Снять выбор' : 'Выбрать всех'}
+                  </button>
+                </div>
+                <div className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-control bg-surface-muted p-2">
+                  {candidates.map((o) => {
+                    const hadEmails = emails.some((e) => e.offerId === o.id);
+                    return (
+                      <label key={o.id} className="flex items-center gap-2.5 rounded-control px-1.5 py-1.5 text-sm hover:bg-surface">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(o.id)}
+                          onChange={() => toggle(o.id)}
+                          className="h-4 w-4 shrink-0 rounded border-border accent-primary"
+                        />
+                        <span className="min-w-0 flex-1 truncate text-ink">
+                          <span title={o.country || SUPPLIER_COUNTRIES[0]}>{countryFlag(o.country || SUPPLIER_COUNTRIES[0])}</span> {o.name}
+                          {hadEmails && <span className="text-ink-faint"> · уже переписывались</span>}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                {/* Владелец, 2026-09-09: "нельзя добавить новый шаблон из этого
+                    интерфейса" — кнопка "+" рядом с селектом открывает ту же
+                    форму, что и общий менеджер шаблонов (TemplateFormModal),
+                    сразу привязывая новый шаблон к текущей категории
+                    (initialRequestId) и выбирая его после сохранения. */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm text-ink-muted">Шаблон</span>
+                  <div className="flex items-center gap-2">
+                    <FileText className="h-4 w-4 shrink-0 text-ink-faint" />
+                    <select
+                      value={selectedTemplateId}
+                      onChange={(e) => handlePickTemplate(e.target.value)}
+                      className="flex-1 rounded-control border border-transparent bg-surface-muted px-4 py-2.5 text-sm text-ink outline-none focus:border-primary"
+                    >
+                      <option value="">Без шаблона</option>
+                      {orderedTemplates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => setAddTemplateOpen(true)}>
+                      Новый
+                    </Button>
+                  </div>
+                </div>
+
+                <Input label="Тема" value={subject} onChange={(e) => setSubject(e.target.value)} />
+                <Textarea label="Сообщение" rows={5} value={body} onChange={(e) => setBody(e.target.value)} />
+                <p className="-mt-2 text-xs text-ink-faint">
+                  {'{компания} и {контакт} подставляются отдельно для каждого получателя при отправке.'}
+                </p>
+
+                <div className="flex flex-col gap-1.5 rounded-control border border-border-strong bg-surface-muted p-3 text-xs text-ink-muted">
+                  <div className="flex items-center gap-2">
+                    <Paperclip className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">{attachment.fileName} — уйдёт вложением каждому получателю</span>
+                  </div>
+                  {/* Владелец, 2026-09-09: "в прикреплённых файлах вижу только
+                      ведомость материала, но не реквизиты" — карточка
+                      организации теперь всегда отдельной строкой, если у
+                      выбранного вручную юрлица есть файл карточки (само
+                      прикрепление — только первому письму каждому поставщику
+                      — считает worker-скрипт на отправке). */}
+                  {legalEntity?.cardFile && (
+                    <div className="flex items-center gap-2">
+                      <Paperclip className="h-4 w-4 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {legalEntity.cardFile.fileName} — карточка «{legalEntity.shortName || legalEntity.name}», уйдёт
+                        только тем, кому пишем впервые
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {legalEntity && !legalEntity.cardFile && (
+                  <p className="text-xs text-ink-faint">
+                    Юрлицо «{legalEntity.shortName || legalEntity.name}» выбрано, но карточка организации для него ещё не
+                    загружена (Документы → Юрлица) — первым письмам она не приложится.
+                  </p>
+                )}
+
+                {selected.size > WARN_THRESHOLD && (
+                  <div className="flex items-start gap-2 rounded-control border border-warning/30 bg-warning-bg p-3 text-xs text-warning">
+                    <TriangleAlert className="h-4 w-4 shrink-0 translate-y-0.5" />
+                    <span>
+                      {selected.size} получателей — рассылка пойдёт фоном с паузами между письмами, чтобы не выглядеть
+                      массовой. Вкладку можно закрыть сразу после постановки в очередь.
+                    </span>
+                  </div>
+                )}
+
+                {queueError && <p className="text-sm text-danger">{queueError}</p>}
+              </>
             )}
-            {done && <p className="text-sm text-success">Готово: отправлено {sentCount} из {selected.size}.</p>}
           </>
         )}
 
         <div className="mt-2 flex justify-end gap-3">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={sending}>
-            {done ? 'Закрыть' : 'Отмена'}
+          <Button type="button" variant="secondary" onClick={onClose}>
+            {queuedCount !== null ? 'Закрыть' : 'Отмена'}
           </Button>
-          {candidates.length > 0 && !done && (
+          {legalEntityChosen && countryChosen && candidates.length > 0 && queuedCount === null && (
             <Button
               type="button"
-              icon={sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              disabled={sending || selected.size === 0 || !subject.trim() || !body.trim()}
-              onClick={handleSend}
+              icon={queuing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              disabled={queuing || selected.size === 0 || !subject.trim() || !body.trim()}
+              onClick={handleQueue}
             >
-              {sending ? 'Отправляем...' : `Разослать (${selected.size})`}
+              {queuing ? 'Ставим в очередь...' : `Поставить в очередь (${selected.size})`}
             </Button>
           )}
         </div>
       </div>
+
+      <TemplateFormModal
+        open={addTemplateOpen}
+        template={null}
+        requests={requests}
+        initialRequestId={selectedRequestId}
+        onClose={() => setAddTemplateOpen(false)}
+        onSaved={(t) => {
+          onTemplatesChange([...templates, t]);
+          setSelectedTemplateId(t.id);
+          setSubject(t.subject);
+          setBody(t.body);
+        }}
+      />
     </Modal>
   );
 }

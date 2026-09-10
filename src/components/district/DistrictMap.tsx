@@ -1,23 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Maximize2, MapPin, X } from 'lucide-react';
+import { Maximize2, MapPin, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { glassCardShadow } from '../../lib/glass';
 import { DISTRICT_PLACE_CATEGORIES, MAP_HIDDEN_CATEGORY_KEYS } from '../../data/districtPlaces';
 import { loadYmaps } from '../../lib/yandexMaps';
 import { useInView } from '../../lib/useInView';
+import { CategoryToggle } from './CategoryToggle';
 
 // Категории вроде 'auto' (см. комментарий у MAP_HIDDEN_CATEGORY_KEYS) есть
 // в данных, но не показываются на этой карте как слой/переключатель.
 const VISIBLE_CATEGORIES = DISTRICT_PLACE_CATEGORIES.filter((c) => !MAP_HIDDEN_CATEGORY_KEYS.has(c.key));
 
-// Интерактивная карта района с переключаемыми по категориям метками —
-// владелец: "типо это аптеки, а это барбершопы, и можно что-то выключить,
-// а что-то оставить". Заменяет прежний статичный iframe на Конструктор
-// карт (тот был просто картинкой без интерактива, а Конструктор к тому же
-// не хранит цвет по категориям при импорте — см. журнал CLAUDE.md).
-// Данные — DISTRICT_PLACE_CATEGORIES (data/districtPlaces.ts), пополняется
-// по мере присылки владельцем адресов по новым категориям.
+const CATEGORY_OPTIONS = VISIBLE_CATEGORIES.map((c) => ({ key: c.key, label: c.label }));
+
+// Интерактивная карта района с пинами ОДНОЙ категории за раз — владелец:
+// "давай сделаем карту по категориям, как на аналитике спроса. Типо вот
+// все кафешки, вот все аптеки... я боюсь, что если загрузим вообще все
+// точки — будет по 10 точек на дом". Раньше здесь были чекбоксы,
+// включённые все разом по умолчанию (все ~13 категорий одновременно) —
+// ровно тот клаттер, от которого владелец отказался, увидев карту вживую.
+// Теперь — тот же выпадающий однократный выбор, что и на карте по
+// кварталам (DistrictQuarterMap.tsx, "Конкуренция бизнеса по кварталам"),
+// общий компонент CategoryToggle. Данные — DISTRICT_PLACE_CATEGORIES
+// (data/districtPlaces.ts), пополняется по мере присылки владельцем
+// адресов по новым категориям.
+//
+// Станции метро/остановки общественного транспорта/паркинги как отдельные
+// категории (владелец просил их тоже) — НЕ добавлены: координат этих
+// объектов в проекте пока нет (паркинги в data/districtPlaces.ts уже есть
+// как 2 категории — "Паркинги — крытые"/"Паркинги — подземные", они и
+// так в списке ниже; метро и остановки транспорта — отдельный сбор
+// данных, которого не было и раньше, не выдумываю координаты).
 
 // Центр района — по факту собранных точек (см. data/districtPlaces.ts,
 // чистка от адресов за пределами района 2026-08-25). Раньше карта
@@ -53,9 +67,7 @@ function DistrictMapCanvas({
   const mapRef = useRef<any>(null);
   const collectionsRef = useRef<Record<string, any>>({});
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [activeKeys, setActiveKeys] = useState<Set<string>>(
-    () => new Set(VISIBLE_CATEGORIES.map((c) => c.key)),
-  );
+  const [activeKey, setActiveKey] = useState<string>(VISIBLE_CATEGORIES[0]?.key ?? '');
   const [viewportRef, inView] = useInView<HTMLDivElement>();
   const shouldLoad = !deferUntilVisible || inView;
 
@@ -74,6 +86,10 @@ function DistrictMapCanvas({
         });
         mapRef.current = map;
 
+        // Все категории заводятся сразу (как раньше), но видима — только
+        // выбранная (activeKey), остальные visible:false. Так переключение
+        // категории — просто смена флага у уже готовых коллекций, без
+        // пересоздания пинов на каждый выбор.
         for (const category of VISIBLE_CATEGORIES) {
           const collection = new ymaps.GeoObjectCollection();
           for (const place of category.places) {
@@ -95,6 +111,7 @@ function DistrictMapCanvas({
               ),
             );
           }
+          collection.options.set('visible', category.key === activeKey);
           map.geoObjects.add(collection);
           collectionsRef.current[category.key] = collection;
         }
@@ -111,21 +128,37 @@ function DistrictMapCanvas({
       mapRef.current = null;
       collectionsRef.current = {};
     };
+    // activeKey намеренно не в зависимостях — начальная видимость коллекций
+    // выставляется один раз при создании карты (см. эффект ниже, который
+    // переключает видимость на уже существующих коллекциях без пересоздания).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldLoad]);
 
-  function toggleCategory(key: string) {
-    setActiveKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      const collection = collectionsRef.current[key];
-      if (collection) collection.options.set('visible', next.has(key));
-      return next;
-    });
-  }
+  // Смена категории после того, как карта уже создана — просто переключение
+  // visible у уже готовых коллекций (без похода в loadYmaps/пересоздания).
+  useEffect(() => {
+    for (const [key, collection] of Object.entries(collectionsRef.current)) {
+      collection.options.set('visible', key === activeKey);
+    }
+  }, [activeKey, status]);
+
+  const activeCategory = VISIBLE_CATEGORIES.find((c) => c.key === activeKey);
 
   return (
     <div className="flex flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-ink-muted">
+          {activeCategory ? (
+            <>
+              <span className="font-semibold text-ink">{activeCategory.label}</span> — {activeCategory.places.length}{' '}
+              точек на карте
+            </>
+          ) : (
+            'Выберите категорию'
+          )}
+        </p>
+        <CategoryToggle value={activeKey} options={CATEGORY_OPTIONS} onChange={setActiveKey} />
+      </div>
       {/* data-allow-pinch-zoom — App.tsx блокирует двупальцевый touchmove
           document-wide (usePreventPageZoom, защита от случайного зума
           страницы), но это же ломало щипок для зума самой карты. Атрибут —
@@ -147,38 +180,9 @@ function DistrictMapCanvas({
         )}
         <div ref={containerRef} className="h-full w-full" />
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {VISIBLE_CATEGORIES.map((category) => {
-          const active = activeKeys.has(category.key);
-          return (
-            <button
-              key={category.key}
-              type="button"
-              onClick={() => toggleCategory(category.key)}
-              aria-pressed={active}
-              className={`flex items-center gap-2 rounded-full border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                active
-                  ? 'border-border bg-surface-muted text-ink hover:bg-border'
-                  : 'border-border/60 text-ink-faint hover:border-border hover:text-ink-muted'
-              }`}
-            >
-              <span
-                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors"
-                style={
-                  active
-                    ? { backgroundColor: category.color, borderColor: category.color }
-                    : { borderColor: '#d8d6d2' }
-                }
-              >
-                {active && <Check className="h-3 w-3 text-white" strokeWidth={3} />}
-              </span>
-              <span className={active ? '' : 'line-through decoration-ink-faint'}>{category.label}</span>
-              <span className="text-ink-faint">{category.places.length}</span>
-            </button>
-          );
-        })}
-      </div>
-      <p className="text-xs text-ink-faint">Нажмите на категорию, чтобы показать или скрыть её метки на карте.</p>
+      <p className="text-xs text-ink-faint">
+        Показана одна категория за раз — переключите список выше, чтобы посмотреть другую.
+      </p>
     </div>
   );
 }

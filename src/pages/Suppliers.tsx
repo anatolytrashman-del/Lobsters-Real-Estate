@@ -16,15 +16,19 @@ import { ContractorsResearch } from '../components/contractors/ContractorsResear
 import { cn } from '../lib/cn';
 import { formatPhoneDisplay } from '../lib/formatPhone';
 import { currencySymbols, type Currency } from '../data/transactions';
-import type { DocumentFile } from '../data/contractorDocuments';
 import type { ExchangeRate } from '../data/exchangeRates';
 import { fetchTodayRate } from '../lib/exchangeRatesApi';
 import { convertToUsd } from '../lib/currencyConvert';
+import type { DocumentFile } from '../data/contractorDocuments';
 import {
   RESEARCH_CONTACT_METHODS,
+  RESEARCH_CURRENCIES,
   SUPPLIER_COUNTRIES,
   SUPPLIER_REQUEST_GROUPS,
   SUPPLIER_REQUEST_GROUP_LABELS,
+  SUPPLIER_COMPARISON_MODES,
+  SUPPLIER_COMPARISON_MODE_LABELS,
+  SUPPLIER_COMPARISON_MODE_HINTS,
   guessCountryFromWebsite,
   countryFlag,
   offerCommunicationStatus,
@@ -32,6 +36,7 @@ import {
   type ResearchContactMethod,
   type SupplierRequest,
   type SupplierRequestGroup,
+  type SupplierComparisonMode,
   type SupplierOffer,
   formatRequestItemsText,
 } from '../data/supplierResearch';
@@ -44,7 +49,7 @@ import type { LedgerAttachment } from '../lib/materialLedgerXlsx';
 import type { EmailTemplate } from '../data/emailTemplates';
 import { fetchEmailTemplates } from '../lib/emailTemplatesApi';
 import type { MaterialLedger } from '../data/materialLedgers';
-import { fetchMaterialLedgers } from '../lib/materialLedgersApi';
+import { fetchMaterialLedgers, deleteMaterialLedger } from '../lib/materialLedgersApi';
 import type { SupplierOrder } from '../data/supplierOrders';
 import { fetchSupplierOrders } from '../lib/supplierOrdersApi';
 import {
@@ -59,14 +64,21 @@ import {
   uploadSupplierFile,
   type SupplierRequestInput,
 } from '../lib/supplierResearchApi';
-import { searchSuppliersOnline, type SupplierSearchResult } from '../lib/supplierWebSearchApi';
+import {
+  searchSuppliersOnline,
+  recognizeInvoiceFile,
+  type SupplierSearchResult,
+  type RecognizedInvoiceItem,
+} from '../lib/supplierWebSearchApi';
 import { logActivity } from '../lib/activityLogApi';
 import { purchaseItemTotal, type PurchaseItem } from '../data/purchases';
-import type { Estimate, EstimateMaterial } from '../data/estimates';
+import { emptySection, type Estimate, type EstimateMaterial, type EstimateSection } from '../data/estimates';
 import { fetchEstimates, updateEstimate } from '../lib/estimatesApi';
 import type { RealtyObject } from '../data/objects';
 import { fetchObjects } from '../lib/objectsApi';
-import { MaterialsTable, groupMaterials, type MaterialBestPriceOption } from '../components/estimates/MaterialsTable';
+import type { LegalEntity } from '../data/legalEntities';
+import { fetchLegalEntities } from '../lib/legalEntitiesApi';
+import { MaterialsTable, groupMaterials } from '../components/estimates/MaterialsTable';
 import { EstimateMaterialFormModal } from '../components/estimates/EstimateMaterialFormModal';
 import { EstimateMaterialCommentsModal } from '../components/estimates/EstimateMaterialCommentsModal';
 
@@ -123,7 +135,16 @@ function siteLabel(url: string): string {
 // "Ресерч" переименован в "Поставщики" (владелец сам так назвал сущность),
 // "Email" — в "Письма" (то же самое: подпись вкладки — статичная строка,
 // не "Письма (N)", см. комментарий про badges выше по истории этого файла).
-const SUPPLIER_TABS = ['Поставщики', 'Ведомости материалов', 'Письма'] as const;
+//
+// Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
+// цен. И внутри уже группировка по запросам, как грильято" — то самое
+// сравнение "лучшая цена"/таблица по позициям, которое до этого жило только
+// внутри карточки запроса на вкладке "Поставщики" (см. PriceComparisonBlock
+// ниже — общий компонент для обоих мест), получило свою отдельную вкладку —
+// чистый вид только для сравнения, без кнопок управления запросом/
+// предложением, сгруппированный по тем же категориям (Материалы и
+// оборудование/Сервисы), что и "Поставщики".
+const SUPPLIER_TABS = ['Поставщики', 'Сравнение цен', 'Ведомости материалов', 'Письма'] as const;
 type SupplierTab = (typeof SUPPLIER_TABS)[number];
 
 // Владелец, 2026-09-04: "меня бесит, что у всей страницы Поставщики
@@ -134,6 +155,7 @@ type SupplierTab = (typeof SUPPLIER_TABS)[number];
 // ссылки не должны сломаться.
 const SUPPLIER_TAB_SLUGS: Record<SupplierTab, string> = {
   'Поставщики': 'suppliers',
+  'Сравнение цен': 'comparison',
   'Ведомости материалов': 'ledger',
   Письма: 'letters',
 };
@@ -148,6 +170,8 @@ const emptyRequestForm = {
   sectionId: '' as string,
   sectionTitle: '',
   items: [] as PurchaseItem[],
+  legalEntityId: '' as string,
+  comparisonMode: 'material' as SupplierComparisonMode,
 };
 
 function requestToForm(r: SupplierRequest) {
@@ -158,6 +182,8 @@ function requestToForm(r: SupplierRequest) {
     sectionId: r.sectionId ?? '',
     sectionTitle: r.sectionTitle,
     items: r.items,
+    legalEntityId: r.legalEntityId ?? '',
+    comparisonMode: r.comparisonMode,
   };
 }
 
@@ -171,9 +197,436 @@ const emptyOfferForm = {
   websiteUrl: '',
   catalogModelName: '',
   catalogModelPhoto: null as DocumentFile | null,
+  // Владелец, 2026-09-09: файлы теперь грузятся сразу по выбору (как и
+  // catalogModelPhoto), не откладываются до сабмита — иначе распознавание
+  // счёта (см. handleOfferFilesSelect) нечем было бы вызвать: recognizeInvoice
+  // читает файл по публичному Storage-URL, у ещё не загруженного File его нет.
   existingFiles: [] as DocumentFile[],
-  newFiles: [] as File[],
+  // Владелец, 2026-09-09: "у Альмиры есть сметы, которые она собрала
+  // вручную — PDF/Excel/письма с ценами... вручную не будем ничего
+  // указывать, система должна распознавать так же, как в переписке" —
+  // price/currency/items заполняются автораспознаванием загруженного файла
+  // (handleOfferFilesSelect → recognizeInvoiceFile → карточка "Похоже, это
+  // счёт" → confirmOfferExtraction), не вводом с клавиатуры. Поля остаются
+  // редактируемыми — как и в переписке, это доступная поправка после
+  // распознавания (например, если модель ошиблась в цифре), а не приглашение
+  // печатать всё с нуля. price — строка (не number), как и в остальных
+  // денежных полях формы этого проекта (например ContractorsResearch.tsx) —
+  // value контролируемого <input type="number"> должен быть строкой, иначе
+  // пустое поле нельзя стереть до конца.
+  price: '' as string,
+  currency: RESEARCH_CURRENCIES[0] as Currency,
+  items: [] as PurchaseItem[],
 };
+
+// Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей цены" — тот
+// же принцип сравнения "дешевле всех" в общем знаменателе USD, что и у
+// rankOffers в ContractorsResearch.tsx (см. комментарий там), только считает
+// по offer.price/currency — итоговой цене по счёту, единственному
+// АВТОРИТЕТНОМУ источнику суммы (не сумма позиций, см. комментарий у
+// SupplierOffer.price). Предложения без цены — в хвост списка, не участвуют
+// в сравнении (0 не должен ложно выигрывать). Лидеров может быть несколько
+// (тот же принцип, что и там же).
+function rankOffersByPrice(
+  offers: SupplierOffer[],
+  rate: ExchangeRate | undefined,
+): { sorted: SupplierOffer[]; cheapestIds: Set<string> } {
+  const withUsd = offers.map((o) => ({
+    offer: o,
+    usd: o.price > 0 ? convertToUsd(o.price, o.currency, rate) : null,
+  }));
+  const priced = withUsd.filter((x) => x.usd != null).sort((a, b) => a.usd! - b.usd!);
+  const unpriced = withUsd.filter((x) => x.usd == null);
+  const minUsd = priced[0] ? Math.round(priced[0].usd! * 100) : null;
+  const cheapestIds = new Set(
+    minUsd == null ? [] : priced.filter((x) => Math.round(x.usd! * 100) === minUsd).map((x) => x.offer.id),
+  );
+  return { sorted: [...priced, ...unpriced].map((x) => x.offer), cheapestIds };
+}
+
+// Владелец, 2026-09-09: "та же поставка Грильято — это не 1 позиция, а
+// множество доп. компонентов. Предложи решение по организации инфы и цен с
+// учётом множества строк" — построчное сравнение: строка на каждое
+// уникальное название позиции (матчинг точным совпадением по названию без
+// регистра/пробелов по краям — счета разных поставщиков не всегда называют
+// один и тот же компонент дословно одинаково, более умный матчинг здесь не
+// Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
+// цен. И внутри уже группировка по запросам, как грильято" — вынесено из
+// RequestCard в отдельный переиспользуемый блок: сам RequestCard (вкладка
+// "Поставщики", с кнопками управления запросом/предложением) и новая
+// вкладка "Сравнение цен" (только просмотр, сгруппировано по категориям)
+// показывают ровно один и тот же блок сравнения, не две разные реализации.
+// Свой стейт страны — самодостаточный компонент, реюзабельный без прокидки
+// состояния через родителя.
+function PriceComparisonBlock({
+  offers,
+  emails,
+  rate,
+  onOpenDetail,
+  emptyHint,
+  country: controlledCountry,
+  onCountryChange,
+}: {
+  offers: SupplierOffer[];
+  emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
+  onOpenDetail: (o: SupplierOffer) => void;
+  // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
+  // Беларуси и для России... в идеале переключение списков прямо внутри
+  // самого блока" — подсказка для пустого списка отличается в зависимости
+  // от контекста (на "Поставщики" есть кнопка "Добавить предложение" рядом,
+  // на "Сравнение цен" её нет).
+  emptyHint: string;
+  // RequestCard (вкладка "Поставщики") использует этот же переключатель
+  // страны и для кнопки "Найти в сети" — там страна контролируется
+  // родителем (controlled), чтобы оба места читали одно и то же значение.
+  // На вкладке "Сравнение цен" переключатель не нужен нигде, кроме самого
+  // блока — там он остаётся несвязанным (uncontrolled), свой на каждую
+  // карточку категории.
+  country?: string;
+  onCountryChange?: (country: string) => void;
+}) {
+  const [internalCountry, setInternalCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  const country = controlledCountry ?? internalCountry;
+  const setCountry = onCountryChange ?? setInternalCountry;
+  const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
+
+  return (
+    <>
+      <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
+
+      {offersInCountry.length === 0 ? (
+        <p className="text-sm text-ink-faint">{offers.length === 0 ? 'Пока нет предложений.' : `Нет предложений из «${country}» — ${emptyHint}`}</p>
+      ) : (
+        <OfferTotalComparison offers={offersInCountry} emails={emails} rate={rate} onOpenDetail={onOpenDetail} showItemsSpoiler={false} />
+      )}
+    </>
+  );
+}
+
+// Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей цены" —
+// сравнение "дешевле всех" по ИТОГОВОЙ цене всего КП (offer.price), список
+// отсортирован по возрастанию цены, самая низкая (может быть несколько при
+// равенстве) подсвечена зелёным + бейдж "лучшая цена" — тот же принцип, что
+// и у сравнения предложений подрядчиков (ContractorsResearch.tsx). Плюс
+// разбивка по компонентам снизу, если у сравниваемых КП есть построчная
+// структура. Вынесено в отдельный компонент — используется и в
+// PriceComparisonBlock (вкладка "Поставщики", весь список), и в
+// MaterialPriceComparisonCard для категорий с comparisonMode:'lot' (вкладка
+// "Сравнение цен", только confirmed — владелец, 2026-09-09: "Грильято, где
+// есть комплектующие, нужно оценивать полностью... мы не будем заказывать
+// несущие в одном месте, а подвесы в другом" — там сравнение "лучшая цена
+// по каждой позиции" вводило бы в заблуждение, реальный выбор — это ОДИН
+// поставщик на всю поставку целиком).
+function OfferTotalComparison({
+  offers,
+  emails,
+  rate,
+  onOpenDetail,
+  // Владелец, 2026-09-09: "в общем списке поставщиков убирай эту таблицу" —
+  // список позиций (в любом виде) нужен только на вкладке "Сравнение цен"
+  // (там это и есть смысл lot-режима — детализация того, из чего сложилась
+  // общая сумма), на "Поставщики" (весь список, включая ещё не ответивших)
+  // он только загромождает карточку категории.
+  showItemsSpoiler = true,
+}: {
+  offers: SupplierOffer[];
+  emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
+  onOpenDetail: (o: SupplierOffer) => void;
+  showItemsSpoiler?: boolean;
+}) {
+  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offers, rate);
+
+  return (
+    <div className="flex flex-col gap-2">
+      {sortedOffers.map((o) => {
+        const status = offerCommunicationStatus(o, emails);
+        const isCheapest = cheapestIds.has(o.id);
+        return (
+          <div
+            key={o.id}
+            className={cn(
+              'flex flex-col gap-2 rounded-control border px-4 py-3',
+              isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
+            )}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium text-ink">{o.name}</span>
+                {o.verified ? (
+                  <Badge tone="success">Верифицирован</Badge>
+                ) : (
+                  <Badge tone="warning">Требуется верификация</Badge>
+                )}
+                {isCheapest && (
+                  <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
+                    лучшая цена
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="max-w-[200px] truncate text-sm text-ink-muted">{OFFER_COMMUNICATION_STATUS_LABEL[status]}</span>
+                <span className={cn('tabular-nums font-semibold', isCheapest ? 'text-success' : 'text-ink')}>
+                  {o.price > 0 ? formatPrice(o.price, o.currency) : '—'}
+                </span>
+                <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
+                  Подробнее
+                </Button>
+              </div>
+            </div>
+
+            {/* Владелец, 2026-09-09: "названия позиций будут 100% отличаться,
+                ты перекрестные сравнения не найдешь" — раньше здесь строилась
+                ОБЩАЯ таблица, сопоставляющая позиции разных поставщиков по
+                совпадению названия (buildItemComparison) — ненадёжно, у
+                каждого поставщика свои формулировки в счёте. Теперь список
+                позиций — под спойлером и СТРОГО отдельно на каждого
+                поставщика, без попытки свести их в одну таблицу. */}
+            {showItemsSpoiler && o.items.length > 0 && (
+              <details className="group">
+                <summary className="cursor-pointer text-xs font-medium text-ink-muted">
+                  Список материалов ({o.items.length} поз.)
+                </summary>
+                <div className="mt-2 overflow-x-auto rounded-control border border-border">
+                  <table className="w-full min-w-[360px] border-collapse text-sm">
+                    <thead>
+                      <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                        <th className="px-3 py-2">Название</th>
+                        <th className="px-3 py-2 text-right">Кол-во</th>
+                        <th className="px-3 py-2 text-right">Цена</th>
+                        <th className="px-3 py-2 text-right">Сумма</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {o.items.map((item) => (
+                        <tr key={item.id} className="border-t border-border align-top">
+                          <td className="px-3 py-2 text-ink">
+                            {item.name}
+                            {item.unit && <span className="text-ink-faint"> ({item.unit})</span>}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-ink">{item.quantity ?? '—'}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-ink">
+                            {item.price != null ? formatPrice(item.price, o.currency) : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold text-ink">
+                            {formatPrice(purchaseItemTotal(item), o.currency)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Владелец, 2026-09-09: "В сравнении цен нужно добавлять только тех, кто
+// уже прислал КП" + "не списки поставщиков, а материал — КП по убыванию" —
+// вкладка "Сравнение цен" перестроена целиком под этот принцип, отдельно от
+// PriceComparisonBlock (тот остаётся как был для вкладки "Поставщики" — там
+// нужен весь список, включая ещё не ответивших, это управление запросом, а
+// не сравнение готовых цен). Здесь: (1) только offerCommunicationStatus ===
+// 'confirmed' — offer.items или offer.price уже зафиксированы, счёт реально
+// получен, не просто отправлено письмо; (2) единица сравнения — не
+// поставщик, а МАТЕРИАЛ: позиция самого запроса (request.items[0]) плюс
+// любые доп. компоненты, обнаруженные в разбивке присланных счетов (см.
+// точку 3 из истории про Грильято — сложное КП это не 1 цена, а много
+// строк). Под каждым материалом — список полученных КП по убыванию (не по
+// возрастанию, как у лучшей цены выше — тут задача увидеть весь диапазон
+// сверху вниз), самая низкая цена всё равно подсвечена зелёным, где бы она
+// ни оказалась в списке.
+interface MaterialQuote {
+  offerId: string;
+  offerName: string;
+  verified: boolean;
+  amount: number;
+  currency: Currency;
+  usd: number | null;
+}
+
+interface MaterialGroup {
+  key: string;
+  name: string;
+  unit: string;
+  quotes: MaterialQuote[];
+  cheapestOfferIds: Set<string>;
+}
+
+function buildMaterialQuotes(request: SupplierRequest, confirmedOffers: SupplierOffer[], rate: ExchangeRate | undefined): MaterialGroup[] {
+  const groups = new Map<string, MaterialGroup>();
+
+  function addQuote(name: string, unit: string, offer: SupplierOffer, amount: number) {
+    const key = name.trim().toLowerCase();
+    if (!key) return;
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, name: name.trim(), unit, quotes: [], cheapestOfferIds: new Set() };
+      groups.set(key, group);
+    }
+    group.quotes.push({
+      offerId: offer.id,
+      offerName: offer.name,
+      verified: offer.verified,
+      amount,
+      currency: offer.currency,
+      usd: convertToUsd(amount, offer.currency, rate),
+    });
+  }
+
+  // Если у запроса нет собственных позиций — сам request.title и есть
+  // "материал", про который вообще идёт речь (запрос без разбивки на items).
+  const fallbackName = request.items[0]?.name || request.title;
+  const fallbackUnit = request.items[0]?.unit || '';
+
+  for (const offer of confirmedOffers) {
+    if (offer.items.length > 0) {
+      for (const item of offer.items) {
+        if (item.price == null) continue;
+        addQuote(item.name, item.unit, offer, purchaseItemTotal(item));
+      }
+    } else if (offer.price > 0) {
+      // Счёт распознан только итогом, без разбивки — весь итог относим к
+      // единственному материалу, про который создавался этот запрос.
+      addQuote(fallbackName, fallbackUnit, offer, offer.price);
+    }
+  }
+
+  const primaryKey = fallbackName.trim().toLowerCase();
+  const list = Array.from(groups.values());
+  for (const group of list) {
+    const priced = group.quotes.filter((q) => q.usd != null).sort((a, b) => b.usd! - a.usd!);
+    const unpriced = group.quotes.filter((q) => q.usd == null);
+    group.quotes = [...priced, ...unpriced];
+    if (priced.length > 0) {
+      const minUsd = Math.round(priced[priced.length - 1].usd! * 100);
+      for (const q of priced) {
+        if (Math.round(q.usd! * 100) === minUsd) group.cheapestOfferIds.add(q.offerId);
+      }
+    }
+  }
+  // Материал самого запроса — первым, остальные (доп. компоненты) — по
+  // числу полученных КП (сначала там, где реально есть с чем сравнивать).
+  list.sort((a, b) => {
+    if (a.key === primaryKey) return -1;
+    if (b.key === primaryKey) return 1;
+    return b.quotes.length - a.quotes.length;
+  });
+  return list;
+}
+
+function MaterialPriceComparisonCard({
+  request,
+  offers,
+  emails,
+  rate,
+  onOpenDetail,
+}: {
+  request: SupplierRequest;
+  offers: SupplierOffer[];
+  emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
+  onOpenDetail: (o: SupplierOffer) => void;
+}) {
+  const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
+  const confirmedOffers = offersInCountry.filter((o) => offerCommunicationStatus(o, emails) === 'confirmed');
+  // Владелец, 2026-09-09: "Грильято, где есть комплектующие, нужно
+  // оценивать полностью... мы не будем заказывать несущие в одном месте, а
+  // подвесы в другом. Поэтому логика такая — формируем поставку — сравниваем
+  // цену на поставку в целом. Но, в то же время, если бы позиции были
+  // штукатурка и плитка, то могли бы заказать и в разных местах" —
+  // comparisonMode:'lot' сравнивает КП целиком (OfferTotalComparison, та же
+  // логика, что и на вкладке "Поставщики"), а не по отдельным материалам.
+  const isLot = request.comparisonMode === 'lot';
+  const materialGroups = isLot ? [] : buildMaterialQuotes(request, confirmedOffers, rate);
+
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-lg font-bold text-ink">{request.title}</span>
+        {isLot && (
+          <span
+            className="rounded-full border border-border-strong px-2 py-0.5 text-[11px] font-medium text-ink-muted"
+            title={SUPPLIER_COMPARISON_MODE_HINTS.lot}
+          >
+            поставка целиком
+          </span>
+        )}
+      </div>
+      <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
+
+      {isLot ? (
+        confirmedOffers.length === 0 ? (
+          <p className="text-sm text-ink-faint">Пока никто из «{country}» не прислал КП — переключите страну выше.</p>
+        ) : (
+          <OfferTotalComparison offers={confirmedOffers} emails={emails} rate={rate} onOpenDetail={onOpenDetail} />
+        )
+      ) : materialGroups.length === 0 ? (
+        <p className="text-sm text-ink-faint">Пока никто из «{country}» не прислал КП — переключите страну выше.</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {materialGroups.map((group) => (
+            <div key={group.key} className="flex flex-col gap-1.5">
+              <span className="text-sm font-semibold text-ink">
+                {group.name}
+                {group.unit && <span className="font-normal text-ink-faint"> ({group.unit})</span>}
+              </span>
+              <div className="flex flex-col gap-1.5">
+                {group.quotes.map((q) => {
+                  const isCheapest = group.cheapestOfferIds.has(q.offerId);
+                  return (
+                    <div
+                      key={q.offerId}
+                      className={cn(
+                        'flex flex-wrap items-center justify-between gap-3 rounded-control border px-3 py-2',
+                        isCheapest ? 'border-success/30 bg-success-bg' : 'border-border',
+                      )}
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-medium text-ink">{q.offerName}</span>
+                        {q.verified ? (
+                          <Badge tone="success">Верифицирован</Badge>
+                        ) : (
+                          <Badge tone="warning">Требуется верификация</Badge>
+                        )}
+                        {isCheapest && (
+                          <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
+                            лучшая цена
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className={cn('tabular-nums text-sm font-semibold', isCheapest ? 'text-success' : 'text-ink')}>
+                          {formatPrice(q.amount, q.currency)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const offer = offers.find((o) => o.id === q.offerId);
+                            if (offer) onOpenDetail(offer);
+                          }}
+                          className="shrink-0 text-xs font-medium text-primary hover:underline"
+                        >
+                          Подробнее
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
 
 // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
 // Беларуси и для России... в идеале переключение списков прямо внутри
@@ -185,31 +638,52 @@ function RequestCard({
   request,
   offers,
   emails,
+  rate,
   onEditRequest,
   onDeleteRequest,
   onAddOffer,
   onOpenDetail,
   onWebSearch,
+  onToggleComparisonMode,
   searching,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  rate: ExchangeRate | undefined;
   onEditRequest: (r: SupplierRequest) => void;
   onDeleteRequest: (r: SupplierRequest) => void;
-  onAddOffer: (requestId: string) => void;
+  onAddOffer: (r: SupplierRequest) => void;
   onOpenDetail: (o: SupplierOffer) => void;
-  onWebSearch: (r: SupplierRequest) => void;
+  onWebSearch: (r: SupplierRequest, country: string) => void;
+  onToggleComparisonMode: (r: SupplierRequest) => void;
   searching: boolean;
 }) {
+  // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
+  // PriceComparisonBlock ниже — здесь он controlled, значение общее и для
+  // фильтра сравнения, и для кнопки "Найти в сети").
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
-  const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
 
   return (
     <Card className="flex flex-col gap-4 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-lg font-bold text-ink">{request.title}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-lg font-bold text-ink">{request.title}</span>
+            <button
+              type="button"
+              onClick={() => onToggleComparisonMode(request)}
+              title="Клик — переключить тип сравнения на «Сравнение цен»"
+              className={cn(
+                'rounded-full border px-2 py-0.5 text-[11px] font-medium hover:border-primary hover:text-primary',
+                request.comparisonMode === 'lot'
+                  ? 'border-border-strong text-ink-muted'
+                  : 'border-border text-ink-faint',
+              )}
+            >
+              {SUPPLIER_COMPARISON_MODE_LABELS[request.comparisonMode]}
+            </button>
+          </div>
           {request.items.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1.5">
               {request.items.map((item) => (
@@ -230,11 +704,11 @@ function RequestCard({
             variant="secondary"
             disabled={searching}
             icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            onClick={() => onWebSearch(request)}
+            onClick={() => onWebSearch(request, country)}
           >
             {searching ? 'Ищем в сети...' : 'Найти в сети'}
           </Button>
-          <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request.id)}>
+          <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
             Добавить предложение
           </Button>
           <button
@@ -256,48 +730,15 @@ function RequestCard({
         </div>
       </div>
 
-      <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
-
-      {offersInCountry.length === 0 ? (
-        <p className="text-sm text-ink-faint">
-          {offers.length === 0
-            ? 'Пока нет предложений — нажмите «Добавить предложение».'
-            : `Нет предложений из «${country}» — переключите страну выше или добавьте предложение.`}
-        </p>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {/* Владелец, 2026-09-04: "Лучшую цену на этой странице не выводим
-              вообще. Просто показываем либо верифицированного, либо нет
-              поставщика" — сравнение "дешевле всех" по офферу в целом
-              убрано (цена теперь живёт на уровне конкретной заявки на
-              поставку, не самого поставщика), вместо зелёного бейджа —
-              статус верификации. */}
-          {offersInCountry.map((o) => {
-            const status = offerCommunicationStatus(o, emails);
-            return (
-              <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate font-medium text-ink">{o.name}</span>
-                  {o.verified ? (
-                    <Badge tone="success">Верифицирован</Badge>
-                  ) : (
-                    <Badge tone="warning">Требуется верификация</Badge>
-                  )}
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="max-w-[200px] truncate text-sm text-ink-muted">{OFFER_COMMUNICATION_STATUS_LABEL[status]}</span>
-                  <span className="tabular-nums font-semibold text-ink">
-                    {o.price > 0 ? formatPrice(o.price, o.currency) : '—'}
-                  </span>
-                  <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
-                    Подробнее
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      <PriceComparisonBlock
+        offers={offers}
+        emails={emails}
+        rate={rate}
+        onOpenDetail={onOpenDetail}
+        emptyHint="переключите страну выше или добавьте предложение."
+        country={country}
+        onCountryChange={setCountry}
+      />
     </Card>
   );
 }
@@ -688,7 +1129,16 @@ export function Suppliers() {
   // MaterialLedgerModal (тот же список materialLedgers, что и у "Прикрепить
   // ведомость"/"Массовая отправка"), только без onAttach — тут нечего
   // прикреплять, только создавать/править/удалять.
-  const [ledgerTemplatesModalOpen, setLedgerTemplatesModalOpen] = useState(false);
+  //
+  // Владелец, 2026-09-09: "непонятно, зачем графа «Готовая ведомость»,
+  // когда я добавляю новый шаблон" + "не хватает отображения шаблонов на
+  // странице ведомостей" — вместо одного булева "открыта/закрыта" модалка
+  // теперь целится в конкретную ведомость: null — закрыта, 'new' — создание
+  // с нуля, id строкой — редактирование конкретной. Выбор "какую
+  // редактировать" переехал на саму страницу (список ниже), поэтому
+  // внутренний селект "Готовая ведомость" в самой модалке для этого сценария
+  // скрыт (hideLedgerPicker).
+  const [ledgerModalTarget, setLedgerModalTarget] = useState<'new' | string | null>(null);
 
   // Владелец, 2026-09-04: "давай реализуем массовую отправку... Альмира
   // сформировала универсальную большую ведомость и хочет разослать её
@@ -707,10 +1157,16 @@ export function Suppliers() {
   const [offers, setOffers] = useState<SupplierOffer[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Курс на сегодня — только для сравнения "лучшая цена" в общем
+  // знаменателе USD между офферами в разных валютах (см. rankOffersByPrice/
+  // buildItemComparison выше). Не подтянулся — не блокируем страницу,
+  // просто предложения не в USD выпадают из сравнения (convertToUsd без
+  // курса возвращает null).
   const [rate, setRate] = useState<ExchangeRate | undefined>(undefined);
 
   const [estimates, setEstimates] = useState<Estimate[]>([]);
   const [objects, setObjects] = useState<RealtyObject[]>([]);
+  const [legalEntities, setLegalEntities] = useState<LegalEntity[]>([]);
 
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [editingRequest, setEditingRequest] = useState<SupplierRequest | null>(null);
@@ -723,10 +1179,34 @@ export function Suppliers() {
   const [offerRequestId, setOfferRequestId] = useState<string | null>(null);
   const [editingOffer, setEditingOffer] = useState<SupplierOffer | null>(null);
   const [offerForm, setOfferForm] = useState(emptyOfferForm);
+  const [offerManualItemName, setOfferManualItemName] = useState('');
   const [savingOffer, setSavingOffer] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  // Владелец, 2026-09-09: автораспознавание КП, загруженного вручную в
+  // форму предложения — offerUploadingFile крутится во время загрузки
+  // файла(ов) в Storage, offerExtractionBusy отдельно во время самого
+  // распознавания (файл уже виден в списке, распознавание может идти
+  // ещё пару секунд после этого). offerExtraction — незакрытая карточка
+  // "Похоже, это счёт" (максимум одна за раз — распознаём файлы по
+  // очереди, не параллельно, см. handleOfferFilesSelect).
+  const [offerUploadingFile, setOfferUploadingFile] = useState(false);
+  const [offerExtractionBusy, setOfferExtractionBusy] = useState(false);
+  const [offerExtractionError, setOfferExtractionError] = useState<string | null>(null);
+  // Владелец, 2026-09-09 (живой баг на проде — «Глассвэй»): успешное
+  // распознавание с ответом isInvoice:false раньше было ПОЛНОСТЬЮ молчаливым
+  // — ни карточки подтверждения, ни ошибки, файл просто прикреплялся, и
+  // цена оставалась незаполненной без единого объяснения почему. Теперь
+  // такой исход тоже виден на экране (имя файла, которое не распозналось
+  // как счёт), а не только два прежних состояния busy/error.
+  const [offerNotInvoiceFile, setOfferNotInvoiceFile] = useState<string | null>(null);
+  const [offerExtraction, setOfferExtraction] = useState<{
+    price: number | null;
+    currency: string | null;
+    items: RecognizedInvoiceItem[];
+    fileName: string;
+  } | null>(null);
   const [emailOfferId, setEmailOfferId] = useState<string | null>(null);
   // Вся переписка по всем предложениям Ресерча разом — единственный
   // источник правды для OfferEmailModal и вкладки "Email" (см.
@@ -764,6 +1244,14 @@ export function Suppliers() {
   const [editingMaterial, setEditingMaterial] = useState<EstimateMaterial | null>(null);
   const [commentsMaterialSectionId, setCommentsMaterialSectionId] = useState<string | null>(null);
   const [commentsMaterial, setCommentsMaterial] = useState<EstimateMaterial | null>(null);
+  // Переименование/добавление/удаление разделов прямо в ведомости — владелец,
+  // 2026-09-09: "нужна возможность вручную добавлять разделы" (у сметы без
+  // объекта стартовый набор из 4 стандартных разделов не всегда подходит).
+  // Тот же паттерн rename-формы, что и у разделов на странице сметы
+  // (EstimateDetail.tsx: startEditSection/saveSection/addSection).
+  const [editingLedgerSectionId, setEditingLedgerSectionId] = useState<string | null>(null);
+  const [ledgerSectionTitleDraft, setLedgerSectionTitleDraft] = useState('');
+  const [savingLedgerSection, setSavingLedgerSection] = useState(false);
 
   // "Найти в сети" (владелец, 2026-08-31) — веб-поиск поставщиков через
   // claude-haiku-4-5 (api/supplier-web-search.js; изначально был
@@ -779,7 +1267,14 @@ export function Suppliers() {
   // webSearchModal — какой запрос показывать в модалке результатов и сами
   // результаты/ошибка.
   const [webQueryModal, setWebQueryModal] = useState<SupplierRequest | null>(null);
-  const [webQueryForm, setWebQueryForm] = useState({ itemsText: '', extra: '' });
+  // country — страна поиска (карточка запроса передаёт свою текущую
+  // вкладку страны, см. RequestCard/ToggleGroup выше), но реальный баг
+  // (2026-09-07): она никогда не доходила до самого поиска — сервер был
+  // жёстко зашит на "Беларусь (Минск)" независимо от неё и от того, что
+  // написано в "Дополнительные пожелания" (например, город "Москва").
+  // Теперь страна редактируема прямо в этой форме (вдруг нужно
+  // переключить перед конкретным поиском) и уходит на сервер как есть.
+  const [webQueryForm, setWebQueryForm] = useState({ itemsText: '', extra: '', country: SUPPLIER_COUNTRIES[0] as string });
   const [webSearchingId, setWebSearchingId] = useState<string | null>(null);
   const [webSearchModal, setWebSearchModal] = useState<{
     request: SupplierRequest;
@@ -805,15 +1300,14 @@ export function Suppliers() {
       })
       .catch((err) => setLoadError(errorMessage(err, 'Не удалось загрузить поставщиков')))
       .finally(() => setLoading(false));
-    fetchTodayRate()
-      .then(setRate)
-      .catch(() => setRate(undefined));
     fetchEstimates().then(setEstimates).catch(() => setEstimates([]));
     fetchObjects().then(setObjects).catch(() => setObjects([]));
+    fetchLegalEntities().then(setLegalEntities).catch(() => setLegalEntities([]));
     fetchAllSupplierOfferEmails().then(setSupplierEmails).catch(() => setSupplierEmails([]));
     fetchEmailTemplates().then(setEmailTemplates).catch(() => setEmailTemplates([]));
     fetchMaterialLedgers().then(setMaterialLedgers).catch(() => setMaterialLedgers([]));
     fetchSupplierOrders().then(setSupplierOrders).catch(() => setSupplierOrders([]));
+    fetchTodayRate().then(setRate).catch(() => setRate(undefined));
   }, []);
 
   // Владелец, 2026-09-03: "в ведомости по умолчанию всегда выбран Red One" —
@@ -893,8 +1387,19 @@ export function Suppliers() {
     return o ? o.name || o.address : 'Объект без названия';
   }
 
+  // Юрлицо по умолчанию — используется в подписи-плейсхолдере поля
+  // "Юрлицо" формы категории, когда сама категория его не выбрала явно.
+  const defaultLegalEntity = useMemo(() => legalEntities.find((e) => e.isDefault) ?? null, [legalEntities]);
+
+  // Смета может быть без объекта (владелец, 2026-09-09: "Смета Зелёный" —
+  // общая смета внутри платформы) — тогда вместо объекта показываем её
+  // собственное название (title), а не пытаемся искать несуществующий id.
   const estimateOptions = useMemo(
-    () => estimates.map((e) => ({ id: e.id, label: `Смета — ${objectLabel(e.objectId)}` })),
+    () =>
+      estimates.map((e) => ({
+        id: e.id,
+        label: `Смета — ${e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'}`,
+      })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimates, objects],
   );
@@ -910,7 +1415,7 @@ export function Suppliers() {
   const allEstimateMaterials = useMemo(() => {
     const list: { item: PurchaseItem; context: string }[] = [];
     for (const e of estimates) {
-      const objLabel = objectLabel(e.objectId);
+      const objLabel = e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта';
       for (const s of e.sections) {
         for (const m of s.materials) {
           list.push({
@@ -923,54 +1428,6 @@ export function Suppliers() {
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estimates, objects]);
-
-  // Владелец, 2026-09-03: "давай зашивать лучшие цены на позиции в текущую
-  // ведомость материалов" — плоский свод известных цен по каждому материалу
-  // сметы (sourceMaterialId — общий ключ, проставляется вручную при
-  // сопоставлении распознанного счёта, см. SupplierCorrespondenceTab.tsx),
-  // собранных со всех предложений (offer.items) И всех доп. заявок
-  // (order.items — "1 заявка на поставку — одна ветка"). Сортировка внутри
-  // каждой позиции — по цене в USD-эквиваленте (rate — тот же курс, что и у
-  // rankOffers в RequestCard), самая дешёвая первой.
-  const bestPricesByMaterialId = useMemo(() => {
-    const map = new Map<string, MaterialBestPriceOption[]>();
-    const push = (materialId: string, opt: MaterialBestPriceOption) => {
-      const list = map.get(materialId) ?? [];
-      list.push(opt);
-      map.set(materialId, list);
-    };
-    // Владелец, 2026-09-04: "краска идёт в литрах, а поставщик выставляет
-    // количество банок... надо пересчитывать на литр, метр, штуку, а не в
-    // целом" — сравниваем по unitPrice (цена за единицу измерения СМЕТНОГО
-    // материала, введена вручную при сопоставлении счёта, см.
-    // SupplierCorrespondenceTab.tsx), а не по сырому price/quantity со
-    // счёта (та тара поставщика — банки/упаковки — может не совпадать с
-    // единицей сметы вовсе).
-    for (const o of offers) {
-      for (const it of o.items) {
-        if (!it.sourceMaterialId || it.unitPrice == null || it.unitPrice <= 0) continue;
-        push(it.sourceMaterialId, { price: it.unitPrice, currency: o.currency, supplierName: o.name, itemName: it.name });
-      }
-    }
-    for (const ord of supplierOrders) {
-      const parentOffer = offers.find((o) => o.id === ord.offerId);
-      for (const it of ord.items) {
-        if (!it.sourceMaterialId || it.unitPrice == null || it.unitPrice <= 0) continue;
-        push(it.sourceMaterialId, {
-          price: it.unitPrice,
-          currency: ord.currency,
-          supplierName: parentOffer?.name ?? 'Поставщик',
-          itemName: it.name,
-        });
-      }
-    }
-    for (const list of map.values()) {
-      // convertToUsd может вернуть null (курс ещё не загрузился, а валюта не
-      // USD) — такие позиции уходят в конец списка, не ломая сортировку.
-      list.sort((a, b) => (convertToUsd(a.price, a.currency, rate) ?? Infinity) - (convertToUsd(b.price, b.currency, rate) ?? Infinity));
-    }
-    return map;
-  }, [offers, supplierOrders, rate]);
 
   const selectedRequestEstimate = estimates.find((e) => e.id === requestForm.estimateId) ?? null;
   const selectedRequestSection = selectedRequestEstimate?.sections.find((s) => s.id === requestForm.sectionId) ?? null;
@@ -1027,11 +1484,36 @@ export function Suppliers() {
   // загруженной сметой).
   const ledgerEstimate = estimates.find((e) => e.id === ledgerEstimateId) ?? null;
 
+  // Владелец, 2026-09-09: "шаблон ведомости материала привязывался к смете...
+  // когда выбран Red One, всё равно видны шаблоны Зелёного" — список
+  // "Готовые ведомости" на этой вкладке теперь показывает только ведомости
+  // ВЫБРАННОЙ здесь сметы (MaterialLedger.estimateId), не все сразу. Без
+  // выбранной сметы список пуст (не имеет смысла показывать чужие ведомости
+  // без контекста, к какой смете их отнести).
+  const scopedMaterialLedgers = useMemo(
+    () => (ledgerEstimateId ? materialLedgers.filter((l) => l.estimateId === ledgerEstimateId) : []),
+    [materialLedgers, ledgerEstimateId],
+  );
+
   const materialGroupOptions = useMemo(() => {
     const set = new Set<string>();
     (ledgerEstimate?.sections ?? []).forEach((s) => s.materials.forEach((m) => m.group && set.add(m.group)));
     return [...set];
   }, [ledgerEstimate]);
+
+  // Владелец, 2026-09-09: "если я делаю ведомость на Зелёный, не надо
+  // выводить мне позиции для Red One" — чек-лист "Шаблонов" на этой вкладке
+  // ограничен материалами ВЫБРАННОЙ здесь сметы (ledgerEstimate), а не всем
+  // allEstimateMaterials разом (тот список нужен для остальных мест, где
+  // нет своего контекста сметы — например "Прикрепить ведомость" в
+  // одиночном письме). Если смета ещё не выбрана — общий список как фолбэк
+  // (лучше, чем пустой чек-лист).
+  const ledgerEstimateChecklistMaterials = useMemo(() => {
+    if (!ledgerEstimate) return allEstimateMaterials;
+    const objLabel = ledgerEstimate.objectId ? objectLabel(ledgerEstimate.objectId) : ledgerEstimate.title || 'без объекта';
+    return allEstimateMaterials.filter((m) => m.context.startsWith(`${objLabel} · `));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEstimateMaterials, ledgerEstimate]);
 
   async function saveLedgerSections(estimateId: string, sections: Estimate['sections']) {
     const target = estimates.find((e) => e.id === estimateId);
@@ -1044,6 +1526,66 @@ export function Suppliers() {
     });
     setEstimates((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     return updated;
+  }
+
+  function startEditLedgerSection(section: EstimateSection) {
+    setEditingLedgerSectionId(section.id);
+    setLedgerSectionTitleDraft(section.title);
+    setLedgerError(null);
+  }
+
+  async function saveLedgerSectionTitle() {
+    if (!ledgerEstimate || !editingLedgerSectionId) return;
+    setSavingLedgerSection(true);
+    setLedgerError(null);
+    try {
+      const sections = ledgerEstimate.sections.map((s) =>
+        s.id === editingLedgerSectionId ? { ...s, title: ledgerSectionTitleDraft.trim() || 'Без названия' } : s,
+      );
+      await saveLedgerSections(ledgerEstimate.id, sections);
+      setEditingLedgerSectionId(null);
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось сохранить раздел'));
+    } finally {
+      setSavingLedgerSection(false);
+    }
+  }
+
+  async function addLedgerSection() {
+    if (!ledgerEstimate) return;
+    const section = emptySection('Новый раздел');
+    try {
+      await saveLedgerSections(ledgerEstimate.id, [...ledgerEstimate.sections, section]);
+      startEditLedgerSection(section);
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось добавить раздел'));
+    }
+  }
+
+  async function deleteLedgerSection(sectionId: string) {
+    if (!ledgerEstimate) return;
+    if (!window.confirm('Удалить раздел вместе с содержимым?')) return;
+    setLedgerError(null);
+    try {
+      await saveLedgerSections(
+        ledgerEstimate.id,
+        ledgerEstimate.sections.filter((s) => s.id !== sectionId),
+      );
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось удалить раздел'));
+    }
+  }
+
+  // Удаление ведомости-пресета прямо из списка на странице (не только
+  // изнутри модалки редактирования) — владелец, 2026-09-09.
+  async function handleDeleteLedgerFromList(id: string, name: string) {
+    if (!window.confirm(`Удалить ведомость «${name}»?`)) return;
+    try {
+      await deleteMaterialLedger(id);
+      setMaterialLedgers((prev) => prev.filter((l) => l.id !== id));
+    } catch (err) {
+      setLedgerError(errorMessage(err, 'Не удалось удалить ведомость'));
+    }
   }
 
   function openAddMaterial(sectionId: string) {
@@ -1125,6 +1667,8 @@ export function Suppliers() {
       sectionId: requestForm.sectionId || null,
       sectionTitle: requestForm.sectionTitle,
       items: requestForm.items,
+      legalEntityId: requestForm.legalEntityId || null,
+      comparisonMode: requestForm.comparisonMode,
     };
     try {
       if (editingRequest) {
@@ -1153,16 +1697,77 @@ export function Suppliers() {
     }
   }
 
-  function openAddOffer(requestId: string) {
-    setOfferRequestId(requestId);
+  // Владелец, 2026-09-09: "где и как отмечается, какая поставка идёт целиком,
+  // а какие по частям? Это должно быть очевидно и просто" — раньше тип
+  // сравнения менялся только через полную форму "Редактировать запрос"
+  // (Select "Тип сравнения цен" внутри модалки), сам текущий выбор нигде не
+  // был виден на самой карточке "Поставщики" (только на "Сравнение цен", и
+  // то лишь когда выбран 'lot'). Теперь прямо на карточке категории —
+  // кликабельная пилюля с текущим режимом, переключается в один клик, без
+  // открытия формы.
+  async function toggleComparisonMode(r: SupplierRequest) {
+    const nextMode: SupplierComparisonMode = r.comparisonMode === 'lot' ? 'material' : 'lot';
+    const input: SupplierRequestInput = {
+      title: r.title,
+      group: r.group,
+      estimateId: r.estimateId,
+      sectionId: r.sectionId,
+      sectionTitle: r.sectionTitle,
+      items: r.items,
+      legalEntityId: r.legalEntityId,
+      comparisonMode: nextMode,
+    };
+    try {
+      const updated = await updateSupplierRequest(r.id, input);
+      setRequests((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось изменить тип сравнения'));
+    }
+  }
+
+  function openAddOffer(request: SupplierRequest) {
+    setOfferRequestId(request.id);
     setEditingOffer(null);
+    // Владелец, 2026-09-09: "вручную не будем ничего указывать" — items
+    // больше НЕ предзаполняются материалами категории (как было раньше в
+    // этом же заходе): пустые строки "что просим оценить" рядом с реально
+    // распознанными позициями КП только путали бы (два ряда на один
+    // материал — один пустой, один с ценой). Позиции появляются
+    // исключительно через confirmOfferExtraction.
     setOfferForm(emptyOfferForm);
+    setOfferManualItemName('');
+    setOfferExtraction(null);
+    setOfferExtractionError(null);
+    setOfferNotInvoiceFile(null);
     setOfferError(null);
     setOfferModalOpen(true);
   }
 
-  function openWebQueryModal(request: SupplierRequest) {
-    setWebQueryForm({ itemsText: formatRequestItemsText(request.items, request.title), extra: '' });
+  function updateOfferItem(id: string, patch: Partial<PurchaseItem>) {
+    setOfferForm((f) => ({ ...f, items: f.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
+  }
+
+  function removeOfferItem(id: string) {
+    setOfferForm((f) => ({ ...f, items: f.items.filter((i) => i.id !== id) }));
+  }
+
+  function addManualOfferItem() {
+    if (!offerManualItemName.trim()) return;
+    const item: PurchaseItem = {
+      id: crypto.randomUUID(),
+      sourceMaterialId: null,
+      name: offerManualItemName.trim(),
+      unit: '',
+      quantity: null,
+      price: null,
+      note: '',
+    };
+    setOfferForm((f) => ({ ...f, items: [...f.items, item] }));
+    setOfferManualItemName('');
+  }
+
+  function openWebQueryModal(request: SupplierRequest, country: string) {
+    setWebQueryForm({ itemsText: formatRequestItemsText(request.items, request.title), extra: '', country });
     setWebQueryModal(request);
   }
 
@@ -1179,7 +1784,12 @@ export function Suppliers() {
     setWebSearchAddingIndices(new Set());
     setWebSearchAddError(null);
     try {
-      const results = await searchSuppliersOnline(webQueryForm.itemsText.trim(), request.sectionTitle || request.title, webQueryForm.extra.trim());
+      const results = await searchSuppliersOnline(
+        webQueryForm.itemsText.trim(),
+        request.sectionTitle || request.title,
+        webQueryForm.extra.trim(),
+        webQueryForm.country,
+      );
       setWebSearchModal({ request, results, error: null });
     } catch (err) {
       setWebSearchModal({ request, results: [], error: errorMessage(err, 'Не удалось выполнить веб-поиск') });
@@ -1285,8 +1895,14 @@ export function Suppliers() {
       catalogModelName: o.catalogModelName,
       catalogModelPhoto: o.catalogModelPhoto,
       existingFiles: o.files,
-      newFiles: [],
+      price: o.price > 0 ? String(o.price) : '',
+      currency: o.currency,
+      items: o.items,
     });
+    setOfferManualItemName('');
+    setOfferExtraction(null);
+    setOfferExtractionError(null);
+    setOfferNotInvoiceFile(null);
     setOfferError(null);
     setOfferModalOpen(true);
     setDetailOfferId(null);
@@ -1308,6 +1924,99 @@ export function Suppliers() {
     }
   }
 
+  // Только те расширения, что реально умеет читать recognizeInvoice
+  // (api/_invoiceRecognition.js — PDF, картинка или .docx с текстом) — для
+  // остального (.xlsx и т.п.) просто загружаем файл без попытки распознать.
+  // Владелец, 2026-09-09: реальный счёт (ЗАО "Волок") пришёл файлом .docx с
+  // разбивкой на позиции — раньше .docx был исключён вместе с .xlsx под
+  // предлогом "каталог на много страниц", хотя это обычный формат для
+  // разового счёта конкретного поставщика — добавлен явно, текст
+  // извлекается на сервере (api/_docxText.js), Claude сам файл не видит.
+  function isRecognizableFileName(fileName: string): boolean {
+    const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+    return ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'docx'].includes(ext);
+  }
+
+  function isValidOfferCurrency(value: string | null): value is Currency {
+    return !!value && (RESEARCH_CURRENCIES as readonly string[]).includes(value);
+  }
+
+  // Владелец, 2026-09-09: "у нас есть поставщик с КП, найденный вручную...
+  // добавляем его как нового поставщика и загружаем КП, система распознаёт
+  // КП и записывает цену в базу" — тот же принцип, что и на автоматике по
+  // входящим письмам (SupplierCorrespondenceTab.tsx), только без письма:
+  // распознавание запускается сразу после загрузки файла в форму. По
+  // очереди (await в цикле, не Promise.all) — иначе несколько счетов подряд
+  // дали бы несколько одновременных карточек "Похоже, это счёт", непонятно
+  // какую подтверждать первой.
+  async function handleOfferFilesSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (!picked.length) return;
+    setOfferUploadingFile(true);
+    setOfferError(null);
+    try {
+      for (const file of picked) {
+        const uploaded = await uploadSupplierFile(file);
+        setOfferForm((f) => ({ ...f, existingFiles: [...f.existingFiles, uploaded] }));
+        if (isRecognizableFileName(uploaded.fileName)) {
+          await tryRecognizeOfferFile(uploaded.url, uploaded.fileName);
+        }
+      }
+    } catch (err) {
+      setOfferError(errorMessage(err, 'Не удалось загрузить файл'));
+    } finally {
+      setOfferUploadingFile(false);
+    }
+  }
+
+  async function tryRecognizeOfferFile(fileUrl: string, fileName: string) {
+    setOfferExtractionBusy(true);
+    setOfferExtractionError(null);
+    setOfferNotInvoiceFile(null);
+    try {
+      const result = await recognizeInvoiceFile(fileUrl, fileName);
+      if (result.isInvoice) {
+        setOfferExtraction({ price: result.price, currency: result.currency, items: result.items, fileName });
+      } else {
+        setOfferNotInvoiceFile(fileName);
+      }
+    } catch (err) {
+      setOfferExtractionError(errorMessage(err, 'Не удалось распознать документ'));
+    } finally {
+      setOfferExtractionBusy(false);
+    }
+  }
+
+  // Тот же merge, что и у applyExtractionToOffer (SupplierCorrespondenceTab.tsx):
+  // price — из итога самого документа (не сумма позиций — реальный КП может
+  // включать доставку/скидку сверх суммы строк), currency — только если
+  // модель вернула значение из известного набора, items — добавляются к уже
+  // имеющимся, не заменяют их (несколько загруженных счетов копятся вместе).
+  function confirmOfferExtraction() {
+    if (!offerExtraction) return;
+    const newItems: PurchaseItem[] = offerExtraction.items.map((i) => ({
+      id: crypto.randomUUID(),
+      sourceMaterialId: null,
+      name: i.name,
+      unit: i.unit,
+      quantity: i.quantity,
+      price: i.price,
+      note: '',
+    }));
+    setOfferForm((f) => ({
+      ...f,
+      price: offerExtraction.price != null ? String(offerExtraction.price) : f.price,
+      currency: isValidOfferCurrency(offerExtraction.currency) ? offerExtraction.currency : f.currency,
+      items: [...f.items, ...newItems],
+    }));
+    setOfferExtraction(null);
+  }
+
+  function dismissOfferExtraction() {
+    setOfferExtraction(null);
+  }
+
   // Владелец, 2026-09-03: сначала "пусть только заголовок будет обязательным
   // полем, остальное опционально" — но у поля "Адрес сайта" остался
   // HTML required (не заметил в первый заход, браузер блокировал сабмит
@@ -1316,7 +2025,9 @@ export function Suppliers() {
   // хватить" — совсем пустая карточка (только имя, никакого способа связаться
   // или хоть что-то ещё) толку не несёт, поэтому помимо названия нужно
   // заполнить хотя бы одно из остальных полей (любое, не обязательно сайт
-  // или контакт конкретно).
+  // или контакт конкретно). price/items добавлены в список 2026-09-09 —
+  // без этого нельзя было бы сохранить карточку "Название + вручную
+  // вписанная цена", ничего больше не заполняя.
   const canSubmitOffer =
     offerForm.name.trim().length > 0 &&
     (offerForm.contact.trim().length > 0 ||
@@ -1325,7 +2036,10 @@ export function Suppliers() {
       offerForm.websiteUrl.trim().length > 0 ||
       offerForm.catalogModelName.trim().length > 0 ||
       offerForm.existingFiles.length > 0 ||
-      offerForm.newFiles.length > 0);
+      offerForm.price.trim().length > 0 ||
+      offerForm.items.length > 0);
+
+  const offerItemsTotal = offerForm.items.reduce((sum, i) => sum + purchaseItemTotal(i), 0);
 
   // Владелец, 2026-09-04: "закупщик заполняет все возможные поля, жмёт
   // сохранить — поставщик становится доступен для email-переписок" — любое
@@ -1339,7 +2053,6 @@ export function Suppliers() {
     setSavingOffer(true);
     setOfferError(null);
     try {
-      const uploadedNewFiles = await Promise.all(offerForm.newFiles.map(uploadSupplierFile));
       const payload = {
         requestId: offerRequestId,
         name: offerForm.name.trim(),
@@ -1351,10 +2064,12 @@ export function Suppliers() {
         websiteUrl: offerForm.websiteUrl.trim(),
         catalogModelName: offerForm.catalogModelName.trim(),
         catalogModelPhoto: offerForm.catalogModelPhoto,
-        price: editingOffer?.price ?? 0,
-        currency: editingOffer?.currency ?? ('USD' as Currency),
-        items: editingOffer?.items ?? [],
-        files: [...offerForm.existingFiles, ...uploadedNewFiles],
+        price: offerForm.price.trim() ? Number(offerForm.price) : 0,
+        currency: offerForm.currency,
+        items: offerForm.items,
+        // Файлы грузятся в Storage сразу по выбору (handleOfferFilesSelect),
+        // а не откладываются до сабмита — тут уже готовый список.
+        files: offerForm.existingFiles,
         verified: true,
       };
       // Владелец, 2026-09-05: лог действий Альмиры для страницы "Метрики" —
@@ -1421,17 +2136,6 @@ export function Suppliers() {
             Шаблоны
           </Button>
         )}
-        {/* Владелец, 2026-09-04: "на этой странице делать Шаблоны, они же
-            будут синхронизированы с шаблонами в массовой отправке" — это те
-            же самые ведомости (MaterialLedger), что и в "Прикрепить
-            ведомость"/"Массовая отправка" на "Письмах" — один общий список
-            (materialLedgers), просто ещё одна точка входа для управления
-            им, без привязки к конкретной переписке. */}
-        {tab === 'Ведомости материалов' && (
-          <Button type="button" variant="secondary" icon={<FileText className="h-4 w-4" />} onClick={() => setLedgerTemplatesModalOpen(true)}>
-            Шаблоны
-          </Button>
-        )}
       </div>
 
       {tab === 'Поставщики' && (
@@ -1468,11 +2172,13 @@ export function Suppliers() {
                       request={r}
                       offers={offers.filter((o) => o.requestId === r.id)}
                       emails={supplierEmails}
+                      rate={rate}
                       onEditRequest={openEditRequest}
                       onDeleteRequest={handleDeleteRequest}
                       onAddOffer={openAddOffer}
                       onOpenDetail={(o) => setDetailOfferId(o.id)}
                       onWebSearch={openWebQueryModal}
+                      onToggleComparisonMode={toggleComparisonMode}
                       searching={webSearchingId === r.id}
                     />
                   ))}
@@ -1499,6 +2205,62 @@ export function Suppliers() {
       </div>
       )}
 
+      {/* Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка
+          Сравнение цен... как грильято", уточнение тем же днём: "нужно
+          добавлять только тех, кто уже прислал КП" + "не списки
+          поставщиков, а материал — КП по убыванию" — MaterialPriceComparisonCard
+          (не PriceComparisonBlock — тот для "Поставщики", там нужен весь
+          список включая неответивших). Категория попадает сюда, только
+          если у неё есть хотя бы одно ПОДТВЕРЖДЁННОЕ предложение
+          (offerCommunicationStatus === 'confirmed') хоть в одной стране —
+          иначе сравнивать нечего. */}
+      {tab === 'Сравнение цен' && (
+        <div className="mt-6 flex flex-col gap-8">
+          {loading && (
+            <Card className="flex items-center justify-center gap-2 py-10 text-sm text-ink-muted">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Загружаем поставщиков...
+            </Card>
+          )}
+          {!loading && loadError && <Card className="py-10 text-center text-sm text-danger">{loadError}</Card>}
+
+          {!loading && !loadError && (() => {
+            const groups = (['materials', 'services'] as const).map((group) => ({
+              group,
+              requestsWithOffers: requests.filter(
+                (r) => r.group === group && offers.some((o) => o.requestId === r.id && offerCommunicationStatus(o, supplierEmails) === 'confirmed'),
+              ),
+            }));
+            const anyOffers = groups.some((g) => g.requestsWithOffers.length > 0);
+            if (!anyOffers) {
+              return (
+                <Card className="py-10 text-center text-sm text-ink-muted">
+                  Пока ни один поставщик не прислал КП — сравнивать пока нечего.
+                </Card>
+              );
+            }
+            return groups.map(({ group, requestsWithOffers }) => {
+              if (requestsWithOffers.length === 0) return null;
+              return (
+                <div key={group} className="flex flex-col gap-6">
+                  <div className="text-lg font-bold text-ink">{SUPPLIER_REQUEST_GROUP_LABELS[group]}</div>
+                  {requestsWithOffers.map((r) => (
+                    <MaterialPriceComparisonCard
+                      key={r.id}
+                      request={r}
+                      offers={offers.filter((o) => o.requestId === r.id)}
+                      emails={supplierEmails}
+                      rate={rate}
+                      onOpenDetail={(o) => setDetailOfferId(o.id)}
+                    />
+                  ))}
+                </div>
+              );
+            });
+          })()}
+        </div>
+      )}
+
       {tab === 'Ведомости материалов' && (
         <div className="mt-6 flex flex-col gap-6">
           <Select
@@ -1511,6 +2273,65 @@ export function Suppliers() {
               setLedgerEstimateId(o?.id ?? '');
             }}
           />
+
+          {/* Владелец, 2026-09-09: "не хватает отображения шаблонов готовых
+              ведомостей на странице ведомостей" — список сохранённых
+              MaterialLedger виден прямо на странице, не только внутри
+              модалки. Владелец, тем же днём позже: "шаблон ведомости
+              материала привязывался к смете... когда выбран Red One, всё
+              равно видны шаблоны Зелёного" — список СОЗНАТЕЛЬНО ограничен
+              ведомостями ВЫБРАННОЙ выше сметы (scopedMaterialLedgers), не
+              всеми сразу, и требует сначала выбрать смету. */}
+          <div className="flex flex-col gap-3">
+            <span className="text-lg font-bold text-ink">Готовые ведомости</span>
+            {!ledgerEstimateId && <p className="text-sm text-ink-faint">Выберите смету, чтобы увидеть её ведомости.</p>}
+            {ledgerEstimateId && scopedMaterialLedgers.length === 0 && (
+              <p className="text-sm text-ink-faint">Для этой сметы пока нет ни одной сохранённой ведомости.</p>
+            )}
+            {scopedMaterialLedgers.length > 0 && (
+              <div className="flex flex-col gap-2">
+                {scopedMaterialLedgers.map((l) => (
+                  <div key={l.id} className="flex items-center justify-between gap-3 rounded-control border border-border px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-ink">{l.name}</div>
+                      <div className="text-xs text-ink-faint">
+                        {l.items.length} {l.items.length === 1 ? 'позиция' : 'позиций'}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setLedgerModalTarget(l.id)}
+                        aria-label="Редактировать ведомость"
+                        className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteLedgerFromList(l.id, l.name)}
+                        aria-label="Удалить ведомость"
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {ledgerEstimateId && (
+              <Button
+                type="button"
+                variant="secondary"
+                icon={<Plus className="h-4 w-4" />}
+                className="w-fit"
+                onClick={() => setLedgerModalTarget('new')}
+              >
+                Новая ведомость
+              </Button>
+            )}
+          </div>
 
           {ledgerError && <p className="text-sm text-danger">{ledgerError}</p>}
 
@@ -1528,7 +2349,46 @@ export function Suppliers() {
                 const { ungrouped, groups } = groupMaterials(section.materials);
                 return (
                   <div key={section.id} className="flex flex-col gap-3">
-                    <span className="text-lg font-bold text-ink">{section.title}</span>
+                    {editingLedgerSectionId === section.id ? (
+                      <div className="flex flex-col gap-3 rounded-2xl border border-border p-4">
+                        <Input
+                          label="Название раздела"
+                          value={ledgerSectionTitleDraft}
+                          onChange={(e) => setLedgerSectionTitleDraft(e.target.value)}
+                          autoFocus
+                        />
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" variant="secondary" onClick={() => setEditingLedgerSectionId(null)}>
+                            Отмена
+                          </Button>
+                          <Button type="button" onClick={saveLedgerSectionTitle} disabled={savingLedgerSection}>
+                            {savingLedgerSection ? 'Сохраняем...' : 'Сохранить'}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-lg font-bold text-ink">{section.title}</span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => startEditLedgerSection(section)}
+                            aria-label="Переименовать раздел"
+                            className="flex h-8 w-8 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteLedgerSection(section.id)}
+                            aria-label="Удалить раздел"
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {section.materials.length === 0 && <p className="text-sm text-ink-faint">Материалов пока нет.</p>}
 
@@ -1538,7 +2398,6 @@ export function Suppliers() {
                         onEdit={(m) => openEditMaterial(section.id, m)}
                         onDelete={(m) => deleteMaterial(section.id, m.id)}
                         onOpenComments={(m) => openMaterialComments(section.id, m)}
-                        bestPricesByMaterialId={bestPricesByMaterialId}
                       />
                     )}
 
@@ -1552,7 +2411,6 @@ export function Suppliers() {
                           onEdit={(m) => openEditMaterial(section.id, m)}
                           onDelete={(m) => deleteMaterial(section.id, m.id)}
                           onOpenComments={(m) => openMaterialComments(section.id, m)}
-                          bestPricesByMaterialId={bestPricesByMaterialId}
                         />
                       </div>
                     ))}
@@ -1569,13 +2427,24 @@ export function Suppliers() {
                   </div>
                 );
               })}
+
+              <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} className="w-fit" onClick={addLedgerSection}>
+                Добавить раздел
+              </Button>
             </div>
           )}
         </div>
       )}
 
       {tab === 'Письма' && (
-        <div className="mt-6">
+        // Владелец, 2026-09-10: "надо, чтобы влезало полностью, вне
+        // зависимости от экрана... даже если боковой список поставщиков
+        // будет как-то скрываться" — вкладка "Письма" на lg+ занимает всю
+        // высоту, доступную от AppLayout (main теперь overflow-y-auto, не
+        // документ целиком), дальше цепочка flex-1/min-h-0 идёт вниз до
+        // самого списка писем внутри SupplierCorrespondenceTab/EmailThread —
+        // композер всегда виден целиком, скроллится только лента писем.
+        <div className="mt-6 flex flex-col lg:min-h-0 lg:flex-1">
           <SupplierCorrespondenceTab
             requests={requests}
             offers={offers}
@@ -1584,6 +2453,7 @@ export function Suppliers() {
             templates={emailTemplates}
             ledgers={materialLedgers}
             allMaterials={allEstimateMaterials}
+            legalEntities={legalEntities}
             templatesModalOpen={templatesModalOpen}
             onCloseTemplatesModal={() => setTemplatesModalOpen(false)}
             onOpenBulkSend={setBulkLedgerPickerRequest}
@@ -1632,6 +2502,43 @@ export function Suppliers() {
             }}
           />
 
+          <Select
+            label="Юрлицо"
+            placeholder={
+              defaultLegalEntity
+                ? `По умолчанию (${defaultLegalEntity.shortName || defaultLegalEntity.name})`
+                : 'Не выбрано'
+            }
+            options={legalEntities.map((e) => e.shortName || e.name)}
+            value={(() => {
+              const picked = legalEntities.find((e) => e.id === requestForm.legalEntityId);
+              return picked ? picked.shortName || picked.name : '';
+            })()}
+            onChange={(label) => {
+              const e = legalEntities.find((x) => (x.shortName || x.name) === label);
+              setRequestForm((f) => ({ ...f, legalEntityId: e?.id ?? '' }));
+            }}
+          />
+
+          {/* Владелец, 2026-09-09: "формируем поставку — сравниваем цену на
+              поставку в целом. Но, если бы позиции были штукатурка и плитка,
+              то могли бы заказать и в разных местах" — тип сравнения на
+              вкладке "Сравнение цен" выбирается один раз при создании
+              категории, не автоматика (см. SUPPLIER_COMPARISON_MODES в
+              data/supplierResearch.ts). */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Тип сравнения цен</span>
+            <ToggleGroup
+              options={SUPPLIER_COMPARISON_MODES.map((m) => SUPPLIER_COMPARISON_MODE_LABELS[m])}
+              value={SUPPLIER_COMPARISON_MODE_LABELS[requestForm.comparisonMode]}
+              onChange={(label) => {
+                const mode = SUPPLIER_COMPARISON_MODES.find((m) => SUPPLIER_COMPARISON_MODE_LABELS[m] === label);
+                if (mode) setRequestForm((f) => ({ ...f, comparisonMode: mode }));
+              }}
+            />
+            <span className="text-xs text-ink-faint">{SUPPLIER_COMPARISON_MODE_HINTS[requestForm.comparisonMode]}</span>
+          </div>
+
           {selectedRequestEstimate && (
             <Select
               label="Раздел сметы"
@@ -1679,26 +2586,43 @@ export function Suppliers() {
             {requestForm.items.length > 0 && (
               <div className="flex flex-col gap-1.5">
                 {requestForm.items.map((item) => (
-                  <div key={item.id} className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm">
-                    <span className="flex-1 text-ink">{item.name}</span>
+                  <div key={item.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-ink">{item.name}</span>
+                      <input
+                        type="number"
+                        placeholder="Кол-во"
+                        value={item.quantity ?? ''}
+                        onChange={(e) =>
+                          updateRequestItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
+                        }
+                        className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      />
+                      {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
+                      <button
+                        type="button"
+                        onClick={() => removeRequestItem(item.id)}
+                        aria-label="Удалить позицию"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {/* Владелец, 2026-09-09: "важно не только объём, но и ряд
+                        параметров... нет поля комментария, которое бы и в
+                        таблицу попадало, и в письмо" (пример — Grigliato:
+                        нужны не только м², но и фактура/формат и т.п.) —
+                        note у PurchaseItem уже существовал (для сопоставления
+                        счетов), просто не был виден/редактируем здесь; теперь
+                        попадает и в ведомость (materialLedgerXlsx.ts), и в
+                        текст письма ({материалы}, formatRequestItemsText). */}
                     <input
-                      type="number"
-                      placeholder="Кол-во"
-                      value={item.quantity ?? ''}
-                      onChange={(e) =>
-                        updateRequestItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
-                      }
-                      className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      type="text"
+                      placeholder="Важные параметры — фактура, формат, цвет и т.п. (попадёт и в ведомость, и в письмо)"
+                      value={item.note}
+                      onChange={(e) => updateRequestItem(item.id, { note: e.target.value })}
+                      className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-primary"
                     />
-                    {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
-                    <button
-                      type="button"
-                      onClick={() => removeRequestItem(item.id)}
-                      aria-label="Удалить позицию"
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
                   </div>
                 ))}
               </div>
@@ -1745,7 +2669,13 @@ export function Suppliers() {
                 onChange={(v) => setOfferForm((f) => ({ ...f, contactMethod: v as ResearchContactMethod }))}
               />
               <Input
-                placeholder={offerForm.contactMethod === 'Telegram' ? '@username' : '+375 29 ...'}
+                placeholder={
+                  offerForm.contactMethod === 'Telegram'
+                    ? '@username'
+                    : offerForm.country === 'Россия'
+                      ? '+7 9__ ...'
+                      : '+375 29 ...'
+                }
                 type={offerForm.contactMethod === 'Telegram' ? 'text' : 'tel'}
                 value={offerForm.contact}
                 onChange={(e) => setOfferForm((f) => ({ ...f, contact: e.target.value }))}
@@ -1828,25 +2758,49 @@ export function Suppliers() {
           </div>
 
           {/* Владелец, 2026-09-04: "Статус коммуникации — вполне можем
-              определять автоматически" / "Итоговая цена — убирай" / "Срок —
-              убирай, срок доставки будет отличаться для каждой поставки" /
-              "Позиции КП — убирай, вручную это указывать тупо, зато когда
-              получим КП от поставщика, вполне можем записать в базу" /
-              "Требования — убирай" — все пять полей убраны из формы: статус
-              теперь считается сам из переписки (offerCommunicationStatus),
-              цена/позиции заполняются только автораспознаванием счёта
-              (applyExtractionToOffer в SupplierCorrespondenceTab.tsx), у
+              определять автоматически" / "Срок — убирай, срок доставки будет
+              отличаться для каждой поставки" / "Требования — убирай" — статус
+              теперь считается сам из переписки (offerCommunicationStatus), у
               срока/требований больше нет места на уровне поставщика в целом
-              (переезжают на уровень конкретной заявки на поставку). */}
+              (переезжают на уровень конкретной заявки на поставку). "Итоговая
+              цена"/"Позиции КП" тогда же были убраны как "вручную это
+              указывать тупо" в пользу единственного пути — автораспознавания
+              счёта из переписки (applyExtractionToOffer в
+              SupplierCorrespondenceTab.tsx). Владелец, 2026-09-09: "у нас есть
+              поставщик с КП, найденный вручную... добавляем его как нового
+              поставщика и загружаем КП, система распознаёт КП и записывает
+              цену в базу — вручную не будем ничего указывать" — оба поля
+              возвращены, но заполняются НЕ вводом с клавиатуры, а тем же
+              автораспознаванием, что и на входящих письмах (см.
+              handleOfferFilesSelect ниже — привязано к загрузке файла в
+              "Файлы", идёт перед этим блоком по той же причине). Поля
+              остаются редактируемыми — как и в переписке, это поправка уже
+              распознанного, а не приглашение печатать с нуля. */}
 
           <div className="flex flex-col gap-1.5">
-            <span className="text-sm text-ink-muted">Файлы (счета, спецификации...)</span>
+            <span className="text-sm text-ink-muted">Файлы (счета, спецификации...) — загрузите КП, цена распознается сама</span>
             {offerForm.existingFiles.map((file, i) => (
               <div
                 key={`existing-${i}`}
                 className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm text-ink"
               >
                 <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
+                {/* Владелец, 2026-09-09 (баг «Глассвэй» на проде): автораспознавание
+                    при загрузке — одноразовая попытка, без видимого способа
+                    повторить, если она молча не сработала (сетевая икота,
+                    временная ошибка ProxyAPI) или файл добавлен раньше этой
+                    возможности. Кнопка позволяет вызвать распознавание заново по
+                    уже прикреплённому файлу в любой момент. */}
+                {isRecognizableFileName(file.fileName) && (
+                  <button
+                    type="button"
+                    onClick={() => tryRecognizeOfferFile(file.url, file.fileName)}
+                    disabled={offerExtractionBusy}
+                    className="shrink-0 text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                  >
+                    Распознать
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() =>
@@ -1859,36 +2813,131 @@ export function Suppliers() {
                 </button>
               </div>
             ))}
-            {offerForm.newFiles.map((file, i) => (
-              <div
-                key={`new-${i}`}
-                className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm text-ink"
-              >
-                <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                <button
-                  type="button"
-                  onClick={() => setOfferForm((f) => ({ ...f, newFiles: f.newFiles.filter((_, idx) => idx !== i) }))}
-                  aria-label="Убрать файл"
-                  className="flex h-6 w-6 shrink-0 items-center justify-center text-ink-faint hover:text-danger"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
             <label className="flex w-fit cursor-pointer items-center gap-2 rounded-control border border-dashed border-border px-4 py-2.5 text-sm text-ink-muted hover:border-border-strong">
-              <Upload className="h-4 w-4" />
-              Добавить файлы
+              {offerUploadingFile ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {offerUploadingFile ? 'Загружаем...' : 'Добавить файлы'}
               <input
                 type="file"
                 multiple
                 className="hidden"
-                onChange={(e) => {
-                  const picked = Array.from(e.target.files ?? []);
-                  e.target.value = '';
-                  if (picked.length) setOfferForm((f) => ({ ...f, newFiles: [...f.newFiles, ...picked] }));
-                }}
+                disabled={offerUploadingFile}
+                onChange={handleOfferFilesSelect}
               />
             </label>
+            {offerExtractionBusy && <p className="text-xs text-ink-faint">Распознаём документ...</p>}
+            {offerExtractionError && <p className="text-xs text-danger">{offerExtractionError}</p>}
+            {offerNotInvoiceFile && (
+              <p className="text-xs text-ink-faint">
+                «{offerNotInvoiceFile}» не похож на счёт с итоговой суммой — цену и позиции придётся внести
+                вручную, либо нажать «Распознать» ещё раз, если это ошибка.
+              </p>
+            )}
+            {offerExtraction && (
+              <div className="flex flex-col gap-2 rounded-control border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">
+                <span className="font-medium text-ink">
+                  Похоже, это счёт («{offerExtraction.fileName}»):{' '}
+                  {offerExtraction.price != null
+                    ? formatPrice(
+                        offerExtraction.price,
+                        isValidOfferCurrency(offerExtraction.currency) ? offerExtraction.currency : offerForm.currency,
+                      )
+                    : 'сумма не распознана'}
+                  {offerExtraction.items.length > 0 ? `, ${offerExtraction.items.length} поз.` : ''}
+                </span>
+                <div className="flex gap-2">
+                  <Button type="button" onClick={confirmOfferExtraction}>
+                    Подтвердить
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={dismissOfferExtraction}>
+                    Это не счёт
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Итоговая цена</span>
+            <div className="flex gap-2">
+              <Input
+                placeholder="0"
+                type="number"
+                min="0"
+                value={offerForm.price}
+                onChange={(e) => setOfferForm((f) => ({ ...f, price: e.target.value }))}
+                className="flex-1"
+              />
+              <ToggleGroup
+                options={RESEARCH_CURRENCIES}
+                value={offerForm.currency}
+                onChange={(v) => setOfferForm((f) => ({ ...f, currency: v as Currency }))}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <span className="text-sm text-ink-muted">Позиции КП</span>
+            {offerForm.items.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                {offerForm.items.map((item) => (
+                  <div key={item.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-ink">{item.name}</span>
+                      <input
+                        type="number"
+                        placeholder="Кол-во"
+                        value={item.quantity ?? ''}
+                        onChange={(e) =>
+                          updateOfferItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
+                        }
+                        className="w-16 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      />
+                      {item.unit && <span className="w-10 shrink-0 text-ink-faint">{item.unit}</span>}
+                      <input
+                        type="number"
+                        placeholder="Цена"
+                        value={item.price ?? ''}
+                        onChange={(e) =>
+                          updateOfferItem(item.id, { price: e.target.value === '' ? null : Number(e.target.value) })
+                        }
+                        className="w-24 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeOfferItem(item.id)}
+                        aria-label="Удалить позицию"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {item.note && <span className="text-xs text-ink-faint">{item.note}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Input
+                placeholder="Добавить позицию вручную"
+                value={offerManualItemName}
+                onChange={(e) => setOfferManualItemName(e.target.value)}
+              />
+              <Button type="button" variant="secondary" onClick={addManualOfferItem} disabled={!offerManualItemName.trim()}>
+                Добавить
+              </Button>
+            </div>
+            {offerItemsTotal > 0 && (
+              <div className="flex items-center gap-2 text-xs text-ink-faint">
+                <span>Сумма по позициям: {formatPrice(offerItemsTotal, offerForm.currency)}</span>
+                <button
+                  type="button"
+                  onClick={() => setOfferForm((f) => ({ ...f, price: String(offerItemsTotal) }))}
+                  className="text-primary hover:underline"
+                >
+                  Подставить в итоговую цену
+                </button>
+              </div>
+            )}
           </div>
 
           {offerError && <p className="text-sm text-danger">{offerError}</p>}
@@ -1917,6 +2966,7 @@ export function Suppliers() {
               templates={emailTemplates}
               ledgers={materialLedgers}
               allMaterials={allEstimateMaterials}
+              legalEntities={legalEntities}
               onEmailSent={handleSupplierEmailSent}
               onMarkRead={handleMarkSupplierEmailsRead}
               onTemplateSaved={handleEmailTemplateSaved}
@@ -1950,6 +3000,14 @@ export function Suppliers() {
 
       <Modal open={!!webQueryModal} onClose={() => setWebQueryModal(null)} title={`Найти в сети: ${webQueryModal?.title ?? ''}`}>
         <form onSubmit={submitWebQuery} className="flex flex-col gap-4">
+          <div>
+            <div className="mb-1.5 text-sm font-medium text-ink">Страна поиска</div>
+            <ToggleGroup
+              options={[...SUPPLIER_COUNTRIES]}
+              value={webQueryForm.country}
+              onChange={(country) => setWebQueryForm((f) => ({ ...f, country }))}
+            />
+          </div>
           <Textarea
             label="Что ищем"
             rows={3}
@@ -2025,19 +3083,38 @@ export function Suppliers() {
           управление пресетами ведомостей вне контекста конкретного письма
           (нет onAttach — только создание/правка/удаление). Тот же общий
           список materialLedgers, что и у "Прикрепить ведомость"/"Массовая
-          отправка" на "Письмах" — правка здесь сразу видна там же. */}
-      <MaterialLedgerModal
-        open={ledgerTemplatesModalOpen}
-        requestItems={[]}
-        allMaterials={allEstimateMaterials}
-        ledgers={materialLedgers}
-        onClose={() => setLedgerTemplatesModalOpen(false)}
-        onLedgersChange={setMaterialLedgers}
-      />
+          отправка" на "Письмах" — правка здесь сразу видна там же.
+          Владелец, 2026-09-09: список ведомостей теперь виден прямо на
+          странице (см. блок "Готовые ведомости" выше) — модалка целится в
+          конкретную ведомость через ledgerModalTarget ('new' или id),
+          внутренний селект "Готовая ведомость" скрыт (hideLedgerPicker) —
+          выбор какую редактировать уже сделан кликом в списке на странице,
+          повторять его внутри модалки было непонятно, зачем. Чек-лист
+          материалов ограничен выбранной на странице сметой
+          (ledgerEstimateChecklistMaterials), чтобы не путать позиции Red One
+          с позициями Смета Зелёный. Владелец, 2026-09-09 (второй заход):
+          "шаблон ведомости привязывался к смете" — новая ведомость, созданная
+          здесь, сохраняется с estimateId=ledgerEstimateId (проп estimateId
+          ниже), сам список на странице (scopedMaterialLedgers) фильтруется по
+          этому же полю — открыв Red One, Зелёный больше не виден. */}
+      {ledgerModalTarget !== null && (
+        <MaterialLedgerModal
+          open
+          hideLedgerPicker
+          initialLedgerId={ledgerModalTarget === 'new' ? undefined : ledgerModalTarget}
+          estimateId={ledgerEstimateId || null}
+          requestItems={[]}
+          allMaterials={ledgerEstimateChecklistMaterials}
+          ledgers={materialLedgers}
+          onClose={() => setLedgerModalTarget(null)}
+          onLedgersChange={setMaterialLedgers}
+        />
+      )}
 
       {bulkLedgerPickerRequest && (
         <MaterialLedgerModal
           open
+          readyOnly
           requestItems={bulkLedgerPickerRequest.items}
           allMaterials={allEstimateMaterials}
           ledgers={materialLedgers}
@@ -2054,12 +3131,14 @@ export function Suppliers() {
       {bulkSendConfig && (
         <BulkSendModal
           request={bulkSendConfig.request}
+          requests={requests}
           attachment={bulkSendConfig.attachment}
           offers={offers}
           emails={supplierEmails}
+          templates={emailTemplates}
+          legalEntities={legalEntities}
           onClose={() => setBulkSendConfig(null)}
-          onOrderCreated={(order) => setSupplierOrders((prev) => [...prev, order])}
-          onEmailSent={handleSupplierEmailSent}
+          onTemplatesChange={setEmailTemplates}
         />
       )}
     </>
@@ -2078,6 +3157,7 @@ function OfferEmailModal({
   templates,
   ledgers,
   allMaterials,
+  legalEntities,
   onEmailSent,
   onMarkRead,
   onTemplateSaved,
@@ -2093,6 +3173,7 @@ function OfferEmailModal({
   templates: EmailTemplate[];
   ledgers: MaterialLedger[];
   allMaterials: { item: PurchaseItem; context: string }[];
+  legalEntities: LegalEntity[];
   onEmailSent: (email: SupplierOfferEmail) => void;
   onMarkRead: (offerId: string, orderId: string | null) => void;
   onTemplateSaved: (template: EmailTemplate) => void;
@@ -2125,6 +3206,7 @@ function OfferEmailModal({
         templates={templates}
         ledgers={ledgers}
         allMaterials={allMaterials}
+        legalEntities={legalEntities}
         onEmailSent={onEmailSent}
         onTemplateSaved={onTemplateSaved}
         onLedgersChange={onLedgersChange}

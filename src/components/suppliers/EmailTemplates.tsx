@@ -46,6 +46,7 @@ function TemplateFormModal({
   requests,
   initialSubject,
   initialBody,
+  initialRequestId,
   onClose,
   onSaved,
 }: {
@@ -54,11 +55,18 @@ function TemplateFormModal({
   requests: SupplierRequest[];
   initialSubject?: string;
   initialBody?: string;
+  // Владелец, 2026-09-09: "+" рядом с выбором шаблона в BulkSendModal —
+  // новый шаблон сразу привязывается к текущей категории, не нужно
+  // выбирать её заново в этой же форме. Только для создания (template
+  // === null), у уже существующего шаблона запрос берётся из него самого.
+  initialRequestId?: string;
   onClose: () => void;
   onSaved: (t: EmailTemplate) => void;
 }) {
   const [form, setForm] = useState<TemplateFormState>(() =>
-    template ? templateToForm(template) : { ...emptyForm(), subject: initialSubject ?? '', body: initialBody ?? '' },
+    template
+      ? templateToForm(template)
+      : { ...emptyForm(), subject: initialSubject ?? '', body: initialBody ?? '', requestId: initialRequestId ?? '' },
   );
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -71,7 +79,11 @@ function TemplateFormModal({
   // заново при каждом открытии.
   useEffect(() => {
     if (!open) return;
-    setForm(template ? templateToForm(template) : { ...emptyForm(), subject: initialSubject ?? '', body: initialBody ?? '' });
+    setForm(
+      template
+        ? templateToForm(template)
+        : { ...emptyForm(), subject: initialSubject ?? '', body: initialBody ?? '', requestId: initialRequestId ?? '' },
+    );
     setSubmitError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

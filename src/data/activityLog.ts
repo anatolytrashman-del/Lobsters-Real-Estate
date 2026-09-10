@@ -30,6 +30,7 @@ export const ACTIVITY_ACTION_LABELS: Record<string, string> = {
   market_offer_verified: 'Верификация объявления (аналитика рынка)',
   supplier_offer_verified: 'Верификация поставщика (Ресерч)',
   supplier_offer_added_manually: 'Добавление поставщика вручную (Ресерч)',
+  supplier_invoice_confirmed: 'Подтверждение счёта/КП из письма (Ресерч → Письма)',
 };
 
 export function activityActionLabel(action: string): string {

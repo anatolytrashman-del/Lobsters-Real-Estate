@@ -138,6 +138,44 @@ async function resolveOrderByShortCode(shortCode) {
   return rows[0] ? { id: rows[0].id, offerId: rows[0].offer_id } : null;
 }
 
+// Реальный случай 2026-09-10: у всех 14 предложений массовой рассылки от
+// 2026-09-09 short_code в supplier_research_offers оказался ДРУГИМ, чем тот,
+// что был зашит в адрес отправителя на момент отправки писем (сверено
+// напрямую по базе — sent-адрес из supplier_offer_emails.from_address не
+// совпал с offer.short_code НИ У ОДНОЙ из 14 записей). Ни один код проекта
+// (insertSupplierOffer/updateSupplierOffer/purchase-send-email.js/этот же
+// файл) НЕ пишет в колонку short_code после создания строки — она
+// генерируется только DEFAULT-выражением на самой колонке (см. миграцию
+// 2026-09-03). Как и почему у всех 14 записей разом разъехалось значение —
+// не установлено (не было ни одной правки схемы этой таблицы между
+// отправкой и обнаружением бага, судя по журналу CLAUDE.md) — похоже на
+// побочный эффект какой-то структурной миграции колонки где-то между этими
+// двумя моментами, а не на баг конкретно этого файла.
+//
+// Раз причина не подтверждена и не исключён повтор — резолвим по короткому
+// коду НЕ ТОЛЬКО через текущее значение offer.short_code, но и через уже
+// реально отправленные письма: from_address исходящего письма — это
+// неизменяемая историческая запись (колонка никогда не редактируется после
+// insertEmailRow), поэтому по ней можно восстановить offer_id даже если
+// текущий short_code записи успел уйти в сторону. Вызывается ТОЛЬКО когда
+// прямой поиск по offer.short_code ничего не дал — не подменяет основной
+// путь, а подстраховывает его.
+async function resolveOfferIdByEmailHistory(shortCode) {
+  const pattern = `*+${shortCode}@*`;
+  const resp = await fetch(
+    `${process.env.SUPABASE_URL}/rest/v1/supplier_offer_emails?select=offer_id&direction=eq.out&from_address=ilike.${encodeURIComponent(pattern)}&limit=1`,
+    {
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+    },
+  );
+  if (!resp.ok) return null;
+  const rows = await resp.json();
+  return rows[0]?.offer_id ?? null;
+}
+
 // Заголовок From письма обычно приходит в одном из двух видов —
 // "Иван Петров <ivan@company.ru>" или просто "ivan@company.ru" — если
 // получится распознать имя, дальше используем его для автозаполнения
@@ -271,8 +309,15 @@ export default async function handler(req, res) {
     const purchaseId = await resolveIdByShortCode('purchases', code);
     const matchedOffer = purchaseId ? null : await resolveIdByShortCode('supplier_research_offers', code);
     const matchedOrder = purchaseId || matchedOffer ? null : await resolveOrderByShortCode(code);
-    const offerId = matchedOffer ?? matchedOrder?.offerId ?? null;
+    let offerId = matchedOffer ?? matchedOrder?.offerId ?? null;
     const orderId = matchedOrder?.id ?? null;
+
+    // Фолбэк по истории отправленных писем (см. комментарий у
+    // resolveOfferIdByEmailHistory) — только когда прямой поиск по всем
+    // трём таблицам ничего не дал.
+    if (!purchaseId && !offerId) {
+      offerId = await resolveOfferIdByEmailHistory(code);
+    }
 
     if (!purchaseId && !offerId) {
       // Код есть в адресе, но не резолвится ни в одну реальную запись —
@@ -299,8 +344,14 @@ export default async function handler(req, res) {
     // null (Альмира всегда может распознать вручную кнопкой в предпросмотре).
     let extraction = null;
     if (offerId) {
+      // Владелец, 2026-09-09: реальный счёт (.docx с разбивкой на позиции)
+      // раньше не подходил под этот фильтр вовсе — .docx не имеет
+      // "страниц" в том смысле, что PDF (нет байтового способа их
+      // посчитать), но и не бывает 40-страничным каталогом в том же
+      // смысле — pageCount у него всегда 1 (см. _attachments.js), поэтому
+      // порог INVOICE_MAX_PAGES ему не грозит.
       const candidate = attachments.find(
-        (a) => /\.(pdf|png|jpe?g|webp|gif)$/i.test(a.fileName) && a.pageCount != null && a.pageCount <= INVOICE_MAX_PAGES,
+        (a) => /\.(pdf|png|jpe?g|webp|gif|docx)$/i.test(a.fileName) && a.pageCount != null && a.pageCount <= INVOICE_MAX_PAGES,
       );
       if (candidate) {
         try {

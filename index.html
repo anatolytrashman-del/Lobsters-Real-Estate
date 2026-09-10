@@ -69,6 +69,8 @@
     <script type="application/ld+json" id="article-json-ld"></script>
     <script type="application/ld+json" id="breadcrumb-json-ld"></script>
     <script type="application/ld+json" id="organization-json-ld"></script>
+    <script type="application/ld+json" id="itemlist-json-ld"></script>
+    <script type="application/ld+json" id="dataset-json-ld"></script>
 
     <!-- Yandex.Metrika counter — ?prerender=1 в URL ставит только
          scripts/prerender.mjs при снятии build-time снапшота (SEO_PLAN.md,
@@ -84,9 +86,20 @@
          остаётся синхронной. Компромисс: визиты короче ~2 с (ушли раньше,
          чем скрипт успел встать в DOM) не досчитываются — владелец
          предупреждён, при текущем трафике это единицы в месяц. Вебвизор
-         (запись сессий) выключен — владелец подтвердил, что не пользуется. -->
+         (запись сессий) выключен — владелец подтвердил, что не пользуется.
+
+         2026-09-10 — /admin/* (внутренняя CRM) исключён из условия совсем:
+         счётчик там даже не инициализируется (window.ym остаётся
+         undefined), а не просто «не шлёт хиты» — прямой заход на
+         /admin/... (закладка сотрудника, полная перезагрузка страницы, не
+         SPA-переход) иначе засчитывался бы как визит в саму Метрику ДО
+         того, как успевает сработать проверка на уровне React
+         (useSpaPageviewHits в App.tsx — та защищает только последующую
+         SPA-навигацию, не первый заход). metrikaHit()/vkPixelHit() и так
+         оптионал-чейнят вызов ym()/_tmr, ничего дополнительно чинить в них
+         не нужно. -->
     <script type="text/javascript">
-      if (location.search.indexOf('prerender=1') === -1) {
+      if (location.search.indexOf('prerender=1') === -1 && location.pathname.indexOf('/admin') !== 0) {
         (function (m, e, t, r, i, k, a) {
           m[i] = m[i] || function () { (m[i].a = m[i].a || []).push(arguments) };
           m[i].l = 1 * new Date();
@@ -102,10 +115,42 @@
       }
     </script>
     <!-- /Yandex.Metrika counter -->
+
+    <!-- Top.Mail.Ru (VK Реклама / VK Ретаргетинг) pixel — тот же принцип
+         отложенной вставки, что и у Метрики выше: window._tmr — просто
+         массив-очередь (не сетевой вызов), pageView кладётся в него сразу
+         (нужна точная метка времени), а сам code.js (сетевая нагрузка)
+         вставляется в DOM только после полной загрузки страницы + паузы —
+         не в критическом пути первой отрисовки. ?prerender=1 (build-time
+         снапшот, см. Метрику выше) не должен слать фантомные события.
+         /admin/* исключён тем же принципом, что и у Метрики выше — сотрудники
+         CRM не должны пополнять ретаргетинговую аудиторию VK-рекламы. -->
+    <script type="text/javascript">
+      if (location.search.indexOf('prerender=1') === -1 && location.pathname.indexOf('/admin') !== 0) {
+        var _tmr = window._tmr || (window._tmr = []);
+        _tmr.push({ id: '3793248', type: 'pageView', start: (new Date()).getTime() });
+        (function (d, w) {
+          function insertTag() {
+            if (d.getElementById('tmr-code')) { return; }
+            var ts = d.createElement('script');
+            ts.type = 'text/javascript';
+            ts.async = true;
+            ts.id = 'tmr-code';
+            ts.src = 'https://top-fwz1.mail.ru/js/code.js';
+            var s = d.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(ts, s);
+          }
+          if (d.readyState === 'complete') { setTimeout(insertTag, 2000); }
+          else { w.addEventListener('load', function () { setTimeout(insertTag, 2000); }); }
+        })(document, window);
+      }
+    </script>
+    <!-- /Top.Mail.Ru (VK) pixel -->
   </head>
   <body>
-    <!-- noscript-пиксель Метрики — сразу после открытия body, как рекомендует Яндекс -->
+    <!-- noscript-пиксели — сразу после открытия body, как рекомендует Яндекс/VK -->
     <noscript><div><img src="https://mc.yandex.ru/watch/111858495" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+    <noscript><div><img src="https://top-fwz1.mail.ru/counter?id=3793248;js=na" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
 
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

@@ -807,7 +807,19 @@ export function Documents() {
             <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
               <Landmark className="h-5 w-5" />
             </span>
-            <div className="min-w-0 flex-1 truncate font-semibold text-ink">{entity.name}</div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="truncate font-semibold text-ink">{entity.name}</span>
+                {entity.isDefault && (
+                  <span className="shrink-0 rounded-full bg-success-bg px-2 py-0.5 text-xs font-medium text-success">
+                    По умолчанию
+                  </span>
+                )}
+              </div>
+              {entity.shortName && entity.shortName !== entity.name && (
+                <div className="truncate text-sm text-ink-muted">{entity.shortName}</div>
+              )}
+            </div>
             <button
               type="button"
               onClick={(e) => handleDeleteLegalEntity(entity, e)}

@@ -30,3 +30,14 @@ export function fetchBusinessCenterOffers(slug: string): Promise<BusinessCenterO
     return (data as BusinessCenterOfferRow[]).map(fromRow);
   });
 }
+
+// Все объявления по всему городу разом — для страниц аналитики
+// (/minsk/analytics/ofisy/*), где нужны срезы, которых нет в
+// market_snapshots (площадь, этаж, метро, конкретное здание).
+export function fetchAllBusinessCenterOffers(): Promise<BusinessCenterOffer[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase.from('business_center_offers').select('*');
+    if (error) throw error;
+    return (data as BusinessCenterOfferRow[]).map(fromRow);
+  });
+}

@@ -38,11 +38,22 @@ export function AppLayout() {
   }, [location.pathname]);
 
   return (
-    <div className="flex min-h-svh bg-bg">
+    // Владелец, 2026-09-10: "чтобы влезало полностью, вне зависимости от
+    // экрана" (композер письма поставщику упирался в нижний край окна) —
+    // раньше вся админка скроллилась одним длинным document/body, без
+    // единой ограниченной по высоте области. h-svh (было min-h-svh) + свой
+    // overflow-y-auto на <main> ниже — теперь именно <main> скроллируемый
+    // контейнер, а не документ целиком (то же самое для пользователя на
+    // страницах короче экрана — скроллбар просто переехал с окна на main).
+    // Sidebar.tsx уже был готов к этому (lg:sticky + h-svh + свой
+    // overflow-y-auto) — трогать его не пришлось. Страницы, которым нужна
+    // "заполнить всю высоту экрана" вёрстка (см. SupplierCorrespondenceTab),
+    // используют flex-1 min-h-0 вниз по дереву от .mx-auto ниже.
+    <div className="flex h-svh bg-bg">
       <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Верхняя полоса с гамбургером — только ниже lg, где сайдбар уехал в шторку. */}
-        <div className="flex items-center gap-3 border-b border-border px-4 py-3 lg:hidden">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:hidden">
           <button
             type="button"
             onClick={() => setNavOpen(true)}
@@ -56,8 +67,8 @@ export function AppLayout() {
             <span className="font-black text-primary">RED</span>EVELOPMENT
           </span>
         </div>
-        <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
-          <div className="mx-auto flex max-w-[1400px] min-w-0 flex-col gap-6">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
+          <div className="mx-auto flex h-full min-h-0 max-w-[1400px] min-w-0 flex-col gap-6">
             <Outlet />
           </div>
         </main>

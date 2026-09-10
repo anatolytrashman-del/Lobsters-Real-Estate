@@ -96,6 +96,7 @@ export function setGenericPageMeta(meta: PageMeta & { url: string; image?: strin
 
   const objectLd = document.getElementById('object-json-ld');
   setOrganizationJsonLd(false);
+  setItemListJsonLd(null);
   if (objectLd) objectLd.textContent = '';
   // Страничные JSON-LD (крошки/Article/FAQ) страница задаёт сама ПОСЛЕ этого
   // вызова — здесь сбрасываем, чтобы при SPA-переходе на страницу без
@@ -172,6 +173,33 @@ export function setArticleJsonLd(article: {
 // страницы вызывают с false при монтировании (через setGenericPageMeta/
 // setObjectPageMeta/setBusinessCenterPageMeta), чтобы при SPA-переходе с
 // хаба разметка организации не оставалась на чужой странице.
+// ItemList — для рейтинговых/подборочных страниц (аудит поиска 2026-09-07,
+// «Лучшие бизнес-центры Минска — с методикой и датой»): каждый пункт —
+// ссылка на настоящую карточку БЦ с её позицией в списке. Единственный
+// потребитель — BusinessCentersRankingPage, но слот и чистка централизованы
+// здесь же, тем же паттерном, что и Organization (см. ниже) — на любой
+// другой странице (setGenericPageMeta/setObjectPageMeta/
+// setBusinessCenterPageMeta) слот принудительно очищается, чтобы при
+// SPA-переходе не осталась разметка чужого рейтинга.
+export function setItemListJsonLd(items: { name: string; url: string }[] | null) {
+  const ld = document.getElementById('itemlist-json-ld');
+  if (!ld) return;
+  if (!items || items.length === 0) {
+    ld.textContent = '';
+    return;
+  }
+  ld.textContent = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    itemListElement: items.map((item, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: item.name,
+      url: item.url,
+    })),
+  });
+}
+
 export function setOrganizationJsonLd(enabled: boolean) {
   const ld = document.getElementById('organization-json-ld');
   if (!ld) return;
@@ -189,6 +217,38 @@ export function setOrganizationJsonLd(enabled: boolean) {
     description:
       'Редевелопмент коммерческой недвижимости в Минске: справочник бизнес-центров, гиды по районам и деловой центр Red One в Минск Мире.',
     areaServed: { '@type': 'City', name: 'Минск' },
+  });
+}
+
+// Dataset — для бенчмарк-страниц аналитики рынка (ANALYTICSPLAN.md §4.1,
+// п.13): сигнализирует AI-обзорам/поисковикам, что цифры на странице —
+// не просто текст, а размеченный набор данных с датой сбора и лицензией.
+export function setDatasetJsonLd(dataset: {
+  name: string;
+  description: string;
+  url: string;
+  datePublished: string;
+  dateModified: string;
+  measurementTechnique?: string;
+} | null) {
+  const ld = document.getElementById('dataset-json-ld');
+  if (!ld) return;
+  if (!dataset) {
+    ld.textContent = '';
+    return;
+  }
+  ld.textContent = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'Dataset',
+    name: dataset.name,
+    description: dataset.description,
+    url: dataset.url,
+    license: 'https://redevelopment.pro/minsk/analytics/metodika',
+    creator: { '@type': 'Organization', name: 'Redevelopment', url: 'https://redevelopment.pro' },
+    datePublished: dataset.datePublished,
+    dateModified: dataset.dateModified,
+    temporalCoverage: dataset.dateModified,
+    ...(dataset.measurementTechnique ? { measurementTechnique: dataset.measurementTechnique } : {}),
   });
 }
 
@@ -272,6 +332,7 @@ export function setBusinessCenterPageMeta(
 
   const ld = document.getElementById('object-json-ld');
   setOrganizationJsonLd(false);
+  setItemListJsonLd(null);
   if (ld) {
     ld.textContent = JSON.stringify({
       '@context': 'https://schema.org',
@@ -324,6 +385,7 @@ export function setObjectPageMeta(
 
   const ld = document.getElementById('object-json-ld');
   setOrganizationJsonLd(false);
+  setItemListJsonLd(null);
   if (ld) {
     ld.textContent = JSON.stringify({
       '@context': 'https://schema.org',

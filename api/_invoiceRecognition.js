@@ -1,12 +1,16 @@
-// Логика распознавания счёта/КП во вложении письма — вызывается только
-// автоматически, на входящих письмах Ресерча (purchase-email-webhook.js,
-// только offer_id). Раньше был ещё ручной путь — кнопка "Распознать данные
-// автоматически" в предпросмотре (supplier-web-search.js,
-// action:'recognize-invoice') — владелец убрал её 2026-09-03 ("раз система
-// сама распознает данные"), ветка удалена вместе с кнопкой. Отдельный файл
-// с "_" в начале — общий хелпер, не считается в лимит 12 serverless-функций
-// Vercel Hobby (сейчас у него уже один потребитель, но конвенция "_" оставлена
-// как есть — не переименовывать без необходимости).
+// Логика распознавания счёта/КП, общая для двух путей: (1) автоматически, на
+// входящих письмах Ресерча (purchase-email-webhook.js, только offer_id);
+// (2) вручную, по клику после загрузки файла в форму предложения
+// (supplier-web-search.js, action:'recognize-invoice') — владелец,
+// 2026-09-09: "у нас есть поставщик с КП, найденный вручную... загружаем
+// КП, система распознаёт КП и записывает цену в базу" (для поставщиков,
+// найденных вне переписки в системе — PDF/Excel/скриншот на руках у
+// закупщицы, а не через email). Ранний вариант этого второго пути (кнопка
+// в предпросмотре ВХОДЯЩЕГО письма) владелец убирал 2026-09-03 ("раз
+// система сама распознает данные") — нынешний путь не то же самое:
+// не альтернатива автоматике на письмах, а способ ввести КП, которого в
+// переписке никогда не было. Отдельный файл с "_" в начале — общий хелпер,
+// не считается в лимит 12 serverless-функций Vercel Hobby.
 //
 // Владелец, 2026-09-03: "делай на Haiku 4.5" (после разбора цены — доли
 // цента за документ, см. журнал) + "система [должна] понимать, что перед
@@ -17,6 +21,7 @@
 // isInvoice — короткий документ без счёта (например, обычное письмо-
 // вложение не по теме) не считается счётом, ничего не подставляется.
 import { proxyApiKeyProblem } from './_proxyapi.js';
+import { extractDocxText } from './_docxText.js';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 export const INVOICE_MAX_PAGES = 3;
@@ -70,15 +75,46 @@ function blockTypeForFileName(fileName) {
   return null;
 }
 
-// fileUrl — публичная ссылка на уже загруженный файл (Supabase Storage),
-// модель читает его напрямую по URL, без повторного прогона байтов через
-// нашу функцию.
+// Владелец, 2026-09-09: реальный счёт (ЗАО "Волок", с разбивкой на позиции)
+// пришёл файлом .docx — recognizeInvoice его не видела вовсе, ни ошибки, ни
+// попытки. У Anthropic API нет content-блока под .docx (document — только
+// PDF), поэтому вместо пересылки файла модели передаём уже извлечённый
+// текст (см. _docxText.js) обычным text-блоком — для счёта-таблицы этого
+// достаточно, реальной картинки/вёрстки документа знать не нужно.
+async function buildDocxContent(fileUrl, fileName) {
+  const fileResp = await fetch(fileUrl);
+  if (!fileResp.ok) throw new Error(`Не удалось скачать .docx для распознавания (${fileResp.status})`);
+  const buffer = Buffer.from(await fileResp.arrayBuffer());
+  const text = await extractDocxText(buffer);
+  if (!text.trim()) throw new Error('Не удалось извлечь текст из .docx — файл повреждён или пуст');
+  return [
+    {
+      type: 'text',
+      text: `Текст документа «${fileName}» (столбцы таблиц разделены табуляцией, строки — переносом):\n\n${text}`,
+    },
+    { type: 'text', text: 'Определи, счёт/КП ли это, и если да — извлеки данные строго по формату из системной инструкции.' },
+  ];
+}
+
+// fileUrl — публичная ссылка на уже загруженный файл (Supabase Storage). Для
+// PDF/картинки модель читает его напрямую по URL; для .docx — сами скачиваем
+// и извлекаем текст (см. buildDocxContent).
 export async function recognizeInvoice(fileUrl, fileName) {
   const keyProblem = proxyApiKeyProblem();
   if (keyProblem) throw new Error(keyProblem);
 
-  const blockType = blockTypeForFileName(fileName);
-  if (!blockType) throw new Error('Неподдерживаемый тип файла для распознавания — нужен PDF или картинка (png/jpg/webp/gif)');
+  const ext = String(fileName || '').split('.').pop()?.toLowerCase();
+  let content;
+  if (ext === 'docx') {
+    content = await buildDocxContent(fileUrl, fileName);
+  } else {
+    const blockType = blockTypeForFileName(fileName);
+    if (!blockType) throw new Error('Неподдерживаемый тип файла для распознавания — нужен PDF, картинка (png/jpg/webp/gif) или .docx');
+    content = [
+      { type: blockType, source: { type: 'url', url: fileUrl } },
+      { type: 'text', text: 'Определи, счёт/КП ли это, и если да — извлеки данные строго по формату из системной инструкции.' },
+    ];
+  }
 
   const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
     method: 'POST',
@@ -91,15 +127,7 @@ export async function recognizeInvoice(fileUrl, fileName) {
       model: MODEL,
       max_tokens: 1500,
       system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: blockType, source: { type: 'url', url: fileUrl } },
-            { type: 'text', text: 'Определи, счёт/КП ли это, и если да — извлеки данные строго по формату из системной инструкции.' },
-          ],
-        },
-      ],
+      messages: [{ role: 'user', content }],
     }),
   });
 

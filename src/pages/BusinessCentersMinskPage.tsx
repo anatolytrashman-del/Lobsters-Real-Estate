@@ -8,6 +8,7 @@ import {
   Calendar,
   Camera,
   Check,
+  DollarSign,
   HardHat,
   Layers,
   MapPin,
@@ -30,7 +31,7 @@ import {
   setNoIndex,
   clearNoIndex,
 } from '../lib/pageMeta';
-import { businessClassTone, shortAddress, shortMetro, shortName } from '../lib/businessCenterDisplay';
+import { businessClassTone, shortAddress, shortMetro, shortName, streetOfAddress } from '../lib/businessCenterDisplay';
 import {
   CLASS_SLUG_TO_VALUE,
   DISTRICT_SLUG_TO_NAME,
@@ -43,9 +44,13 @@ import {
   METRO_SLUG_TO_STATION,
   metroHubUrl,
   metroHubDistance,
+  STREET_SLUG_TO_NAME,
+  streetHubUrl,
 } from '../lib/businessCenterHubs';
 import type { BusinessCenter } from '../data/businessCenters';
 import { fetchBusinessCenters } from '../lib/businessCentersApi';
+import { fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
+import { MIN_RELIABLE_N, type MarketSnapshot } from '../data/marketSnapshots';
 
 // Справочная SEO-страница по бизнес-центрам Минска (владелец, 2026-09-04) —
 // см. комментарий в data/businessCenters.ts про источник списка и принцип
@@ -221,13 +226,15 @@ function pluralBusinessCenters(n: number): string {
 }
 
 export function BusinessCentersMinskPage({ underConstruction = false }: { underConstruction?: boolean } = {}) {
-  const { classSlug, districtSlug, microdistrictSlug, metroSlug } = useParams<{
+  const { classSlug, districtSlug, microdistrictSlug, metroSlug, streetSlug } = useParams<{
     classSlug?: string;
     districtSlug?: string;
     microdistrictSlug?: string;
     metroSlug?: string;
+    streetSlug?: string;
   }>();
   const [centers, setCenters] = useState<BusinessCenter[] | null>(null);
+  const [officeSnapshots, setOfficeSnapshots] = useState<MarketSnapshot[] | null>(null);
   // Боковое меню на мобильном скрыто за плавающей кнопкой (владелец, 2026-09-04:
   // "сделай конструктивно как на странице Минск Мира, чтобы оно с мобилки
   // скрывалось") — тот же паттерн шторки, что и SECTION_NAV в DistrictGuidePage.tsx.
@@ -253,6 +260,7 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
       return next;
     });
   };
+  const [streetListExpanded, setStreetListExpanded] = useState(false);
 
   const classFilter = classSlug ? (CLASS_SLUG_TO_VALUE[classSlug] ?? null) : null;
   const districtFilter = districtSlug ? (DISTRICT_SLUG_TO_NAME[districtSlug] ?? null) : null;
@@ -280,6 +288,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
   useEffect(() => {
     setMetroSelection(metroFilter ? new Set([metroFilter]) : new Set());
   }, [classSlug, districtSlug, microdistrictSlug, metroSlug, underConstruction]);
+  // Улица — ещё одна независимая ось (аудит 2026-09-07), см. STREET_SLUGS.
+  const streetFilter = streetSlug ? (STREET_SLUG_TO_NAME[streetSlug] ?? null) : null;
+  const badStreetSlug = Boolean(streetSlug) && streetFilter === null;
   // Пересечение класс×район без единого БЦ (владелец, 2026-09-06: "делай
   // структуру урлов [дерево пересечений]") — тот же soft-404, что и у
   // невалидного slug: сам план (`BCMINSK_SEO_PLAN.md`) явно предупреждал не
@@ -290,13 +301,47 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     districtFilter !== null &&
     centers !== null &&
     !centers.some((c) => c.businessClass === classFilter && c.district === districtFilter);
-  const notFound = badClassSlug || badDistrictSlug || badMicrodistrictSlug || badMetroSlug || metroEmpty || comboEmpty;
+  const notFound = badClassSlug || badDistrictSlug || badMicrodistrictSlug || badMetroSlug || metroEmpty || badStreetSlug || comboEmpty;
 
   useEffect(() => {
     fetchBusinessCenters()
       .then(setCenters)
       .catch(() => setCenters([]));
+    // ANALYTICSPLAN.md §4.2 — сводка ставок на фильтровых страницах, из
+    // уже собранного сегмента 'ofisy_bc' (market_snapshots). Дёшево (~20
+    // строк за один запрос) — грузим всегда, не только на хаб-страницах
+    // класса/района, показываем только там, где для этого есть срез.
+    fetchLatestMarketSnapshots('ofisy_bc')
+      .then(setOfficeSnapshots)
+      .catch(() => setOfficeSnapshots([]));
   }, []);
+
+  // Единственная ось — класс ИЛИ район (не комбо, не микрорайон/метро/
+  // улица/стройка): market_snapshots не хранит срез по пересечению класс×
+  // район, показывать его для комбо значило бы либо молчать, либо
+  // выдумывать — оставляем блок только там, где реальный срез есть.
+  const rateSliceKey = classFilter && !districtFilter ? classFilter : !classFilter && districtFilter ? districtFilter : classFilter || districtFilter ? null : 'all';
+  const rateSliceType: MarketSnapshot['sliceType'] | null = classFilter && !districtFilter ? 'class' : !classFilter && districtFilter ? 'district' : classFilter || districtFilter ? null : 'city';
+  const showRatesBlock =
+    !underConstruction && !metroFilter && !streetFilter && !microdistrictFilter && rateSliceKey !== null && rateSliceType !== null;
+  const rateRent = useMemo(
+    () =>
+      showRatesBlock
+        ? (officeSnapshots ?? []).find((s) => s.deal === 'rent' && s.sliceType === rateSliceType && s.sliceKey === rateSliceKey)
+        : undefined,
+    [officeSnapshots, showRatesBlock, rateSliceType, rateSliceKey],
+  );
+  const rateSale = useMemo(
+    () =>
+      showRatesBlock
+        ? (officeSnapshots ?? []).find((s) => s.deal === 'sale' && s.sliceType === rateSliceType && s.sliceKey === rateSliceKey)
+        : undefined,
+    [officeSnapshots, showRatesBlock, rateSliceType, rateSliceKey],
+  );
+  function formatRate(n: number, deal: 'rent' | 'sale'): string {
+    const rounded = deal === 'rent' ? Math.round(n * 10) / 10 : Math.round(n);
+    return `$${rounded.toLocaleString('ru-RU')}${deal === 'rent' ? '/м²/мес' : '/м²'}`;
+  }
 
   useEffect(() => {
     if (notFound) {
@@ -307,7 +352,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
       ? 'Строящиеся бизнес-центры Минска — что сдадут в 2026–2027 годах'
       : metroFilter
         ? `Бизнес-центры у метро «${metroFilter}» — офисы в пешей доступности`
-        : classFilter && districtFilter
+        : streetFilter
+          ? `Бизнес-центры Минска: ${streetFilter}`
+          : classFilter && districtFilter
         ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
         : classFilter
           ? `Бизнес-центры класса ${classFilter} в Минске`
@@ -320,7 +367,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
       ? 'Бизнес-центры Минска, которые сейчас строятся: класс, площадь, район, застройщик и сроки сдачи — МФЦ в Минск Мире, «Газпром», «Сигма», «Шантер Хилл».'
       : metroFilter
         ? `Бизнес-центры рядом со станцией метро «${metroFilter}» (Минск): расстояние до станции по прямой, класс, площадь, этажность, объявления об аренде и продаже офисов.`
-        : classFilter && districtFilter
+        : streetFilter
+          ? `Все бизнес-центры на «${streetFilter}» в Минске: класс, площадь, этажность, метро, объявления об аренде и продаже.`
+          : classFilter && districtFilter
         ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска: адреса, площадь, этажность, метро.`
         : classFilter
           ? `Список бизнес-центров класса ${classFilter} в Минске: адреса, площадь, этажность, метро.`
@@ -333,7 +382,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
       ? UNDER_CONSTRUCTION_HUB_URL
       : metroFilter
         ? `https://redevelopment.pro${metroHubUrl(metroFilter) ?? ''}`
-        : classFilter && districtFilter
+        : streetFilter
+          ? `https://redevelopment.pro${streetHubUrl(streetFilter) ?? ''}`
+          : classFilter && districtFilter
         ? `https://redevelopment.pro${classDistrictHubUrl(classFilter, districtFilter) ?? ''}`
         : classFilter
           ? `https://redevelopment.pro${classHubUrl(classFilter)}`
@@ -360,7 +411,7 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
             { name: `Класс ${classFilter}`, url: `https://redevelopment.pro${classHubUrl(classFilter)}` },
             { name: `${districtFilter} район` },
           ]
-        : classFilter || districtFilter || microdistrictFilter || underConstruction || metroFilter
+        : classFilter || districtFilter || microdistrictFilter || underConstruction || metroFilter || streetFilter
           ? [
               { name: 'Коммерческая недвижимость в Минске', url: 'https://redevelopment.pro/minsk' },
               { name: 'Бизнес-центры Минска', url: PAGE_URL },
@@ -369,7 +420,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
                   ? 'Строящиеся'
                   : metroFilter
                     ? `Метро «${metroFilter}»`
-                    : classFilter
+                    : streetFilter
+                      ? streetFilter
+                      : classFilter
                     ? `Класс ${classFilter}`
                     : ((districtFilter ?? microdistrictFilter) as string),
               },
@@ -379,7 +432,7 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
               { name: 'Бизнес-центры Минска' },
             ],
     );
-  }, [classFilter, districtFilter, microdistrictFilter, underConstruction, metroFilter, notFound]);
+  }, [classFilter, districtFilter, microdistrictFilter, underConstruction, metroFilter, streetFilter, notFound]);
 
   // Districts/классы для сайдбара — считаются НЕ от всего `centers`, а от
   // среза по ДРУГОЙ активной оси (владелец, 2026-09-06: "структура урлов
@@ -451,9 +504,10 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
           (districtFilter === null || c.district === districtFilter) &&
           (microdistrictFilter === null || c.microdistrict === microdistrictFilter) &&
           (!underConstruction || c.status === 'under_construction') &&
-          (metroSelection.size === 0 || Array.from(metroSelection).some((st) => metroHubDistance(c, st) !== null)),
+          (metroSelection.size === 0 || Array.from(metroSelection).some((st) => metroHubDistance(c, st) !== null)) &&
+          (streetFilter === null || streetOfAddress(c.address) === streetFilter),
       ),
-    [centers, classFilter, districtFilter, microdistrictFilter, underConstruction, metroSelection],
+    [centers, classFilter, districtFilter, microdistrictFilter, underConstruction, metroSelection, streetFilter],
   );
   // На хабе одной станции (metroFilter — из роута) — по возрастанию расстояния
   // до неё; при множественном выборе без роута — по возрастанию расстояния до
@@ -497,6 +551,16 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     }
     return base;
   }, [metroStations, metroListExpanded, metroFilter]);
+  // Улицы для сайдбара — только те, где реально 2+ БЦ (см. STREET_SLUGS),
+  // по убыванию числа БЦ.
+  const streets = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of centers ?? []) {
+      const st = streetOfAddress(c.address);
+      if (streetHubUrl(st)) counts[st] = (counts[st] ?? 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
+  }, [centers]);
   // «4 бизнес-центра», «24 бизнес-центра», «5 бизнес-центров» — склонение по
   // числу; пока список не загружен — просто «бизнес-центры» без числа.
   const bcCountLabel = centers ? `${visibleCenters.length} ${pluralBusinessCenters(visibleCenters.length)}` : 'бизнес-центры';
@@ -543,7 +607,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     ? 'из строящихся в Минске'
     : metroFilter
       ? `у метро «${metroFilter}»`
-      : classFilter && districtFilter
+      : streetFilter
+        ? `на «${streetFilter}»`
+        : classFilter && districtFilter
       ? `класса ${classFilter} в ${districtPrepositional(districtFilter)} районе`
       : classFilter
         ? `класса ${classFilter}`
@@ -589,7 +655,7 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     [districtCounts],
   );
 
-  const showCatalogSeoText = !classFilter && !districtFilter && !microdistrictFilter && !underConstruction && !metroFilter && centers !== null && centers.length > 0;
+  const showCatalogSeoText = !classFilter && !districtFilter && !microdistrictFilter && !underConstruction && !metroFilter && !streetFilter && centers !== null && centers.length > 0;
 
   const faqItems = useMemo(() => {
     const items: { question: string; answer: string }[] = [];
@@ -659,7 +725,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     ? 'Строящиеся бизнес-центры Минска'
     : metroFilter
       ? `Бизнес-центры у метро «${metroFilter}»`
-      : classFilter && districtFilter
+      : streetFilter
+        ? `Бизнес-центры Минска: ${streetFilter}`
+        : classFilter && districtFilter
       ? `Бизнес-центры класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска`
       : classFilter
         ? `Бизнес-центры класса ${classFilter} в Минске`
@@ -672,6 +740,8 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     ? `${bcCountLabel} Минска, которые сейчас строятся, — класс, площадь, район и срок сдачи по данным застройщиков. Офисы в них пока нельзя ни арендовать, ни купить; готовые варианты — в общем каталоге.`
     : metroFilter
       ? `${bcCountLabel} не дальше 1,5 км по прямой от станции «${metroFilter}» — расстояние по данным 2GIS, ближайшие первыми. Класс, площадь, этажность и объявления об аренде и продаже — в карточках.`
+    : streetFilter
+      ? `${bcCountLabel} на «${streetFilter}» — класс, площадь, этажность, метро и объявления об аренде и продаже.`
     : classFilter && districtFilter
       ? `${bcCountLabel} делового класса ${classFilter} в ${districtPrepositional(districtFilter)} районе Минска — адреса, площадь, этажность, метро.`
       : classFilter
@@ -889,7 +959,42 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
         </>
       )}
 
-      <div className="my-2 border-t border-border" />
+      {streets.length > 0 && (
+        <>
+          <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">Улица</span>
+          {/* Независимая ось (аудит 2026-09-07): улицы с 2+ БЦ (список
+              и обоснование — STREET_SLUGS в businessCenterHubs.ts). */}
+          {(streetListExpanded ? streets : streets.slice(0, 8)).map(([name, count]) => {
+            const url = streetHubUrl(name);
+            if (!url) return null;
+            return (
+              <Link
+                key={name}
+                to={url}
+                onClick={() => setMobileNavOpen(false)}
+                className={cn(
+                  'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
+                  streetFilter === name ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
+                )}
+              >
+                <span>{name}</span>
+                <span className="text-xs text-ink-muted">{count}</span>
+              </Link>
+            );
+          })}
+          {streets.length > 8 && (
+            <button
+              type="button"
+              onClick={() => setStreetListExpanded((v) => !v)}
+              className="rounded-control px-2 py-1.5 text-left text-xs font-semibold text-ink-muted transition-colors hover:text-ink"
+            >
+              {streetListExpanded ? 'Свернуть' : `Ещё ${streets.length - 8} улиц`}
+            </button>
+          )}
+
+          <div className="my-2 border-t border-border" />
+        </>
+      )}
 
       <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">Статус</span>
       <Link
@@ -945,6 +1050,9 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
             {/* text-primary-hover — как на гиде района: базовый красный на
                 полупрозрачной шапке даёт контраст ниже 4,5:1 (Accessibility). */}
             <span className="font-black text-primary-hover">RED</span>EVELOPMENT
+          </Link>
+          <Link to="/minsk/bcminsk/reyting" className="text-sm font-semibold text-ink-muted transition-colors hover:text-ink">
+            Рейтинг
           </Link>
         </div>
       </div>
@@ -1092,6 +1200,45 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
                         ),
                     )}
                 </div>
+              </div>
+            )}
+
+            {/* Сводка ставок (ANALYTICSPLAN.md §4.2) — только там, где для
+                скоупа страницы реально есть срез в market_snapshots (класс
+                ИЛИ район, не их пересечение — см. rateSliceKey/rateSliceType
+                выше). Пока обе цифры не пришли или срез слишком мал — блок
+                просто не рендерится, не выдумываем "недостаточно данных"
+                отдельной плашкой ради ещё одной строки на странице. */}
+            {showRatesBlock && (rateRent?.median != null || rateSale?.median != null) && (
+              <div className={cn('flex flex-col gap-4 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
+                <h2 className="text-lg font-bold text-ink">Ставки аренды и продажи</h2>
+                <p className="text-xs text-ink-faint">
+                  Медиана по объявлениям Kufar и Realt{rateSliceType === 'class' ? ` для класса ${rateSliceKey}` : rateSliceType === 'district' ? ` в ${districtPrepositional(rateSliceKey ?? '')} районе` : ' по Минску'}
+                  {rateRent?.period ? `, ${rateRent.period.slice(0, 7)}` : ''}.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {rateRent?.median != null && (
+                    <FactTile
+                      icon={DollarSign}
+                      value={formatRate(rateRent.median, 'rent')}
+                      label={rateRent.n >= MIN_RELIABLE_N ? `Аренда (по ${rateRent.n} объявлениям)` : `Аренда — ориентировочно (${rateRent.n})`}
+                    />
+                  )}
+                  {rateSale?.median != null && (
+                    <FactTile
+                      icon={DollarSign}
+                      value={formatRate(rateSale.median, 'sale')}
+                      label={rateSale.n >= MIN_RELIABLE_N ? `Продажа (по ${rateSale.n} объявлениям)` : `Продажа — ориентировочно (${rateSale.n})`}
+                    />
+                  )}
+                </div>
+                <Link
+                  to="/minsk/analytics/ofisy/arenda"
+                  className="inline-flex w-fit items-center gap-1 text-sm text-primary-hover hover:underline"
+                >
+                  Подробная аналитика по офисам в БЦ
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
               </div>
             )}
 

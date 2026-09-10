@@ -1,0 +1,23 @@
+name: Sync citywide retail offers (Kufar + Realt)
+
+on:
+  schedule:
+    # Раз в месяц, 3-го числа — до build-market-snapshots.yml (0 6 3 * *),
+    # тот же ритм, что и у sync-business-center-offers.yml (0 4 3 * *),
+    # сдвинут на час позже, чтобы не долбить Kufar/Realt одновременно с ним.
+    - cron: '0 5 3 * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/sync-citywide-retail-offers.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

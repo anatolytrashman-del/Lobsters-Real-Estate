@@ -35,6 +35,10 @@ export function MaterialLedgerModal({
   onClose,
   onLedgersChange,
   onAttach,
+  readyOnly,
+  initialLedgerId,
+  hideLedgerPicker,
+  estimateId,
 }: {
   open: boolean;
   requestItems: PurchaseItem[];
@@ -56,6 +60,35 @@ export function MaterialLedgerModal({
   // прикреплять) — необязателен, кнопка "Прикрепить" скрыта, когда не
   // передан.
   onAttach?: (attachment: LedgerAttachment) => void;
+  // Владелец, 2026-09-09: "в массовой рассылке не нужен полный список
+  // материалов, должны отображаться только готовые ведомости" — для
+  // bulk-пикера (Suppliers.tsx → bulkLedgerPickerRequest) чек-лист сырых
+  // материалов ВСЕХ смет скрыт целиком, доступен только выбор уже
+  // сохранённой ведомости. Одиночная переписка (EmailThread) и управление
+  // пресетами вне письма — без ограничения, там readOnly не передаётся.
+  readyOnly?: boolean;
+  // Владелец, 2026-09-09: "непонятно, зачем графа «Готовая ведомость»,
+  // когда я добавляю новый шаблон" — вызвано тем, что выбор "какую
+  // существующую ведомость открыть" дублировался и внутри модалки (этот
+  // селект), и снаружи (список на странице "Ведомости материалов"). Теперь
+  // выбор какую ведомость редактировать делается СНАРУЖИ, через
+  // initialLedgerId — сам селект внутри модалки в этом случае скрыт, чтобы
+  // не путать. Остальные вызовы (EmailThread "Прикрепить ведомость",
+  // управление шаблонами на "Письмах") — без этого прогана, там быстрое
+  // переключение между уже существующими ведомостями внутри модалки уместно.
+  hideLedgerPicker?: boolean;
+  // Открыть модалку сразу с предзагруженной конкретной ведомостью (правка
+  // из списка на странице), а не с чистой формой создания.
+  initialLedgerId?: string;
+  // Владелец, 2026-09-09: "шаблон ведомости материала привязывался к
+  // смете" — смета, к которой привязывается НОВАЯ ведомость при сохранении
+  // (передаётся только со страницы "Ведомости материалов", где есть своя
+  // выбранная смета). При редактировании УЖЕ существующей ведомости этот
+  // проп не используется для перезаписи — сохраняется её собственный,
+  // изначальный estimateId (см. handleSaveLedger), иначе тот же компонент,
+  // открытый из другого места (например EmailThread "Прикрепить ведомость",
+  // без своей сметы) мог бы тихо отвязать чужую ведомость от сметы.
+  estimateId?: string | null;
 }) {
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
@@ -69,14 +102,25 @@ export function MaterialLedgerModal({
   // Модалка живёт смонтированной всегда (родитель переключает только open,
   // как и TemplateFormModal) — без сброса по [open] форма подхватила бы
   // состояние только на первом рендере родителя.
+  //
+  // initialLedgerId (владелец, 2026-09-09) — предзагрузка конкретной
+  // ведомости при открытии из списка на странице. Намеренно НЕ в
+  // зависимостях эффекта `ledgers` — этот массив меняется сразу после
+  // каждого сохранения (onLedgersChange), а initialLedgerId остаётся
+  // прежним весь сеанс редактирования; если бы `ledgers` был зависимостью,
+  // эффект перезапускался бы после каждого сохранения и для режима
+  // "новая ведомость" (initialLedgerId не задан) стирал бы только что
+  // введённые название/позиции обратно в пустую форму.
   useEffect(() => {
     if (!open) return;
-    setSelectedId('');
-    setName('');
-    setItems([]);
+    const ledger = initialLedgerId ? ledgers.find((l) => l.id === initialLedgerId) : null;
+    setSelectedId(ledger?.id ?? '');
+    setName(ledger?.name ?? '');
+    setItems(ledger?.items ?? []);
     setManualName('');
     setError(null);
-  }, [open]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialLedgerId]);
 
   // Владелец, 2026-09-03, после первой версии с полем поиска: "снова
   // неудобно, мне нужно видеть весь список сразу и отмечать галочками...
@@ -134,6 +178,13 @@ export function MaterialLedgerModal({
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, quantity } : i)));
   }
 
+  // Владелец, 2026-09-09: "важно не только объём, но и ряд параметров" —
+  // редактируемое поле-примечание прямо в ведомости (попадает в итоговый
+  // .xlsx, см. lib/materialLedgerXlsx.ts).
+  function updateItemNote(id: string, note: string) {
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, note } : i)));
+  }
+
   function removeItem(id: string) {
     setItems((prev) => prev.filter((i) => i.id !== id));
   }
@@ -145,7 +196,12 @@ export function MaterialLedgerModal({
     setSaving(true);
     setError(null);
     try {
-      const payload = { name: name.trim(), items };
+      const existingLedger = selectedId ? ledgers.find((l) => l.id === selectedId) : null;
+      const payload = {
+        name: name.trim(),
+        items,
+        estimateId: existingLedger ? existingLedger.estimateId : (estimateId ?? null),
+      };
       const saved = selectedId ? await updateMaterialLedger(selectedId, payload) : await insertMaterialLedger(payload);
       onLedgersChange(ledgers.some((l) => l.id === saved.id) ? ledgers.map((l) => (l.id === saved.id ? saved : l)) : [...ledgers, saved]);
       setSelectedId(saved.id);
@@ -189,110 +245,148 @@ export function MaterialLedgerModal({
     }
   }
 
+  const modalTitle = hideLedgerPicker ? (initialLedgerId ? 'Редактирование ведомости' : 'Новая ведомость') : 'Ведомость материалов';
+
   return (
-    <Modal open onClose={onClose} title="Ведомость материалов">
+    <Modal open onClose={onClose} title={modalTitle}>
       <div className="flex flex-col gap-4">
-        {ledgers.length > 0 && (
+        {!hideLedgerPicker && ledgers.length > 0 && (
           <Select
             label="Готовая ведомость"
-            placeholder="Новая ведомость"
+            placeholder={readyOnly ? 'Выберите ведомость' : 'Новая ведомость'}
             options={ledgers.map((l) => l.name)}
             value={ledgers.find((l) => l.id === selectedId)?.name ?? ''}
             onChange={(label) => pickLedger(ledgers.find((l) => l.name === label)?.id ?? '')}
           />
         )}
 
-        <Input label="Название ведомости" placeholder="Например, Окна" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        {readyOnly && ledgers.length === 0 && (
+          <p className="text-sm text-ink-faint">
+            Готовых ведомостей ещё нет — создайте их во вкладке «Ведомости материалов» → «Шаблоны», тогда они появятся
+            здесь для выбора.
+          </p>
+        )}
 
-        <div className="flex flex-col gap-2">
-          <span className="text-sm text-ink-muted">Выберите материалы из смет</span>
-          {checklistGroups.length === 0 ? (
-            <p className="text-sm text-ink-faint">В сметах пока нет материалов — добавьте позицию вручную ниже.</p>
-          ) : (
-            <div className="flex max-h-80 flex-col gap-3 overflow-y-auto rounded-control bg-surface-muted p-3">
-              {checklistGroups.map((group) => (
-                <div key={group.label} className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{group.label}</span>
-                  {group.items.map((item) => {
-                    const checked = items.some((i) => i.name === item.name);
-                    return (
-                      <label
-                        key={item.id}
-                        className="flex items-center gap-2.5 rounded-control px-1.5 py-1 text-sm hover:bg-surface"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => toggleMaterial(item, e.target.checked)}
-                          className="h-4 w-4 shrink-0 rounded border-border accent-primary"
-                        />
-                        <span className="min-w-0 truncate text-ink">
-                          {item.name}
-                          {item.unit && (
-                            <span className="text-ink-faint">
-                              {' '}
-                              · {item.quantity ?? '—'} {item.unit}
+        {!readyOnly && (
+          <>
+            <Input label="Название ведомости" placeholder="Например, Окна" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+
+            <div className="flex flex-col gap-2">
+              <span className="text-sm text-ink-muted">Выберите материалы из смет</span>
+              {checklistGroups.length === 0 ? (
+                <p className="text-sm text-ink-faint">В сметах пока нет материалов — добавьте позицию вручную ниже.</p>
+              ) : (
+                <div className="flex max-h-80 flex-col gap-3 overflow-y-auto rounded-control bg-surface-muted p-3">
+                  {checklistGroups.map((group) => (
+                    <div key={group.label} className="flex flex-col gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{group.label}</span>
+                      {group.items.map((item) => {
+                        const checked = items.some((i) => i.name === item.name);
+                        return (
+                          <label
+                            key={item.id}
+                            className="flex items-center gap-2.5 rounded-control px-1.5 py-1 text-sm hover:bg-surface"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => toggleMaterial(item, e.target.checked)}
+                              className="h-4 w-4 shrink-0 rounded border-border accent-primary"
+                            />
+                            <span className="min-w-0 truncate text-ink">
+                              {item.name}
+                              {item.unit && (
+                                <span className="text-ink-faint">
+                                  {' '}
+                                  · {item.quantity ?? '—'} {item.unit}
+                                </span>
+                              )}
                             </span>
-                          )}
-                        </span>
-                      </label>
-                    );
-                  })}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
-          )}
-        </div>
+          </>
+        )}
 
         <div className="flex flex-col gap-2">
-          <span className="text-sm text-ink-muted">Позиции ведомости</span>
+          {(!readyOnly || items.length > 0) && <span className="text-sm text-ink-muted">Позиции ведомости</span>}
           {items.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              {items.map((item) => (
-                <div key={item.id} className="flex items-center gap-2 rounded-control border border-border px-3 py-2 text-sm">
-                  <span className="flex-1 text-ink">{item.name}</span>
-                  <input
-                    type="number"
-                    placeholder="Кол-во"
-                    value={item.quantity ?? ''}
-                    onChange={(e) => updateItemQuantity(item.id, e.target.value === '' ? null : Number(e.target.value))}
-                    className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
-                  />
-                  {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
-                  <button
-                    type="button"
-                    onClick={() => removeItem(item.id)}
-                    aria-label="Удалить позицию"
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
+              {items.map((item) =>
+                readyOnly ? (
+                  <div key={item.id} className="flex flex-col gap-1 rounded-control border border-border px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-ink">{item.name}</span>
+                      <span className="text-ink-faint">
+                        {item.quantity ?? '—'} {item.unit}
+                      </span>
+                    </div>
+                    {item.note && <span className="text-xs text-ink-faint">{item.note}</span>}
+                  </div>
+                ) : (
+                  <div key={item.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-ink">{item.name}</span>
+                      <input
+                        type="number"
+                        placeholder="Кол-во"
+                        value={item.quantity ?? ''}
+                        onChange={(e) => updateItemQuantity(item.id, e.target.value === '' ? null : Number(e.target.value))}
+                        className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
+                      />
+                      {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
+                      <button
+                        type="button"
+                        onClick={() => removeItem(item.id)}
+                        aria-label="Удалить позицию"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Важные параметры — фактура, формат, цвет и т.п."
+                      value={item.note}
+                      onChange={(e) => updateItemNote(item.id, e.target.value)}
+                      className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-primary"
+                    />
+                  </div>
+                ),
+              )}
             </div>
           )}
+          {!readyOnly && (
           <div className="flex gap-2">
             <Input placeholder="Добавить позицию вручную" value={manualName} onChange={(e) => setManualName(e.target.value)} />
             <Button type="button" variant="secondary" onClick={addManualItem} disabled={!manualName.trim()}>
               Добавить
             </Button>
           </div>
+          )}
         </div>
 
         {error && <p className="text-sm text-danger">{error}</p>}
 
         <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
           <div>
-            {selectedId && (
+            {!readyOnly && selectedId && (
               <Button type="button" variant="ghost" icon={<Trash2 className="h-4 w-4" />} onClick={handleDeleteLedger} disabled={deleting}>
                 {deleting ? 'Удаляем...' : 'Удалить ведомость'}
               </Button>
             )}
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="secondary" icon={<Save className="h-4 w-4" />} onClick={handleSaveLedger} disabled={!canSubmit || saving}>
-              {saving ? 'Сохраняем...' : 'Сохранить как ведомость'}
-            </Button>
+            {!readyOnly && (
+              <Button type="button" variant="secondary" icon={<Save className="h-4 w-4" />} onClick={handleSaveLedger} disabled={!canSubmit || saving}>
+                {saving ? 'Сохраняем...' : 'Сохранить как ведомость'}
+              </Button>
+            )}
             {onAttach && (
               <Button type="button" icon={<Paperclip className="h-4 w-4" />} onClick={handleAttach} disabled={!canSubmit || attaching}>
                 {attaching ? 'Формируем файл...' : 'Прикрепить'}

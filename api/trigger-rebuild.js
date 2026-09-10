@@ -15,9 +15,75 @@
 // объектов подряд за одну правку. Отметка времени — в таблице
 // deploy_debounce (RLS без единой политики — доступна только service_role,
 // как и должно быть для чисто служебной метки).
+//
+// 2026-09-10 — эта же строка одновременно служит сигналом для prerender.mjs
+// («нужен настоящий полный рендер, не быстрое копирование живого прода» —
+// см. shouldForceFullPrerender() там же). Реальный баг: раньше это был
+// просто временной ОКНОМ (15 минут) — любой билд, случайно попавший в это
+// окно (ручной Redeploy из дашборда Vercel, обычный несвязанный пуш кода),
+// тоже уходил в полный рендер ~150+ страниц (~9 минут) вместо быстрого
+// (~1 минуты), хотя реально это было нужно только ОДНОЙ сборке — той,
+// что реально пошла следом за сохранением объекта. Теперь потребление
+// одноразовое (атомарный UPDATE ... WHERE consumed_at IS NULL в
+// prerender.mjs) — сюда обязательно сбрасывать consumed_at=null при
+// каждом новом триггере (см. setLastTriggeredAt), иначе новый триггер
+// после уже потреблённого старого молча считался бы «уже обработан».
+//
+// Владелец, 2026-09-09: "при каждой отправке письма [массовой рассылки] ты
+// запускал этот костыль, а после отправки всех писем — останавливал" —
+// вместо периодического опроса сессией Claude (не переживает конец сессии,
+// не срабатывает мгновенно) настоящий автотриггер: BulkSendModal сразу
+// после постановки задания в очередь (insertBulkSendJob) вызывает этот же
+// эндпоинт с action:'dispatch-bulk-send' — функция сама дёргает
+// workflow_dispatch на process-bulk-send-jobs.yml через GitHub REST API, не
+// дожидаясь ни планового крона (тот не срабатывает сам, см. журнал), ни
+// ручного вмешательства. Сам воркфлоу разом обрабатывает ВСЕ накопленные
+// pending-письма с паузой между ними и завершается сам, когда очередь
+// пуста — отдельного "остановить" не требуется, это не постоянный опрос, а
+// одноразовый запуск на каждую постановку в очередь. Нужен новый секрет
+// GITHUB_ACTIONS_DISPATCH_TOKEN (fine-grained PAT, доступ только к этому
+// репозиторию, permission Actions: Read and write) в Vercel env — без него
+// (или при сетевой ошибке) просто логируем и отвечаем 200, планового крона
+// это не отменяет, только не даёт дополнительного мгновенного триггера.
 import { requireStaffAuth } from './_auth.js';
 
 const DEBOUNCE_MS = 5 * 60_000;
+
+const GITHUB_OWNER = 'anatolytrashman-del';
+const GITHUB_REPO = 'redevelopment';
+const GITHUB_REF = 'claude/redevelopment-platform-prototype-oodobu';
+
+async function dispatchBulkSendWorkflow(res) {
+  const token = process.env.GITHUB_ACTIONS_DISPATCH_TOKEN;
+  if (!token) {
+    console.warn('[trigger-rebuild] GITHUB_ACTIONS_DISPATCH_TOKEN не настроен — воркфлоу рассылки не запущен, ждём планового крона');
+    res.status(200).json({ triggered: false, reason: 'no github token configured' });
+    return;
+  }
+  try {
+    const ghRes = await fetch(
+      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-bulk-send-jobs.yml/dispatches`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ref: GITHUB_REF }),
+      },
+    );
+    if (!ghRes.ok) {
+      const text = await ghRes.text();
+      console.error('[trigger-rebuild] workflow_dispatch отклонён GitHub:', ghRes.status, text.slice(0, 300));
+    }
+    res.status(200).json({ triggered: ghRes.ok });
+  } catch (err) {
+    console.error('[trigger-rebuild] не удалось вызвать workflow_dispatch:', err);
+    res.status(200).json({ triggered: false, reason: 'fetch failed' });
+  }
+}
 
 async function getLastTriggeredAt() {
   const resp = await fetch(`${process.env.SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&select=triggered_at`, {
@@ -31,6 +97,13 @@ async function getLastTriggeredAt() {
   return rows[0]?.triggered_at ?? null;
 }
 
+// consumed_at сбрасывается на null ЯВНО каждый раз — merge-duplicates upsert
+// трогает только колонки, реально присутствующие в payload (см. комментарий
+// про этот же нюанс PostgREST в CLAUDE.md, «Паттерн работы с данными»).
+// Без явного сброса новый триггер после уже потреблённого старого молча
+// считался бы «уже обработан» первым же атомарным consume в prerender.mjs
+// (см. его же комментарий) — полный рендер для реального изменения данных
+// не сработал бы вообще ни разу.
 async function setLastTriggeredAt(iso) {
   await fetch(`${process.env.SUPABASE_URL}/rest/v1/deploy_debounce`, {
     method: 'POST',
@@ -40,7 +113,7 @@ async function setLastTriggeredAt(iso) {
       'Content-Type': 'application/json',
       Prefer: 'resolution=merge-duplicates',
     },
-    body: JSON.stringify({ id: 'default', triggered_at: iso }),
+    body: JSON.stringify({ id: 'default', triggered_at: iso, consumed_at: null }),
   });
 }
 
@@ -51,6 +124,12 @@ export default async function handler(req, res) {
   }
   const user = await requireStaffAuth(req, res);
   if (!user) return;
+
+  const { action } = req.body ?? {};
+  if (action === 'dispatch-bulk-send') {
+    await dispatchBulkSendWorkflow(res);
+    return;
+  }
 
   const hookUrl = process.env.VERCEL_DEPLOY_HOOK_URL;
   if (!hookUrl) {

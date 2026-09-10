@@ -9,11 +9,22 @@ import { ObjectLandingPage } from './pages/ObjectLandingPage';
 import { DistrictGuidePage } from './pages/DistrictGuidePage';
 import { MinskMirTopicPage } from './pages/MinskMirTopicPage';
 import { BusinessCentersMinskPage } from './pages/BusinessCentersMinskPage';
+import { BusinessCentersRankingPage } from './pages/BusinessCentersRankingPage';
 import { BusinessCenterDetailPage } from './pages/BusinessCenterDetailPage';
 import { MinskHub } from './pages/MinskHub';
+import { MarketAnalyticsHub } from './pages/MarketAnalyticsHub';
+import { OfficeAnalyticsPage } from './pages/OfficeAnalyticsPage';
+import { RetailAnalyticsPage } from './pages/RetailAnalyticsPage';
+import { WarehouseAnalyticsPage } from './pages/WarehouseAnalyticsPage';
+import { ParkingAnalyticsPage } from './pages/ParkingAnalyticsPage';
+import { MinskMirAnalyticsPage } from './pages/MinskMirAnalyticsPage';
+import { DistrictsAnalyticsPage } from './pages/DistrictsAnalyticsPage';
+import { AnalyticsMethodologyPage } from './pages/AnalyticsMethodologyPage';
 import { BriefPublicPage } from './pages/BriefPublicPage';
 import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
+import { metrikaHit } from './lib/metrika';
+import { vkPixelHit, vkPixelGoal, vkPageGoalForPath } from './lib/vkPixel';
 
 // Вся админка (CRM с десятком разделов — финмодели, сметы, документы и т.д.)
 // нужна только за PasswordGate на /admin/*, но раньше грузилась тем же JS-
@@ -73,6 +84,10 @@ const FinModelReport = lazy(() => import('./pages/FinModelReport').then((m) => (
 const Financing = lazy(() => import('./pages/Financing').then((m) => ({ default: m.Financing })));
 const DesignProjects = lazy(() => import('./pages/DesignProjects').then((m) => ({ default: m.DesignProjects })));
 const Landings = lazy(() => import('./pages/Landings').then((m) => ({ default: m.Landings })));
+// "Показатели" (посещаемость сайта из Яндекс.Метрики) — SiteMetrics/
+// site-metrics, НЕ Metrics/metrics (та страница — про другое, см. её же
+// комментарий и комментарий у data/pages.ts).
+const SiteMetrics = lazy(() => import('./pages/SiteMetrics').then((m) => ({ default: m.SiteMetrics })));
 const MarketOffersReview = lazy(() => import('./pages/MarketOffersReview').then((m) => ({ default: m.MarketOffersReview })));
 const ActivityLog = lazy(() => import('./pages/ActivityLog').then((m) => ({ default: m.ActivityLog })));
 const Metrics = lazy(() => import('./pages/Metrics').then((m) => ({ default: m.Metrics })));
@@ -128,14 +143,22 @@ function usePreventPageZoom() {
   }, []);
 }
 
-// Яндекс.Метрика (index.html) сама считает только ПЕРВУЮ загрузку страницы —
-// SPA-переходы react-router не порождают новых просмотров, внутренняя
-// навигация (в т.ч. конверсионный переход гид района → /minsk/one) была
-// невидима в статистике. Штатный для SPA способ от Яндекса — вручную слать
-// hit на каждую смену маршрута; первую загрузку пропускаем, её уже засчитал
-// init. window.ym может отсутствовать (пререндер с ?prerender=1, блокировщик
-// рекламы) — опциональный вызов, без падений.
-function useMetrikaSpaHits() {
+// Яндекс.Метрика и VK-пиксель (Top.Mail.Ru, index.html) сами считают
+// только ПЕРВУЮ загрузку страницы — SPA-переходы react-router не порождают
+// новых просмотров, внутренняя навигация (в т.ч. конверсионный переход гид
+// района → /minsk/one) была невидима в статистике обоих. Штатный для SPA
+// способ — вручную слать pageview на каждую смену маршрута; первую загрузку
+// пропускаем, её уже засчитал init обоих счётчиков.
+//
+// 2026-09-10: /admin/* — внутренняя CRM, не то, что владелец хочет видеть в
+// «Показателях» как клиентский трафик (Светлана/Альмира целый день листают
+// задачи/сметы — это не посетители сайта). Хиты с /admin не шлём вовсе, ни
+// в Метрику, ни в VK-пиксель (тот же принцип: retargeting-аудитория VK-рекламы
+// не должна пополняться сотрудниками CRM). Сам счётчик на /admin может быть и
+// не инициализирован (см. index.html) — тогда metrikaHit()/vkPixelHit() и так
+// молча ничего не делают (см. их же optional chaining), эта проверка не
+// единственная защита, а явная и быстрая, без похода в чужой модуль.
+function useSpaPageviewHits() {
   const location = useLocation();
   const isFirstRender = useRef(true);
   useEffect(() => {
@@ -143,12 +166,23 @@ function useMetrikaSpaHits() {
       isFirstRender.current = false;
       return;
     }
-    (window as unknown as { ym?: (id: number, action: string, url: string) => void }).ym?.(
-      111858495,
-      'hit',
-      location.pathname + location.search,
-    );
+    if (location.pathname.startsWith('/admin')) return;
+    metrikaHit(location.pathname + location.search);
+    vkPixelHit();
   }, [location.pathname, location.search]);
+}
+
+// VK-аудитории по конкретным страницам (см. lib/vkPixel.ts) — в отличие
+// от общего pageview выше, здесь ПЕРВЫЙ рендер не пропускается: обычный
+// init пикселя сам такое именованное событие не шлёт, только generic
+// "Посещение сайта", а нам нужно засчитать и прямой заход на страницу, не
+// только переход внутри SPA.
+function useVkPageGoals() {
+  const location = useLocation();
+  useEffect(() => {
+    const goal = vkPageGoalForPath(location.pathname);
+    if (goal) vkPixelGoal(goal);
+  }, [location.pathname]);
 }
 
 // Старые ссылки без /minsk (индексировались недолго, до переезда на
@@ -173,7 +207,8 @@ function AdminChunkFallback() {
 
 export default function App() {
   usePreventPageZoom();
-  useMetrikaSpaHits();
+  useSpaPageviewHits();
+  useVkPageGoals();
   return (
     <Routes>
       {/* Публичная часть — без AppLayout и без пароля, для клиентов и рекламы.
@@ -186,6 +221,21 @@ export default function App() {
           догрузку чанка. */}
       <Route path="/" element={<Navigate to="/minsk" replace />} />
       <Route path="/minsk" element={<MinskHub />} />
+      {/* Аналитика рынка (ANALYTICSPLAN.md) — бенчмарк-страницы с постоянным
+          URL, месяц меняется в тексте, не в адресе. Регистрируются раньше
+          "/minsk/:slug" (лендинг объекта) ниже, чтобы не конфликтовать. */}
+      <Route path="/minsk/analytics" element={<MarketAnalyticsHub />} />
+      <Route path="/minsk/analytics/metodika" element={<AnalyticsMethodologyPage />} />
+      <Route path="/minsk/analytics/ofisy/arenda" element={<OfficeAnalyticsPage deal="rent" />} />
+      <Route path="/minsk/analytics/ofisy/prodazha" element={<OfficeAnalyticsPage deal="sale" />} />
+      <Route path="/minsk/analytics/torgovye/arenda" element={<RetailAnalyticsPage deal="rent" />} />
+      <Route path="/minsk/analytics/torgovye/prodazha" element={<RetailAnalyticsPage deal="sale" />} />
+      <Route path="/minsk/analytics/sklady/arenda" element={<WarehouseAnalyticsPage deal="rent" />} />
+      <Route path="/minsk/analytics/sklady/prodazha" element={<WarehouseAnalyticsPage deal="sale" />} />
+      <Route path="/minsk/analytics/mashinomesta/arenda" element={<ParkingAnalyticsPage deal="rent" />} />
+      <Route path="/minsk/analytics/mashinomesta/prodazha" element={<ParkingAnalyticsPage deal="sale" />} />
+      <Route path="/minsk/analytics/minsk-mir" element={<MinskMirAnalyticsPage />} />
+      <Route path="/minsk/analytics/rajony" element={<DistrictsAnalyticsPage />} />
       <Route path="/minsk/minsk-mir" element={<DistrictGuidePage />} />
       <Route path="/minsk/minsk-mir/:topic" element={<MinskMirTopicPage />} />
       <Route path="/minsk/bcminsk" element={<BusinessCentersMinskPage />} />
@@ -194,6 +244,8 @@ export default function App() {
           Регистрируются ДО ":slug", чтобы не конфликтовать с ним. */}
       {/* Ось «строящиеся» (аудит поиска 2026-09-07) — тот же компонент с пропом. */}
       <Route path="/minsk/bcminsk/stroyashchiesya" element={<BusinessCentersMinskPage underConstruction />} />
+      {/* Рейтинг «Лучшие бизнес-центры Минска» (аудит 2026-09-07) — отдельный компонент, не хаб-фильтр. */}
+      <Route path="/minsk/bcminsk/reyting" element={<BusinessCentersRankingPage />} />
       <Route path="/minsk/bcminsk/class/:classSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/raion/:districtSlug" element={<BusinessCentersMinskPage />} />
       {/* Пересечение класс×район (владелец, 2026-09-06: "структура урлов...
@@ -209,6 +261,8 @@ export default function App() {
       <Route path="/minsk/bcminsk/microrayon/:microdistrictSlug" element={<BusinessCentersMinskPage />} />
       {/* Хаб по станции метро (аудит 2026-09-07) — независимая ось, см. METRO_STATION_SLUGS. */}
       <Route path="/minsk/bcminsk/metro/:metroSlug" element={<BusinessCentersMinskPage />} />
+      {/* Хаб по улице (аудит 2026-09-07) — независимая ось, см. STREET_SLUGS. */}
+      <Route path="/minsk/bcminsk/ulitsa/:streetSlug" element={<BusinessCentersMinskPage />} />
       <Route path="/minsk/bcminsk/:slug" element={<BusinessCenterDetailPage />} />
       <Route path="/plan/:token" element={<PublicBuildingPlan />} />
       <Route path="/tz/:token" element={<BriefPublicPage />} />
@@ -260,6 +314,7 @@ export default function App() {
         />
         <Route path="leads" element={<RequirePage page="leads"><Leads /></RequirePage>} />
         <Route path="landings" element={<RequirePage page="landings"><Landings /></RequirePage>} />
+        <Route path="site-metrics" element={<RequirePage page="siteMetrics"><SiteMetrics /></RequirePage>} />
         <Route
           path="market-offers"
           element={

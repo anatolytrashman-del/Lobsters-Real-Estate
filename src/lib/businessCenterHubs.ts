@@ -57,6 +57,28 @@ export function districtPrepositional(district: string): string {
   return DISTRICT_PREPOSITIONAL[district] ?? district;
 }
 
+// Дательный падеж района ("по Московскому району", не "по Московский
+// району") — нужен для сравнения ставок со средней по району
+// (ANALYTICSPLAN.md §4.2, BusinessCenterDetailPage.tsx). Тот же принцип
+// явной карты на конечное известное множество, что и у предложного падежа
+// выше — падежные окончания у этих прилагательных не совпадают
+// ("Московском" vs "Московскому"), нельзя вывести одно из другого регуляркой.
+const DISTRICT_DATIVE: Record<string, string> = {
+  Центральный: 'Центральному',
+  Октябрьский: 'Октябрьскому',
+  Советский: 'Советскому',
+  Фрунзенский: 'Фрунзенскому',
+  Заводской: 'Заводскому',
+  Первомайский: 'Первомайскому',
+  Партизанский: 'Партизанскому',
+  Московский: 'Московскому',
+  Ленинский: 'Ленинскому',
+};
+
+export function districtDative(district: string): string {
+  return DISTRICT_DATIVE[district] ?? district;
+}
+
 export function districtHubUrl(district: string): string | null {
   const slug = DISTRICT_SLUGS[district];
   return slug ? `/minsk/bcminsk/raion/${slug}` : null;
@@ -184,4 +206,49 @@ export function metroHubUrl(station: string): string | null {
 export function metroHubDistance(center: Pick<BusinessCenter, 'nearestMetroStations'>, station: string): number | null {
   const match = center.nearestMetroStations.find((s) => s.name === station && s.distanceMeters <= METRO_HUB_MAX_DISTANCE_M);
   return match ? match.distanceMeters : null;
+}
+
+// Хабы по улицам (аудит поиска 2026-09-07, «новые срезы: по улицам/
+// локациям») — /minsk/bcminsk/ulitsa/:streetSlug. Владелец спросил
+// напрямую, не выйдет ли «1 БЦ = 1 улица» — проверено по реальным адресам
+// перед стартом: из 92 улиц с БЦ в каталоге у 23 реально 2+ здания (74 БЦ
+// из 143), остальные 69 — по одной улице, для них хаб не заводится (была
+// бы дублем карточки самого здания). Слаги — транслитерация вручную,
+// конечный список, тот же принцип, что у METRO_STATION_SLUGS/
+// MICRODISTRICT_SLUGS. Улица вычисляется на лету функцией
+// `streetOfAddress` (businessCenterDisplay.ts), не хранится отдельным
+// полем — этот список просто фиксирует, у каких названий есть готовый slug.
+export const STREET_SLUGS: Record<string, string> = {
+  'пр-т Победителей': 'pr-t-pobediteley',
+  'пр-т Независимости': 'pr-t-nezavisimosti',
+  'пр-т Дзержинского': 'pr-t-dzerzhinskogo',
+  'ул. Притыцкого': 'ul-pritytskogo',
+  'ул. Сурганова': 'ul-surganova',
+  'ул. Платонова': 'ul-platonova',
+  'ул. Клары Цеткин': 'ul-klary-tsetkin',
+  'пер. Козлова': 'per-kozlova',
+  'пр-т Партизанский': 'pr-t-partizanskiy',
+  'Логойский тракт': 'logoyskiy-trakt',
+  'ул. Хоружей': 'ul-horuzhey',
+  'ул. Филимонова': 'ul-filimonova',
+  'ул. Немига': 'ul-nemiga',
+  'ул. Мележа': 'ul-melezha',
+  'ул. Толбухина': 'ul-tolbuhina',
+  'ул. Железнодорожная': 'ul-zheleznodorozhnaya',
+  'ул. Интернациональная': 'ul-internatsionalnaya',
+  'ул. Лобанка': 'ul-lobanka',
+  'ул. Ольшевского': 'ul-olshevskogo',
+  'ул. Свердлова': 'ul-sverdlova',
+  'ул. Скрыганова': 'ul-skryganova',
+  'ул. Тимирязева': 'ul-timiryazeva',
+  'ул. Скорины': 'ul-skoriny',
+};
+
+export const STREET_SLUG_TO_NAME: Record<string, string> = Object.fromEntries(
+  Object.entries(STREET_SLUGS).map(([name, slug]) => [slug, name]),
+);
+
+export function streetHubUrl(street: string): string | null {
+  const slug = STREET_SLUGS[street];
+  return slug ? `/minsk/bcminsk/ulitsa/${slug}` : null;
 }

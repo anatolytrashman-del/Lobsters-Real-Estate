@@ -1,4 +1,4 @@
-import { Clock, ExternalLink, Globe } from 'lucide-react';
+import { BadgeCheck, Clock, ExternalLink, Globe } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
@@ -34,17 +34,21 @@ const MINSK_MIR_TOPIC_ADMIN_NOTES: Record<MinskMirTopicSlug, string> = {
 // ("Требует проработки") — для записей без url вообще. 'in-progress'
 // ("В работе", владелец 2026-09-04) — для уже опубликованных страниц
 // (url есть, карточка кликается), которые ещё дорабатываются — например,
-// "Бизнес-центры Минска" ждут фото от владельца.
+// "Бизнес-центры Минска" ждут фото от владельца. 'done' ("Готова",
+// владелец 2026-09-10) — явная зелёная отметка "полностью готова", не
+// просто отсутствие статуса (без status карточка выглядит нейтрально, не
+// как явное подтверждение готовности).
 interface LandingEntry {
   title: string;
   description: string;
   url?: string;
-  status?: 'needs-work' | 'in-progress';
+  status?: 'needs-work' | 'in-progress' | 'done';
 }
 
 const LANDING_STATUS_LABEL: Record<NonNullable<LandingEntry['status']>, string> = {
   'needs-work': 'Требует проработки',
   'in-progress': 'В работе',
+  done: 'Готова',
 };
 
 const LANDINGS: LandingEntry[] = [
@@ -62,6 +66,7 @@ const LANDINGS: LandingEntry[] = [
     title: 'Страница про Минск-Мир',
     description: 'Гид и аналитика по офисам и коммерческим помещениям в районе Минск Мир — контентная SEO-страница.',
     url: 'https://redevelopment.pro/minsk/minsk-mir',
+    status: 'done',
   },
   {
     title: 'Статья: Бизнес-апартаменты',
@@ -93,6 +98,71 @@ const LANDINGS: LandingEntry[] = [
     url: 'https://redevelopment.pro/minsk/bcminsk/metro/molodezhnaya',
     status: 'in-progress',
   },
+  {
+    title: 'Хаб «Бизнес-центры по улице»',
+    description:
+      'Пример: /minsk/bcminsk/ulitsa/pr-t-pobediteley — 8 БЦ на проспекте Победителей, самая насыщенная улица каталога. Ещё 22 такие страницы (только улицы с 2+ БЦ — на 69 улицах с одним БЦ хаб не заводился, был бы дублем карточки здания). Доработать: проверить формулировки, при желании — свои тексты под самые крупные улицы (Победителей/Независимости/Дзержинского).',
+    url: 'https://redevelopment.pro/minsk/bcminsk/ulitsa/pr-t-pobediteley',
+    status: 'in-progress',
+  },
+  // Раздел «Аналитика рынка» (ANALYTICSPLAN.md, спринты 1-3) — все
+  // страницы 'in-progress': методика/охват сегментов ещё дополняются,
+  // первичка/ГАБ/квартальный обзор из плана не начаты (нет источника
+  // данных на первичку/ГАБ, обзору нужен второй месячный снимок).
+  {
+    title: 'Хаб «Аналитика рынка»',
+    description:
+      '/minsk/analytics — сводка по всем живым сегментам (офисы в БЦ, торговые помещения, склады, машиноместа), ссылки на район и на сравнение районов. Доработать: первичка/ГАБ пока без данных (нет источника), квартальный обзор ждёт второй месячный снимок.',
+    url: 'https://redevelopment.pro/minsk/analytics',
+    status: 'in-progress',
+  },
+  {
+    title: 'Методика аналитики рынка',
+    description: '/minsk/analytics/metodika — источники, дедупликация, пороги достаточности выборки, обновление раз в месяц.',
+    url: 'https://redevelopment.pro/minsk/analytics/metodika',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: офисы в БЦ',
+    description:
+      'Ставки аренды и цены продажи по классам A/B+/B/C и районам, сравнение с «Твоей столицей» и Colliers. /minsk/analytics/ofisy/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/ofisy/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: торговые помещения',
+    description:
+      'Ставки аренды и цены продажи по районам и типу здания, city-wide (Kufar + Realt, с дедупликацией). /minsk/analytics/torgovye/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/torgovye/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: склады',
+    description:
+      'Ставки аренды и цены продажи складов по районам, city-wide (Kufar + Realt). Без разбивки по типу здания — у складов оно почти всегда не заполнено источниками. /minsk/analytics/sklady/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/sklady/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: машиноместа и паркинги',
+    description:
+      'Цена за объект целиком (не за м²) по районам и типу парковки — только Kufar (у Realt нет поля, отличающего машиноместо от гаража-бокса). /minsk/analytics/mashinomesta/arenda и /prodazha.',
+    url: 'https://redevelopment.pro/minsk/analytics/mashinomesta/arenda',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: Минск Мир',
+    description: 'Первичный и вторичный рынок конкретно в Минск Мире — /minsk/analytics/minsk-mir.',
+    url: 'https://redevelopment.pro/minsk/analytics/minsk-mir',
+    status: 'in-progress',
+  },
+  {
+    title: 'Аналитика: районы Минска',
+    description:
+      'Сравнение медианной ставки аренды по административным районам сразу по трём сегментам (офисы в БЦ / торговля / склады) — /minsk/analytics/rajony. Машиноместа не в этой таблице — там другая единица цены (за объект, не за м²).',
+    url: 'https://redevelopment.pro/minsk/analytics/rajony',
+    status: 'in-progress',
+  },
 ];
 
 export function Landings() {
@@ -112,12 +182,18 @@ export function Landings() {
                 ) : (
                   <span className="text-xs text-ink-faint">Страницы ещё нет</span>
                 )}
-                {l.status && (
-                  <span className="flex shrink-0 items-center gap-1 rounded-full border border-warning/30 bg-warning-bg px-2 py-0.5 text-[11px] font-semibold text-warning">
-                    <Clock className="h-3 w-3 shrink-0" />
-                    {LANDING_STATUS_LABEL[l.status]}
-                  </span>
-                )}
+                {l.status &&
+                  (l.status === 'done' ? (
+                    <span className="flex shrink-0 items-center gap-1 rounded-full border border-success/30 bg-success-bg px-2 py-0.5 text-[11px] font-semibold text-success">
+                      <BadgeCheck className="h-3 w-3 shrink-0" />
+                      {LANDING_STATUS_LABEL[l.status]}
+                    </span>
+                  ) : (
+                    <span className="flex shrink-0 items-center gap-1 rounded-full border border-warning/30 bg-warning-bg px-2 py-0.5 text-[11px] font-semibold text-warning">
+                      <Clock className="h-3 w-3 shrink-0" />
+                      {LANDING_STATUS_LABEL[l.status]}
+                    </span>
+                  ))}
               </div>
               <div className="flex items-start justify-between gap-2">
                 <span className="font-semibold text-ink">{l.title}</span>
