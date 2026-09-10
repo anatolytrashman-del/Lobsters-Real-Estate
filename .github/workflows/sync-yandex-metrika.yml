@@ -6,6 +6,11 @@ on:
     # sync-воркфлоу этого репозитория (см. соседние файлы).
     - cron: '0 4 * * *'
   workflow_dispatch:
+    inputs:
+      debug_filter:
+        description: 'Диагностика: сравнить визиты с фильтром /admin и без (ничего не пишет в базу)'
+        type: boolean
+        default: false
 
 jobs:
   sync:
@@ -17,7 +22,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: node scripts/sync-yandex-metrika.mjs
+      - run: node scripts/sync-yandex-metrika.mjs ${{ inputs.debug_filter && '--debug-filter --json' || '' }}
         env:
           # OAuth-токен Яндекса НЕ передаётся сюда секретом — скрипт читает
           # его из таблицы external_api_tokens тем же сервисным ключом.
