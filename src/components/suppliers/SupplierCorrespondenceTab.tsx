@@ -25,6 +25,7 @@ import type { MaterialLedger } from '../../data/materialLedgers';
 import { MaterialLedgerModal } from './MaterialLedgerModal';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import { getCurrentProfile } from '../../lib/accessProfile';
+import { logActivity } from '../../lib/activityLogApi';
 import { DocumentPreviewModal, isPreviewable, type PreviewFile } from '../documents/DocumentPreviewModal';
 import { currencies, type Currency } from '../../data/transactions';
 import type { PurchaseItem } from '../../data/purchases';
@@ -613,6 +614,14 @@ export function EmailThread({
       }
       await setSupplierOfferEmailExtractionStatus(e.id, e.extraction, 'confirmed');
       onEmailUpdated({ ...e, extraction: { ...e.extraction, status: 'confirmed' } });
+      // Владелец, 2026-09-10: "Метрики" считали только submitOffer
+      // (правка/создание через форму карточки) — самая частая реальная
+      // работа Альмиры, подтверждение автораспознанного счёта прямо в
+      // переписке, не логировалась вовсе (applyExtractionToOffer/
+      // applyExtractionToOrder зовут updateSupplierOffer/updateSupplierOrder
+      // напрямую, минуя submitOffer) — со стороны выглядело так, будто она
+      // ничего не делает, хотя КП разбирались одно за другим.
+      logActivity('supplier_invoice_confirmed');
       closePreview();
     } catch (err) {
       setExtractionError(errorMessage(err, 'Не удалось применить распознанные данные'));
