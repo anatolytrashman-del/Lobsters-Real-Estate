@@ -77,7 +77,14 @@ export interface DistrictPlaceCategory {
 // а на карте района (DistrictMap.tsx) пины вне границ района сбивают с
 // толку. Потребители — DistrictMap.tsx и DistrictQuarterMap.tsx, оба
 // фильтруют DISTRICT_PLACE_CATEGORIES через этот набор перед отображением.
-export const MAP_HIDDEN_CATEGORY_KEYS = new Set(['auto']);
+// "parking-covered"/"parking-underground" добавлены сюда 2026-09-10 —
+// владелец: "убирай паркинги с карты района, и обычные, и крытые" (после
+// находки, что заранее пойманный пин "Континенталь" был ещё не построен
+// и стоял по выдуманной координате, см. журнал CLAUDE.md) — решил не
+// показывать паркинги на карте района вовсе, ни один тип. Сами категории/
+// точки в данных не удалены (текстовая таблица parkingAddresses на
+// DistrictGuidePage.tsx — отдельный источник, её это не касается).
+export const MAP_HIDDEN_CATEGORY_KEYS = new Set(['auto', 'parking-covered', 'parking-underground']);
 
 export const DISTRICT_PLACE_CATEGORIES: DistrictPlaceCategory[] = [
   {

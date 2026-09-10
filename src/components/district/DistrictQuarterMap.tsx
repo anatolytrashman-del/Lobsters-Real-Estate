@@ -142,19 +142,21 @@ function pluralOrganizations(n: number): string {
 const VISIBLE_QUARTERS = DISTRICT_QUARTERS;
 
 // Паркинги — не бизнес, конкурировать за нишу им не с кем (владелец,
-// 2026-09-10: "удали паркинги из конкуренции"). Скрыто только здесь, не в
-// MAP_HIDDEN_CATEGORY_KEYS — на обычной карте района (DistrictMap.tsx)
-// паркинги остаются, там это просто справочная точка на карте, не участник
-// конкурентного анализа.
-const QUARTER_MAP_EXTRA_HIDDEN_KEYS = new Set(['parking-covered', 'parking-underground']);
-
+// 2026-09-10: "удали паркинги из конкуренции"). Раньше это скрывалось
+// отдельным набором ключей именно здесь, потому что на обычной карте
+// района (DistrictMap.tsx) паркинги оставались — но владелец тем же днём
+// чуть позже попросил убрать паркинги и оттуда тоже ("убирай паркинги с
+// карты района, и обычные, и крытые"), так что теперь оба ключа уже есть
+// в общем MAP_HIDDEN_CATEGORY_KEYS и отдельный набор здесь избыточен.
+//
 // Опции селектора категории — живая псевдо-категория первой (она же
 // дефолт), дальше старые фрагментарные категории застройщика как раньше.
 const CATEGORY_OPTIONS = [
   { key: LIVE_ALL_KEY, label: LIVE_ALL_LABEL },
-  ...DISTRICT_PLACE_CATEGORIES.filter(
-    (c) => !MAP_HIDDEN_CATEGORY_KEYS.has(c.key) && !QUARTER_MAP_EXTRA_HIDDEN_KEYS.has(c.key),
-  ).map((c) => ({ key: c.key, label: c.label })),
+  ...DISTRICT_PLACE_CATEGORIES.filter((c) => !MAP_HIDDEN_CATEGORY_KEYS.has(c.key)).map((c) => ({
+    key: c.key,
+    label: c.label,
+  })),
 ];
 
 // Опции селектора квартала — "Весь район" (дефолт, прежнее поведение карты

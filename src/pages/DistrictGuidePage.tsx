@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -657,27 +657,6 @@ const densityData: { icon: LucideIcon; label: string; count: number }[] = [
 // общий со страницей верификации /admin/market-offers.
 const MARKET_PROPERTY_TYPE_ORDER = MARKET_PROPERTY_TYPES;
 
-// Плоская строка "тип помещения × диапазон площади" — владелец, 2026-09-09:
-// "Сделай таблицу вторичного рынка по дизайну и оформлению 1 в 1 как и
-// первичный рынок" (см. buildPrimaryMarketPivot в data/primaryMarketOffers.ts).
-// Раньше это была сводная матрица (строка — тип помещения, столбец — диапазон
-// площади, в ячейке — count+медиана друг под другом) — по внешнему виду
-// заметно отличалась от таблицы первичного рынка (там — обычный плоский
-// список категорий с колонками Предложений/Площадь/Мин/Средняя/Макс). Теперь
-// строка — это одна КОНКРЕТНАЯ комбинация (тип помещения, диапазон площади),
-// а колонки повторяют первичный рынок буквально: Предложений/Площадь/Мин/
-// Медиана/Макс (столбец назван "Медиана", не "Средняя" — это действительно
-// медиана, не среднее, ради устойчивости к выбросам ценам).
-interface MarketPivotRow {
-  key: string;
-  propertyType: string;
-  areaLabel: string;
-  count: number;
-  priceMinUsd: number;
-  priceMedianUsd: number;
-  priceMaxUsd: number;
-}
-
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -698,53 +677,17 @@ function median(values: number[]): number {
 // верифицирует объявление на /admin/market-offers, оно на этой же
 // перезагрузке страницы появится в сводке — без отдельного шага "включить
 // в статистику".
-function buildMarketPivot(offers: MarketOffer[], dealType: 'sale' | 'rent', finishStatus: string): MarketPivotRow[] {
-  const byType = new Map<string, Map<string, number[]>>();
-
-  for (const offer of offers) {
-    if (!offer.reviewed || offer.rejected || offer.dealType !== dealType || offer.finishStatus !== finishStatus) continue;
-    if (!byType.has(offer.propertyType)) byType.set(offer.propertyType, new Map());
-    const byBucket = byType.get(offer.propertyType)!;
-    const bucket = areaBucket(netSize(offer));
-    if (!byBucket.has(bucket)) byBucket.set(bucket, []);
-    byBucket.get(bucket)!.push(netPricePerSqm(offer));
-  }
-
-  const rows: MarketPivotRow[] = [];
-  for (const propertyType of MARKET_PROPERTY_TYPE_ORDER) {
-    const byBucket = byType.get(propertyType);
-    if (!byBucket) continue;
-    for (const bucket of AREA_BUCKET_ORDER) {
-      const prices = byBucket.get(bucket);
-      if (!prices || prices.length === 0) continue;
-      rows.push({
-        key: `${propertyType}__${bucket}`,
-        propertyType,
-        areaLabel: bucket,
-        count: prices.length,
-        priceMinUsd: Math.round(Math.min(...prices)),
-        priceMedianUsd: Math.round(median(prices)),
-        priceMaxUsd: Math.round(Math.max(...prices)),
-      });
-    }
-  }
-  return rows;
-}
-
-// Владелец, 2026-09-10 (мобильные карточки вторичного рынка): "не нравится,
-// что по несколько строк на одинаковые категории. Бизнес-апартаменты —
-// одна строка, а внутри уже аналитика по площадям. Сделай по формату
-// первички" — та же идея, что и "По площади" в PrimaryMarketProModal
-// (см. этот же комментарий там), только не в отдельной Pro-модалке, а
-// прямо внутри карточки категории ("внутри", буквально). ТОЛЬКО для
-// мобильных карточек — desktop-таблица (buildMarketPivot выше) сознательно
-// не тронута: она была специально сведена к плоским строкам "тип ×
-// площадь" по прямому запросу владельца 2026-09-09 ("1 в 1 как первичка"),
-// и в этом заходе владелец жаловался только на вид мобильных карточек, не
-// на таблицу. Дублирует часть логики buildMarketPivot (группировка по
-// типу/площади, тот же median/netSize/netPricePerSqm) — сознательно не
-// рефакторил buildMarketPivot под общий код, чтобы не трогать проверенный
-// desktop-путь ради потребности только одной, отдельной мобильной вёрстки.
+//
+// Одна строка на тип помещения (агрегат по всем площадям), разбивка по
+// диапазону площади — подстроками внутри (`buckets`). Раньше (владелец,
+// 2026-09-09: "1 в 1 как первичка") это была отдельная плоская функция
+// (buildMarketPivot) — одна строка на каждую комбинацию тип×площадь, без
+// группировки — сначала применили только к мобильным карточкам
+// (владелец, 2026-09-10: "одна строка, а внутри уже аналитика по
+// площадям"), затем тем же днём владелец увидел, что desktop-таблица
+// осталась старой, принял её за баг с дублями ("объединяли же в одну") —
+// в итоге обе версии (мобильная и desktop) сведены на эту единую функцию,
+// плоская buildMarketPivot удалена как более не используемая.
 interface MarketAreaBucketStat {
   areaLabel: string;
   count: number;
@@ -2373,11 +2316,6 @@ export function DistrictGuidePage() {
                 Цена с отделкой и без — разные рынки, поэтому не смешиваем их в одной цифре.
               </p>
               {(() => {
-                const secondaryRows = buildMarketPivot(
-                  marketOffers,
-                  marketDealType === 'Продажа' ? 'sale' : 'rent',
-                  MARKET_FINISH_TO_DB[marketFinish],
-                );
                 const secondaryGroups = buildMarketPivotGrouped(
                   marketOffers,
                   marketDealType === 'Продажа' ? 'sale' : 'rent',
@@ -2394,8 +2332,8 @@ export function DistrictGuidePage() {
                         разбивка по площади — списком внутри той же карточки,
                         показывается только если площадей несколько (иначе
                         дублировала бы уже показанную сверху сводку). Desktop-
-                        таблица ниже не тронута, использует secondaryRows
-                        (плоские строки), как и раньше. */}
+                        таблица ниже использует те же secondaryGroups (сведена
+                        к тому же формату чуть позже в тот же день). */}
                     <div className="flex flex-col gap-3 sm:hidden">
                       {secondaryGroups.map((group) => (
                         <div key={group.key} className="flex flex-col gap-3 rounded-control border border-border bg-white p-4">
@@ -2448,11 +2386,24 @@ export function DistrictGuidePage() {
                       ))}
                     </div>
 
+                    {/* Владелец, 2026-09-10, чуть позже того же дня, увидев
+                        десктопную версию: "какого хера дубли строк? Объединяли
+                        же в одну, по 1 строчке на каждый тип" — путал с
+                        мобильными карточками (те уже свели в одну строку на
+                        тип чуть раньше в тот же день, см. коммент выше). Строки
+                        не были дублями (разные диапазоны площади — разные
+                        цифры), но по факту это никогда и не давало настоящего
+                        паритета с первичным рынком (buildPrimaryMarketPivot —
+                        одна строка на категорию, без разбивки по площади в
+                        самой таблице). Теперь и здесь — одна строка на тип
+                        (secondaryGroups), разбивка по площади — подстроками
+                        под ней, тем же принципом, что и в мобильных карточках
+                        (только при buckets.length > 1). */}
                     <div className="hidden overflow-x-auto sm:block">
                       <table className="w-full min-w-[640px] border-collapse text-sm">
                         <caption className="sr-only">
                           Вторичный рынок коммерческой недвижимости Минск Мира: количество предложений и цены за м² по
-                          типу помещения и диапазону площади (данные Kufar, Realt)
+                          типу помещения, с разбивкой по диапазону площади (данные Kufar, Realt)
                         </caption>
                         <thead>
                           <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
@@ -2471,21 +2422,48 @@ export function DistrictGuidePage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border">
-                          {secondaryRows.map((row) => (
-                            <tr key={row.key}>
-                              <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.propertyType}</th>
-                              <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
-                              <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.areaLabel}</td>
-                              <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
-                                {formatSecondaryPricePerM2(row.priceMinUsd, marketCurrency, exchangeRate)}
-                              </td>
-                              <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
-                                {formatSecondaryPricePerM2(row.priceMedianUsd, marketCurrency, exchangeRate)}
-                              </td>
-                              <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
-                                {formatSecondaryPricePerM2(row.priceMaxUsd, marketCurrency, exchangeRate)}
-                              </td>
-                            </tr>
+                          {secondaryGroups.map((group) => (
+                            <Fragment key={group.key}>
+                              <tr>
+                                <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">
+                                  {group.propertyType}
+                                </th>
+                                <td className="py-2.5 px-2 text-right tabular-nums text-ink">{group.count}</td>
+                                <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                                  {group.areaMin === group.areaMax ? `${group.areaMin}` : `${group.areaMin}–${group.areaMax}`} м²
+                                </td>
+                                <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                                  {formatSecondaryPricePerM2(group.priceMinUsd, marketCurrency, exchangeRate)}
+                                </td>
+                                <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
+                                  {formatSecondaryPricePerM2(group.priceMedianUsd, marketCurrency, exchangeRate)}
+                                </td>
+                                <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
+                                  {formatSecondaryPricePerM2(group.priceMaxUsd, marketCurrency, exchangeRate)}
+                                </td>
+                              </tr>
+                              {group.buckets.length > 1 &&
+                                group.buckets.map((bucket) => (
+                                  <tr key={bucket.areaLabel} className="bg-surface-muted/40 text-xs">
+                                    <th scope="row" className="whitespace-nowrap py-1.5 pr-3 pl-4 text-left font-normal text-ink-muted">
+                                      ↳ по площади
+                                    </th>
+                                    <td className="py-1.5 px-2 text-right tabular-nums text-ink-muted">{bucket.count}</td>
+                                    <td className="whitespace-nowrap py-1.5 px-2 text-right tabular-nums text-ink-muted">
+                                      {bucket.areaLabel}
+                                    </td>
+                                    <td className="py-1.5 px-2 text-right tabular-nums text-ink-muted">
+                                      {formatSecondaryPricePerM2(bucket.priceMinUsd, marketCurrency, exchangeRate)}
+                                    </td>
+                                    <td className="py-1.5 px-2 text-right tabular-nums font-semibold text-ink-muted">
+                                      {formatSecondaryPricePerM2(bucket.priceMedianUsd, marketCurrency, exchangeRate)}
+                                    </td>
+                                    <td className="py-1.5 pl-2 text-right tabular-nums text-ink-muted">
+                                      {formatSecondaryPricePerM2(bucket.priceMaxUsd, marketCurrency, exchangeRate)}
+                                    </td>
+                                  </tr>
+                                ))}
+                            </Fragment>
                           ))}
                         </tbody>
                       </table>
@@ -2997,11 +2975,6 @@ export function DistrictGuidePage() {
               ))}
             </div>
           </details>
-
-          <p className="text-xs text-ink-muted">
-            Источник — актуальный срез объявлений bir.by на продажу машиномест в Минск Мире, 2769 позиций (август
-            2026).
-          </p>
         </div>
 
         <div id="red-one" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
