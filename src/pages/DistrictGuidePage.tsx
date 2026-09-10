@@ -612,6 +612,27 @@ const furnitureTotal = 57;
 const educationTotal = 14;
 const petsTotal = 12;
 
+// Владелец: "они все одинаковые [4 новых блока], а предыдущие блоки у нас
+// в разном дизайне... старые шаблоны блоков отличные" — переиспользованы
+// существующие визуальные шаблоны этого же раздела (пилюли-разбивка, как
+// у "Общепита"/ПВЗ; крупная цифра, как у "Салонов красоты"; список
+// подкатегорий, как у "Медицины"; две колонки сравнения, как у "СТО"),
+// не изобретал новых. "Живая Вода"/"Живая вода" — две разные компании с
+// почти одинаковым названием (см. дубли-проверку при актуализации карты),
+// сведены в одну пилюлю по смыслу, не задваивая на вид неотличимые строки.
+const retailWaterBreakdown: { label: string; count: number }[] = [
+  { label: 'Живая вода', count: 5 },
+  { label: 'Питьевая вода', count: 2 },
+  { label: 'Чистая вода', count: 2 },
+];
+
+const educationCategories: { label: string; text: string }[] = [
+  { label: 'Языковые курсы:', text: 'English VIP, Сол Минск, Britannica, Smile, «Лаборатория английского языка»' },
+  { label: 'Детское развитие:', text: '«Бум Кидс», «Территория детства», Sreda' },
+  { label: 'Репетиторы и учебные центры:', text: '«Мир знаний», репетитор по математике, ИП Ташбаев В. А.' },
+  { label: 'Другое:', text: 'автошкола «Дорожная азбука», коррекционный центр ГимельТав, IT и робототехника КиберЛаб' },
+];
+
 // Владелец, 2026-09-10: "расположи от большего к меньшему" — сортировка
 // применяется к отображению, не переставляет сам список выше (порядок
 // объявления там смысловой, не по величине).
@@ -2725,9 +2746,16 @@ export function DistrictGuidePage() {
           <p className="text-sm leading-relaxed text-ink-muted">
             <span className="font-semibold text-ink">{retailTotal} точки</span>, значительная часть которых
             сконцентрирована в Avia Mall, где представлены международные сети одежды и аксессуаров. Отдельно
-            выделяется необычно развитая ниша доставки питьевой воды — 9 точек от 4 разных брендов, что характерно
-            для нового района, где жители ещё не установили стационарные системы фильтрации.
+            выделяется необычно развитая ниша доставки питьевой воды — характерно для нового района, где жители ещё
+            не установили стационарные системы фильтрации.
           </p>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {retailWaterBreakdown.map(({ label, count }) => (
+              <span key={label} className="rounded-full bg-surface-muted px-2.5 py-1 text-xs font-medium text-ink">
+                {label} — {count}
+              </span>
+            ))}
+          </div>
         </div>
 
         <div className="flex flex-col gap-3 px-6 py-6">
@@ -2735,11 +2763,15 @@ export function DistrictGuidePage() {
             <Sofa className="h-5 w-5 shrink-0 text-ink" />
             <h3 className="text-base font-bold text-ink">Мебель и товары для дома</h3>
           </div>
-          <p className="text-sm leading-relaxed text-ink-muted">
-            <span className="font-semibold text-ink">{furnitureTotal} точек</span>, формирующих типичный для
-            новостройки кластер — от напольных покрытий и сантехники до кухонь на заказ и декора. Помимо продажи
-            товаров, широко представлены услуги по ремонту и отделке. На рынке есть сетевой игрок — «Кухни Черри» с
-            тремя точками.
+          <div className="flex items-end gap-3">
+            <span className="text-5xl font-black leading-none text-primary">{furnitureTotal}</span>
+            <span className="pb-1 text-sm text-ink-muted">
+              точек — типичный для новостройки кластер, где жители массово делают ремонт
+            </span>
+          </div>
+          <p className="text-xs text-ink-muted">
+            От напольных покрытий и сантехники до кухонь на заказ и декора; помимо продажи товаров широко
+            представлены и услуги по ремонту и отделке. Сетевой игрок — «Кухни Черри», 3 точки.
           </p>
         </div>
 
@@ -2748,12 +2780,18 @@ export function DistrictGuidePage() {
             <GraduationCap className="h-5 w-5 shrink-0 text-ink" />
             <h3 className="text-base font-bold text-ink">Образование</h3>
           </div>
-          <p className="text-sm leading-relaxed text-ink-muted">
-            <span className="font-semibold text-ink">{educationTotal} точек</span>, в основном небольшие частные
-            курсы и центры дополнительного образования для детей и взрослых — курсы английского языка, детские
-            развивающие центры, IT-школы для детей. Рынок раздроблен, крупных сетевых игроков нет. Это не
-            общеобразовательные школы и детские сады — те посчитаны отдельно.
+          <p className="text-sm text-ink-muted">
+            <span className="font-semibold text-ink">{educationTotal} точек</span> дополнительного образования для
+            детей и взрослых — рынок раздроблен, крупных сетевых игроков нет. Это не общеобразовательные школы и
+            детские сады, те посчитаны отдельно.
           </p>
+          <ul className="flex flex-col gap-1.5 pt-1">
+            {educationCategories.map(({ label, text }) => (
+              <li key={label} className="text-sm text-ink-muted">
+                <span className="font-semibold text-ink">{label}</span> {text}
+              </li>
+            ))}
+          </ul>
         </div>
 
         <div className="flex flex-col gap-3 px-6 py-6">
@@ -2761,11 +2799,22 @@ export function DistrictGuidePage() {
             <PawPrint className="h-5 w-5 shrink-0 text-ink" />
             <h3 className="text-base font-bold text-ink">Зоотовары и ветеринария</h3>
           </div>
-          <p className="text-sm leading-relaxed text-ink-muted">
-            <span className="font-semibold text-ink">{petsTotal} точек</span>, где ключевой игрок в рознице — сеть
-            «Зообазар» с 4 магазинами. Заметную долю занимают груминг-салоны, тогда как ветеринарные услуги
-            представлены лишь одним кабинетом — ниша явно смещена в сторону ухода за животными, а не их лечения.
+          <p className="text-sm text-ink-muted">
+            <span className="font-semibold text-ink">{petsTotal} точек</span> — ниша явно смещена в сторону ухода за
+            животными, а не их лечения.
           </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1 rounded-control border border-dashed border-border p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Розница и уход</p>
+              <p className="text-sm text-ink-muted">
+                Сеть «Зообазар» — 4 магазина, плюс несколько груминг-салонов (стрижка и уход за животными).
+              </p>
+            </div>
+            <div className="flex flex-col gap-1 rounded-control border border-white bg-white/60 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary">Ветеринария</p>
+              <p className="text-sm text-ink-muted">Всего один кабинет — «Доктор Вет», лечение животных в дефиците.</p>
+            </div>
+          </div>
         </div>
           </div>
         </div>
