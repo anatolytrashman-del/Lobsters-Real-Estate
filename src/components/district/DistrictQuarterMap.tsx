@@ -366,12 +366,7 @@ export function DistrictQuarterMap() {
             : `точек категории «${categoryLabel}»`}
           .
         </p>
-      ) : categoryKey === LIVE_ALL_KEY ? (
-        <p className="text-xs text-ink-muted">
-          Учтено {matchedTotal} {pluralOrganizations(matchedTotal)} — исчерпывающий поквартирный сбор (вкладка "Дома"
-          на /admin/market-offers), собирается постепенно, не все дома района ещё загружены.
-        </p>
-      ) : (
+      ) : categoryKey === LIVE_ALL_KEY ? null : (
         <p className="text-xs text-ink-muted">
           Учтено {matchedTotal} из {categoryTotal} точек категории «{categoryLabel}» — справочник застройщика
           покрывает не все дома района (например, паркинги и часть коммерческих зданий вне жилых кварталов в него не
