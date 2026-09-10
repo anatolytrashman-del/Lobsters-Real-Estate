@@ -1915,6 +1915,26 @@ export function DistrictGuidePage() {
           </div>
         </div>
 
+        {/* Владелец, 2026-09-10: "Карту района переносим наверх, ставим
+            после блока Управляющая компания" — была в самом низу страницы,
+            рядом с FAQ/Red One. ref/districtMapInView (useInView — карта
+            грузится лениво, только когда реально доскроллили) не трогал,
+            просто переехал сам JSX-блок целиком. */}
+        <div
+          id="map"
+          ref={districtMapSectionRef}
+          className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)}
+          style={glassCardShadow}
+        >
+          {districtMapInView ? (
+            <Suspense fallback={<div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
+              <DistrictMap />
+            </Suspense>
+          ) : (
+            <div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
+          )}
+        </div>
+
         <div id="audience" className={cn('flex scroll-mt-6 flex-col gap-3 p-6 sm:flex-row sm:gap-6', glassCardClass)} style={glassCardShadow}>
           <div className="flex flex-1 flex-col gap-3">
             <div className="flex items-center gap-3">
@@ -2984,23 +3004,6 @@ export function DistrictGuidePage() {
           </p>
         </div>
 
-        <div
-          id="map"
-          ref={districtMapSectionRef}
-          className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)}
-          style={glassCardShadow}
-        >
-          {districtMapInView ? (
-            <Suspense fallback={<div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
-              <DistrictMap />
-            </Suspense>
-          ) : (
-            <div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
-          )}
-        </div>
-
-        <FaqAccordion id="faq" title="Частые вопросы о районе" items={districtFaq} />
-
         <div id="red-one" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           <h2 className="text-lg font-bold text-ink">Red One — готовый центр коммерческой активности</h2>
           <p className="text-sm text-ink-muted">
@@ -3016,6 +3019,10 @@ export function DistrictGuidePage() {
             Смотреть кабинеты в Red One →
           </Link>
         </div>
+
+        {/* Владелец, 2026-09-10: "Частые вопросы о районе — ставим под
+            Red One" — была сразу перед Red One. */}
+        <FaqAccordion id="faq" title="Частые вопросы о районе" items={districtFaq} />
 
         {/* Посадочные под подсказки Google (аудит 2026-09-07) — гид остаётся
             хабом, каждая страница берёт свой срез: бизнес-центры, коворкинг,
