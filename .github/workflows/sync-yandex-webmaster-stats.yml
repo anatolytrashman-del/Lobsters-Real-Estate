@@ -1,0 +1,23 @@
+name: Sync Yandex Webmaster stats
+
+on:
+  schedule:
+    # Раз в сутки — у Вебмастера данные и так обновляются с лагом в 1-3 дня,
+    # чаще опрашивать смысла нет. Время сдвинуто от других суточных/часовых
+    # кронов, чтобы не запускаться одновременно.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/sync-yandex-webmaster-stats.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
