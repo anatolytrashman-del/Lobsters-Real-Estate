@@ -141,11 +141,20 @@ function pluralOrganizations(n: number): string {
 // проверенные" (был здесь раньше, см. историю) больше не нужен.
 const VISIBLE_QUARTERS = DISTRICT_QUARTERS;
 
+// Паркинги — не бизнес, конкурировать за нишу им не с кем (владелец,
+// 2026-09-10: "удали паркинги из конкуренции"). Скрыто только здесь, не в
+// MAP_HIDDEN_CATEGORY_KEYS — на обычной карте района (DistrictMap.tsx)
+// паркинги остаются, там это просто справочная точка на карте, не участник
+// конкурентного анализа.
+const QUARTER_MAP_EXTRA_HIDDEN_KEYS = new Set(['parking-covered', 'parking-underground']);
+
 // Опции селектора категории — живая псевдо-категория первой (она же
 // дефолт), дальше старые фрагментарные категории застройщика как раньше.
 const CATEGORY_OPTIONS = [
   { key: LIVE_ALL_KEY, label: LIVE_ALL_LABEL },
-  ...DISTRICT_PLACE_CATEGORIES.filter((c) => !MAP_HIDDEN_CATEGORY_KEYS.has(c.key)).map((c) => ({ key: c.key, label: c.label })),
+  ...DISTRICT_PLACE_CATEGORIES.filter(
+    (c) => !MAP_HIDDEN_CATEGORY_KEYS.has(c.key) && !QUARTER_MAP_EXTRA_HIDDEN_KEYS.has(c.key),
+  ).map((c) => ({ key: c.key, label: c.label })),
 ];
 
 // Опции селектора квартала — "Весь район" (дефолт, прежнее поведение карты

@@ -612,6 +612,9 @@ const furnitureTotal = 57;
 const educationTotal = 14;
 const petsTotal = 12;
 
+// Владелец, 2026-09-10: "расположи от большего к меньшему" — сортировка
+// применяется к отображению, не переставляет сам список выше (порядок
+// объявления там смысловой, не по величине).
 const densityData: { icon: LucideIcon; label: string; count: number }[] = [
   { icon: Scissors, label: 'Салоны красоты', count: beautyTotal },
   { icon: Coffee, label: 'Общепит', count: foodServiceTotal },
@@ -626,7 +629,7 @@ const densityData: { icon: LucideIcon; label: string; count: number }[] = [
   { icon: Sofa, label: 'Мебель и товары для дома', count: furnitureTotal },
   { icon: GraduationCap, label: 'Образование', count: educationTotal },
   { icon: PawPrint, label: 'Зоотовары и ветеринария', count: petsTotal },
-];
+].sort((a, b) => b.count - a.count);
 
 // Строка не показывается, если для текущего типа сделки по ней нет ни
 // одного предложения. Сам порядок — MARKET_PROPERTY_TYPES (data/marketOffers.ts),
