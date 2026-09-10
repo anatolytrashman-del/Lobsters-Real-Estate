@@ -1591,8 +1591,24 @@ export function DistrictGuidePage() {
             высокого портретного aspect-[4/5] — портретное фото шириной
             ~320px и так даёт ~400px высоты, вместе с текстом это гораздо
             больше первого экрана. */}
+        {/* overflow-hidden — реальная причина бага "картинка вылезает за
+            пределы блока, следующий блок влезает" (владелец, скриншот
+            после первого захода): у HeroImageSlider есть drop-shadow-фильтр
+            с blur-радиусом до 32px (см. filter в HeroImageSlider.tsx) — на
+            высоком портретном фото (400px, старый p-6/gap-6 с запасом)
+            тень не выходила за пределы карточки, но на укороченном
+            мобильном фото (aspect-video, ~180px) вместе с урезанными
+            мобильными отступами (p-4/gap-4) буфера под тень стало не
+            хватать — она визуально "протекала" в соседнюю карточку
+            "Ключевые цифры", хотя геометрически (getBoundingClientRect)
+            элементы не пересекались. overflow-hidden обрезает именно
+            ПОКРАСКУ (тень/диагональный срез clip-path), не задевая
+            border-radius самой карточки — стандартное поведение. */}
         <div
-          className={cn('grid grid-cols-1 gap-4 p-4 sm:grid-cols-[3fr_2fr] sm:items-center sm:gap-6 sm:p-8', glassCardClass)}
+          className={cn(
+            'grid grid-cols-1 gap-4 overflow-hidden p-4 sm:grid-cols-[3fr_2fr] sm:items-center sm:gap-6 sm:p-8',
+            glassCardClass,
+          )}
           style={glassCardShadow}
         >
           <div className="flex flex-col gap-3">
