@@ -686,6 +686,87 @@ function buildMarketPivot(offers: MarketOffer[], dealType: 'sale' | 'rent', fini
   return rows;
 }
 
+// Владелец, 2026-09-10 (мобильные карточки вторичного рынка): "не нравится,
+// что по несколько строк на одинаковые категории. Бизнес-апартаменты —
+// одна строка, а внутри уже аналитика по площадям. Сделай по формату
+// первички" — та же идея, что и "По площади" в PrimaryMarketProModal
+// (см. этот же комментарий там), только не в отдельной Pro-модалке, а
+// прямо внутри карточки категории ("внутри", буквально). ТОЛЬКО для
+// мобильных карточек — desktop-таблица (buildMarketPivot выше) сознательно
+// не тронута: она была специально сведена к плоским строкам "тип ×
+// площадь" по прямому запросу владельца 2026-09-09 ("1 в 1 как первичка"),
+// и в этом заходе владелец жаловался только на вид мобильных карточек, не
+// на таблицу. Дублирует часть логики buildMarketPivot (группировка по
+// типу/площади, тот же median/netSize/netPricePerSqm) — сознательно не
+// рефакторил buildMarketPivot под общий код, чтобы не трогать проверенный
+// desktop-путь ради потребности только одной, отдельной мобильной вёрстки.
+interface MarketAreaBucketStat {
+  areaLabel: string;
+  count: number;
+  priceMinUsd: number;
+  priceMedianUsd: number;
+  priceMaxUsd: number;
+}
+
+interface MarketTypeGroup {
+  key: string;
+  propertyType: string;
+  count: number;
+  areaMin: number;
+  areaMax: number;
+  priceMinUsd: number;
+  priceMedianUsd: number;
+  priceMaxUsd: number;
+  buckets: MarketAreaBucketStat[];
+}
+
+function buildMarketPivotGrouped(offers: MarketOffer[], dealType: 'sale' | 'rent', finishStatus: string): MarketTypeGroup[] {
+  const byType = new Map<string, { sizes: number[]; prices: number[]; byBucket: Map<string, number[]> }>();
+
+  for (const offer of offers) {
+    if (!offer.reviewed || offer.rejected || offer.dealType !== dealType || offer.finishStatus !== finishStatus) continue;
+    if (!byType.has(offer.propertyType)) byType.set(offer.propertyType, { sizes: [], prices: [], byBucket: new Map() });
+    const group = byType.get(offer.propertyType)!;
+    const size = netSize(offer);
+    const price = netPricePerSqm(offer);
+    group.sizes.push(size);
+    group.prices.push(price);
+    const bucket = areaBucket(size);
+    if (!group.byBucket.has(bucket)) group.byBucket.set(bucket, []);
+    group.byBucket.get(bucket)!.push(price);
+  }
+
+  const groups: MarketTypeGroup[] = [];
+  for (const propertyType of MARKET_PROPERTY_TYPE_ORDER) {
+    const group = byType.get(propertyType);
+    if (!group || group.prices.length === 0) continue;
+    const buckets: MarketAreaBucketStat[] = [];
+    for (const bucket of AREA_BUCKET_ORDER) {
+      const prices = group.byBucket.get(bucket);
+      if (!prices || prices.length === 0) continue;
+      buckets.push({
+        areaLabel: bucket,
+        count: prices.length,
+        priceMinUsd: Math.round(Math.min(...prices)),
+        priceMedianUsd: Math.round(median(prices)),
+        priceMaxUsd: Math.round(Math.max(...prices)),
+      });
+    }
+    groups.push({
+      key: propertyType,
+      propertyType,
+      count: group.prices.length,
+      areaMin: Math.round(Math.min(...group.sizes) * 10) / 10,
+      areaMax: Math.round(Math.max(...group.sizes) * 10) / 10,
+      priceMinUsd: Math.round(Math.min(...group.prices)),
+      priceMedianUsd: Math.round(median(group.prices)),
+      priceMaxUsd: Math.round(Math.max(...group.prices)),
+      buckets,
+    });
+  }
+  return groups;
+}
+
 function countSmallFinishedOffices(offers: MarketOffer[], dealType: 'sale' | 'rent'): number {
   return offers.filter(
     (o) =>
@@ -2233,42 +2314,72 @@ export function DistrictGuidePage() {
                   marketDealType === 'Продажа' ? 'sale' : 'rent',
                   MARKET_FINISH_TO_DB[marketFinish],
                 );
+                const secondaryGroups = buildMarketPivotGrouped(
+                  marketOffers,
+                  marketDealType === 'Продажа' ? 'sale' : 'rent',
+                  MARKET_FINISH_TO_DB[marketFinish],
+                );
                 const perMonthSuffix = marketDealType === 'Аренда' ? '/мес' : '';
                 return (
                   <>
-                    {/* Мобильная карточная версия — тот же принцип, что и у
-                        "Первичного рынка" выше (см. комментарий там). */}
+                    {/* Мобильная карточная версия — владелец, 2026-09-10:
+                        "не нравится, что по несколько строк на одинаковые
+                        категории... одна строка, а внутри уже аналитика по
+                        площадям, сделай по формату первички" — одна карточка
+                        на тип помещения (агрегат по всем площадям сразу),
+                        разбивка по площади — списком внутри той же карточки,
+                        показывается только если площадей несколько (иначе
+                        дублировала бы уже показанную сверху сводку). Desktop-
+                        таблица ниже не тронута, использует secondaryRows
+                        (плоские строки), как и раньше. */}
                     <div className="flex flex-col gap-3 sm:hidden">
-                      {secondaryRows.map((row) => (
-                        <div key={row.key} className="flex flex-col gap-2 rounded-control border border-border bg-white p-4">
+                      {secondaryGroups.map((group) => (
+                        <div key={group.key} className="flex flex-col gap-3 rounded-control border border-border bg-white p-4">
                           <div className="flex items-baseline justify-between gap-2">
-                            <span className="font-bold text-ink">{row.propertyType}</span>
-                            <span className="shrink-0 text-xs text-ink-muted">{row.count} предл.</span>
+                            <span className="font-bold text-ink">{group.propertyType}</span>
+                            <span className="shrink-0 text-xs text-ink-muted">{group.count} предл.</span>
                           </div>
-                          <p className="text-xs text-ink-muted">{row.areaLabel}</p>
-                          <div className="grid grid-cols-3 gap-2 pt-1">
+                          <p className="text-xs text-ink-muted">
+                            {group.areaMin === group.areaMax ? `${group.areaMin}` : `${group.areaMin}–${group.areaMax}`} м²
+                          </p>
+                          <div className="grid grid-cols-3 gap-2">
                             <div className="flex flex-col">
                               <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Мин</span>
                               <span className="text-sm tabular-nums text-ink-muted">
-                                {formatSecondaryPricePerM2(row.priceMinUsd, marketCurrency, exchangeRate)}
+                                {formatSecondaryPricePerM2(group.priceMinUsd, marketCurrency, exchangeRate)}
                                 {perMonthSuffix}
                               </span>
                             </div>
                             <div className="flex flex-col">
                               <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Медиана</span>
                               <span className="text-sm font-bold tabular-nums text-ink">
-                                {formatSecondaryPricePerM2(row.priceMedianUsd, marketCurrency, exchangeRate)}
+                                {formatSecondaryPricePerM2(group.priceMedianUsd, marketCurrency, exchangeRate)}
                                 {perMonthSuffix}
                               </span>
                             </div>
                             <div className="flex flex-col">
                               <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Макс</span>
                               <span className="text-sm tabular-nums text-ink-muted">
-                                {formatSecondaryPricePerM2(row.priceMaxUsd, marketCurrency, exchangeRate)}
+                                {formatSecondaryPricePerM2(group.priceMaxUsd, marketCurrency, exchangeRate)}
                                 {perMonthSuffix}
                               </span>
                             </div>
                           </div>
+                          {group.buckets.length > 1 && (
+                            <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">По площади</p>
+                              {group.buckets.map((bucket) => (
+                                <div key={bucket.areaLabel} className="flex items-center justify-between gap-2 text-xs">
+                                  <span className="text-ink-muted">{bucket.areaLabel}</span>
+                                  <span className="text-ink-muted">{bucket.count} предл.</span>
+                                  <span className="font-semibold tabular-nums text-ink">
+                                    {formatSecondaryPricePerM2(bucket.priceMedianUsd, marketCurrency, exchangeRate)}
+                                    {perMonthSuffix}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -2520,11 +2631,18 @@ export function DistrictGuidePage() {
             </span>
           </div>
           <div className="flex flex-wrap gap-1.5 pt-1">
-            {pvzBreakdown.map(({ label, count }) => (
-              <span key={label} className="rounded-full bg-surface-muted px-2.5 py-1 text-xs font-medium text-ink">
-                {label} — {count}
-              </span>
-            ))}
+            {/* Владелец: "ПВЗ текстом оставим только те бренды, где 2 и
+                больше ПВЗ" — сетей с одной точкой в pvzBreakdown 12 из 17,
+                выводить их пилюлями было явно избыточно. pvzTotal (75)
+                считается по-прежнему по ВСЕМ 17 брендам, включая
+                единичные — фильтр только для текстового списка ниже. */}
+            {pvzBreakdown
+              .filter(({ count }) => count >= 2)
+              .map(({ label, count }) => (
+                <span key={label} className="rounded-full bg-surface-muted px-2.5 py-1 text-xs font-medium text-ink">
+                  {label} — {count}
+                </span>
+              ))}
           </div>
         </div>
 
