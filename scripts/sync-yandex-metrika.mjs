@@ -58,6 +58,13 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const PRINT_JSON = process.argv.includes('--json');
+// 2026-09-10 — живая A/B-проверка ADMIN_EXCLUDE_FILTER_SESSION: печатает
+// сумму визитов ЗА ОДИН И ТОТ ЖЕ период с фильтром и без — единственный
+// способ убедиться, реально ли Метрика исключает сессии с /admin, а не
+// молча игнорирует непонятный ей синтаксис EXISTS (что и произошло —
+// владелец поймал на живых цифрах: список страниц очистился, а общее
+// число визитов — нет). Ничего не пишет в Supabase, только печатает.
+const DEBUG_FILTER = process.argv.includes('--debug-filter');
 
 if (!SUPABASE_SERVICE_ROLE_KEY) {
   console.error('Не задана переменная окружения SUPABASE_SERVICE_ROLE_KEY');
@@ -264,8 +271,46 @@ async function syncGoalCompletions(token) {
   if (error) throw error;
 }
 
+async function debugAdminFilter(token) {
+  const params = {
+    ids: COUNTER_ID,
+    metrics: 'ym:s:visits',
+    dimensions: 'ym:s:date',
+    sort: 'ym:s:date',
+    limit: WINDOW_DAYS + 10,
+    ...windowDateParams(),
+  };
+
+  const withoutFilter = await metrikaFetch(token, '/stat/v1/data', params);
+  const withFilter = await metrikaFetch(token, '/stat/v1/data', {
+    ...params,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
+  });
+
+  const sumVisits = (body) => (body.data ?? []).reduce((acc, row) => acc + (row.metrics[0] ?? 0), 0);
+  const totalWithout = sumVisits(withoutFilter);
+  const totalWith = sumVisits(withFilter);
+
+  console.log(`Визиты БЕЗ фильтра (${WINDOW_DAYS} дней): ${totalWithout}`);
+  console.log(`Визиты С фильтром "${ADMIN_EXCLUDE_FILTER_SESSION}" (${WINDOW_DAYS} дней): ${totalWith}`);
+  console.log(
+    totalWith === totalWithout
+      ? 'ФИЛЬТР НЕ ДАЛ ЭФФЕКТА — либо синтаксис не поддержан API, либо реально нет ни одной сессии с /admin в окне.'
+      : `Фильтр реально исключил ${totalWithout - totalWith} визитов.`,
+  );
+  if (PRINT_JSON) {
+    console.log('without-filter raw:', JSON.stringify(withoutFilter, null, 2));
+    console.log('with-filter raw:', JSON.stringify(withFilter, null, 2));
+  }
+}
+
 async function main() {
   const token = await fetchYandexToken();
+
+  if (DEBUG_FILTER) {
+    await debugAdminFilter(token);
+    return;
+  }
 
   const sections = [
     ['визиты по дням', () => syncDailyStats(token)],
