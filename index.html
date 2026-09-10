@@ -104,10 +104,40 @@
       }
     </script>
     <!-- /Yandex.Metrika counter -->
+
+    <!-- Top.Mail.Ru (VK Реклама / VK Ретаргетинг) pixel — тот же принцип
+         отложенной вставки, что и у Метрики выше: window._tmr — просто
+         массив-очередь (не сетевой вызов), pageView кладётся в него сразу
+         (нужна точная метка времени), а сам code.js (сетевая нагрузка)
+         вставляется в DOM только после полной загрузки страницы + паузы —
+         не в критическом пути первой отрисовки. ?prerender=1 (build-time
+         снапшот, см. Метрику выше) не должен слать фантомные события. -->
+    <script type="text/javascript">
+      if (location.search.indexOf('prerender=1') === -1) {
+        var _tmr = window._tmr || (window._tmr = []);
+        _tmr.push({ id: '3793248', type: 'pageView', start: (new Date()).getTime() });
+        (function (d, w) {
+          function insertTag() {
+            if (d.getElementById('tmr-code')) { return; }
+            var ts = d.createElement('script');
+            ts.type = 'text/javascript';
+            ts.async = true;
+            ts.id = 'tmr-code';
+            ts.src = 'https://top-fwz1.mail.ru/js/code.js';
+            var s = d.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(ts, s);
+          }
+          if (d.readyState === 'complete') { setTimeout(insertTag, 2000); }
+          else { w.addEventListener('load', function () { setTimeout(insertTag, 2000); }); }
+        })(document, window);
+      }
+    </script>
+    <!-- /Top.Mail.Ru (VK) pixel -->
   </head>
   <body>
-    <!-- noscript-пиксель Метрики — сразу после открытия body, как рекомендует Яндекс -->
+    <!-- noscript-пиксели — сразу после открытия body, как рекомендует Яндекс/VK -->
     <noscript><div><img src="https://mc.yandex.ru/watch/111858495" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+    <noscript><div><img src="https://top-fwz1.mail.ru/counter?id=3793248;js=na" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
 
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

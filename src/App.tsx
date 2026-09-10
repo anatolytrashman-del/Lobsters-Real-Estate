@@ -23,6 +23,8 @@ import { AnalyticsMethodologyPage } from './pages/AnalyticsMethodologyPage';
 import { BriefPublicPage } from './pages/BriefPublicPage';
 import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
+import { metrikaHit } from './lib/metrika';
+import { vkPixelHit, vkPixelGoal, vkPageGoalForPath } from './lib/vkPixel';
 
 // Вся админка (CRM с десятком разделов — финмодели, сметы, документы и т.д.)
 // нужна только за PasswordGate на /admin/*, но раньше грузилась тем же JS-
@@ -137,14 +139,13 @@ function usePreventPageZoom() {
   }, []);
 }
 
-// Яндекс.Метрика (index.html) сама считает только ПЕРВУЮ загрузку страницы —
-// SPA-переходы react-router не порождают новых просмотров, внутренняя
-// навигация (в т.ч. конверсионный переход гид района → /minsk/one) была
-// невидима в статистике. Штатный для SPA способ от Яндекса — вручную слать
-// hit на каждую смену маршрута; первую загрузку пропускаем, её уже засчитал
-// init. window.ym может отсутствовать (пререндер с ?prerender=1, блокировщик
-// рекламы) — опциональный вызов, без падений.
-function useMetrikaSpaHits() {
+// Яндекс.Метрика и VK-пиксель (Top.Mail.Ru, index.html) сами считают
+// только ПЕРВУЮ загрузку страницы — SPA-переходы react-router не порождают
+// новых просмотров, внутренняя навигация (в т.ч. конверсионный переход гид
+// района → /minsk/one) была невидима в статистике обоих. Штатный для SPA
+// способ — вручную слать pageview на каждую смену маршрута; первую загрузку
+// пропускаем, её уже засчитал init обоих счётчиков.
+function useSpaPageviewHits() {
   const location = useLocation();
   const isFirstRender = useRef(true);
   useEffect(() => {
@@ -152,12 +153,22 @@ function useMetrikaSpaHits() {
       isFirstRender.current = false;
       return;
     }
-    (window as unknown as { ym?: (id: number, action: string, url: string) => void }).ym?.(
-      111858495,
-      'hit',
-      location.pathname + location.search,
-    );
+    metrikaHit(location.pathname + location.search);
+    vkPixelHit();
   }, [location.pathname, location.search]);
+}
+
+// VK-аудитории по конкретным страницам (см. lib/vkPixel.ts) — в отличие
+// от общего pageview выше, здесь ПЕРВЫЙ рендер не пропускается: обычный
+// init пикселя сам такое именованное событие не шлёт, только generic
+// "Посещение сайта", а нам нужно засчитать и прямой заход на страницу, не
+// только переход внутри SPA.
+function useVkPageGoals() {
+  const location = useLocation();
+  useEffect(() => {
+    const goal = vkPageGoalForPath(location.pathname);
+    if (goal) vkPixelGoal(goal);
+  }, [location.pathname]);
 }
 
 // Старые ссылки без /minsk (индексировались недолго, до переезда на
@@ -182,7 +193,8 @@ function AdminChunkFallback() {
 
 export default function App() {
   usePreventPageZoom();
-  useMetrikaSpaHits();
+  useSpaPageviewHits();
+  useVkPageGoals();
   return (
     <Routes>
       {/* Публичная часть — без AppLayout и без пароля, для клиентов и рекламы.
