@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -1336,10 +1336,15 @@ const districtFaq: FaqItem[] = [
 // У "Частые вопросы"/"Red One" своей иконки в заголовке секции нет (FAQ —
 // просто текст, Red One — CTA-блок без иконки), для меню всё равно нужна
 // своя — CircleHelp/ArrowRight не заняты нигде на странице.
+// Порядок записей ниже — ровно порядок блоков в JSX (сверен построчно, не
+// на глаз), несколько раз расходился после точечных переносов блоков
+// (карта района → под "Управляющая компания", FAQ → под Red One) —
+// держать в актуальном состоянии при любом следующем переносе секции.
 const SECTION_NAV: { id: string; label: string; icon: LucideIcon }[] = [
   { id: 'key-stats', label: 'Ключевые цифры', icon: Sparkles },
   { id: 'developer', label: 'Застройщик', icon: HardHat },
   { id: 'management-company', label: 'Управляющая компания', icon: ShieldCheck },
+  { id: 'map', label: 'Карта района', icon: MapPin },
   { id: 'audience', label: 'Целевая аудитория', icon: Users },
   { id: 'traffic', label: 'Генераторы трафика', icon: Landmark },
   { id: 'population-density', label: 'Плотность населения', icon: Building2 },
@@ -1353,9 +1358,8 @@ const SECTION_NAV: { id: string; label: string; icon: LucideIcon }[] = [
   { id: 'business-analytics', label: 'Аналитика по сферам бизнеса', icon: LayoutGrid },
   { id: 'transport', label: 'Транспорт', icon: TrainFront },
   { id: 'parking', label: 'Паркинги', icon: Car },
-  { id: 'map', label: 'Карта района', icon: MapPin },
-  { id: 'faq', label: 'Частые вопросы', icon: CircleHelp },
   { id: 'red-one', label: 'Red One', icon: ArrowRight },
+  { id: 'faq', label: 'Частые вопросы', icon: CircleHelp },
 ];
 
 // Гид для предпринимателей и собственников коммерческой недвижимости, не
@@ -1370,6 +1374,19 @@ export function DistrictGuidePage() {
   const [marketFinish, setMarketFinish] = useState<(typeof MARKET_FINISH_OPTIONS)[number]>('С отделкой');
   const [primaryMarketOffers, setPrimaryMarketOffers] = useState<PrimaryMarketOffer[] | null>(null);
   const [primaryMarketProKey, setPrimaryMarketProKey] = useState<string | null>(null);
+
+  // Владелец, 2026-09-10: "Если свежей статистики у нас нет, то не выводи
+  // этот блок на странице вообще" — блок "Продажи застройщика" (см. ниже)
+  // рендерится целиком, только когда есть хотя бы одна подтверждённая
+  // продажа; пока автопроверка (scripts/sync-bir-primary-market.mjs) ещё
+  // ни разу не отработала успешно до конца, блока на странице просто нет —
+  // ни заголовка, ни заглушки "отслеживание запущено". Вынесено в общий
+  // useMemo, чтобы одно и то же число управляло и самим блоком, и пунктом
+  // меню-оглавления на него (см. developerSalesNavVisible ниже).
+  const developerSalesTotalCount = useMemo(() => {
+    if (!primaryMarketOffers) return 0;
+    return buildPrimarySalesSummary(primaryMarketOffers).reduce((sum, r) => sum + r.soldCount, 0);
+  }, [primaryMarketOffers]);
 
   // Переключатель валют (первичный/вторичный рынок) — владелец: "справа от
   // заголовка просится переключатель EUR/USD/BYN/RUB, курсы с bnb.by".
@@ -1473,6 +1490,10 @@ export function DistrictGuidePage() {
   // только когда видна целиком, а длинные блоки (например "Первичный рынок")
   // никогда не помещаются в экран целиком.
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  // "Продажи застройщика" появляется в DOM позже (асинхронно, после того как
+  // developerSalesTotalCount станет > 0) — без этой зависимости обсёрвер,
+  // однажды настроенный на пустой DOM без этого блока, никогда бы его не
+  // подхватил (эффект с [] выполняется один раз при монтировании).
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -1488,7 +1509,15 @@ export function DistrictGuidePage() {
       if (el) observer.observe(el);
     }
     return () => observer.disconnect();
-  }, []);
+  }, [developerSalesTotalCount]);
+
+  // Пункт меню-оглавления "Продажи застройщика" виден, только пока виден и
+  // сам блок (developerSalesTotalCount > 0) — иначе ссылка вела бы на
+  // несуществующий якорь.
+  const visibleSectionNav = useMemo(
+    () => SECTION_NAV.filter((item) => item.id !== 'developer-sales' || developerSalesTotalCount > 0),
+    [developerSalesTotalCount],
+  );
 
   // Само меню-оглавление тоже скроллится (высокий список разделов не
   // влезает в max-h экрана) — владелец: активный пункт при длинном скролле
@@ -1539,7 +1568,7 @@ export function DistrictGuidePage() {
             <X className="h-4 w-4" />
           </button>
         </div>
-        {SECTION_NAV.map(({ id, label, icon: Icon }) => (
+        {visibleSectionNav.map(({ id, label, icon: Icon }) => (
           <a
             key={id}
             href={`#${id}`}
@@ -1631,7 +1660,7 @@ export function DistrictGuidePage() {
               style={navBox ? { ...glassCardShadow, left: navBox.left, width: navBox.width } : { visibility: 'hidden' }}
             >
               <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">На странице</p>
-              {SECTION_NAV.map(({ id, label, icon: Icon }) => (
+              {visibleSectionNav.map(({ id, label, icon: Icon }) => (
                 <a
                   key={id}
                   href={`#${id}`}
@@ -2300,81 +2329,77 @@ export function DistrictGuidePage() {
             в тексте — снятие с продажи не то же самое, что подтверждённая
             сделка (см. комментарий у PrimaryMarketOffer.soldAt в
             data/primaryMarketOffers.ts), формулировки на странице
-            намеренно осторожные ("предположительно"), не "продано". */}
-        <div id="developer-sales" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
-          <div className="flex min-w-0 items-center gap-3">
-            <PackageCheck className="h-5 w-5 shrink-0 text-ink" />
-            <h2 className="text-lg font-bold text-ink">Продажи застройщика</h2>
-          </div>
-          <p className="text-sm text-ink-muted">
-            Объекты первичного рынка (bir.by), которые пропали из продажи после того, как ранее там числились —
-            предположительно проданы или переданы в бронь. Не факт сделки: сумма ниже — по последней известной
-            цене объявления на момент снятия, не по цене реального договора.
-          </p>
+            намеренно осторожные ("предположительно"), не "продано".
 
-          {primaryMarketOffers === null && <p className="text-sm text-ink-muted">Загрузка…</p>}
+            Владелец, тем же днём: "Если свежей статистики у нас нет, то не
+            выводи этот блок на странице вообще" — весь блок (включая
+            заголовок и заглушку "отслеживание запущено", которая тут раньше
+            была) рендерится ТОЛЬКО когда developerSalesTotalCount > 0, то
+            есть когда есть хотя бы одна подтверждённая (HTTP-проверенной
+            пропажей объявления) продажа. Первый прогон синка упал на
+            транзитном 520 от Supabase, не успев пройти шаг проверки — до
+            следующего успешного прогона (плановый — 1-го числа, либо
+            повторный ручной запуск) блока на странице физически нет. */}
+        {primaryMarketOffers !== null && developerSalesTotalCount > 0 && (() => {
+          const salesRows = buildPrimarySalesSummary(primaryMarketOffers);
+          const since = earliestSoldAt(primaryMarketOffers);
+          const totalValueEur = salesRows.reduce((sum, r) => sum + r.soldValueEur, 0);
 
-          {primaryMarketOffers !== null && (() => {
-            const salesRows = buildPrimarySalesSummary(primaryMarketOffers);
-            const since = earliestSoldAt(primaryMarketOffers);
-            const totalCount = salesRows.reduce((sum, r) => sum + r.soldCount, 0);
-            const totalValueEur = salesRows.reduce((sum, r) => sum + r.soldValueEur, 0);
+          return (
+            <div id="developer-sales" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
+              <div className="flex min-w-0 items-center gap-3">
+                <PackageCheck className="h-5 w-5 shrink-0 text-ink" />
+                <h2 className="text-lg font-bold text-ink">Продажи застройщика</h2>
+              </div>
+              <p className="text-sm text-ink-muted">
+                Объекты первичного рынка (bir.by), которые пропали из продажи после того, как ранее там числились —
+                предположительно проданы или переданы в бронь. Не факт сделки: сумма ниже — по последней известной
+                цене объявления на момент снятия, не по цене реального договора.
+              </p>
 
-            if (totalCount === 0) {
-              return (
-                <p className="text-sm text-ink-muted">
-                  Автоматическое отслеживание запущено — пока ни один объект не зафиксирован как проданный/снятый
-                  с продажи. Данные обновляются раз в месяц (1-го числа).
-                </p>
-              );
-            }
+              {since && <p className="-mt-1 text-xs text-ink-muted">Зафиксировано с {formatSoldSinceDate(since)}</p>}
 
-            return (
-              <>
-                {since && <p className="-mt-1 text-xs text-ink-muted">Зафиксировано с {formatSoldSinceDate(since)}</p>}
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1 rounded-control border border-border p-3">
-                    <span className="text-xs text-ink-faint">Продано/снято с продажи</span>
-                    <span className="text-lg font-extrabold text-ink">{totalCount.toLocaleString('ru-RU')}</span>
-                  </div>
-                  <div className="flex flex-col gap-1 rounded-control border border-border p-3">
-                    <span className="text-xs text-ink-faint">Оценочная сумма</span>
-                    <span className="text-lg font-extrabold text-ink">
-                      {formatPricePerM2(totalValueEur, primaryMarketCurrency, exchangeRate)}
-                    </span>
-                  </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                  <span className="text-xs text-ink-faint">Продано/снято с продажи</span>
+                  <span className="text-lg font-extrabold text-ink">{developerSalesTotalCount.toLocaleString('ru-RU')}</span>
                 </div>
+                <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                  <span className="text-xs text-ink-faint">Оценочная сумма</span>
+                  <span className="text-lg font-extrabold text-ink">
+                    {formatPricePerM2(totalValueEur, primaryMarketCurrency, exchangeRate)}
+                  </span>
+                </div>
+              </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[420px] border-collapse text-sm">
-                    <caption className="sr-only">Продажи застройщика по категориям — количество и оценочная сумма</caption>
-                    <thead>
-                      <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                        <th scope="col" className="py-2 pr-3 text-left">Категория</th>
-                        <th scope="col" className="py-2 px-2 text-right font-semibold">Продано/снято</th>
-                        <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь, м²</th>
-                        <th scope="col" className="py-2 pl-2 text-right font-semibold">Сумма</th>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[420px] border-collapse text-sm">
+                  <caption className="sr-only">Продажи застройщика по категориям — количество и оценочная сумма</caption>
+                  <thead>
+                    <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                      <th scope="col" className="py-2 pr-3 text-left">Категория</th>
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">Продано/снято</th>
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь, м²</th>
+                      <th scope="col" className="py-2 pl-2 text-right font-semibold">Сумма</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {salesRows.map((row) => (
+                      <tr key={row.key}>
+                        <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
+                        <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.soldCount}</td>
+                        <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.soldAreaM2}</td>
+                        <td className="py-2.5 pl-2 text-right tabular-nums font-semibold text-ink">
+                          {formatPricePerM2(row.soldValueEur, primaryMarketCurrency, exchangeRate)}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {salesRows.map((row) => (
-                        <tr key={row.key}>
-                          <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
-                          <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.soldCount}</td>
-                          <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.soldAreaM2}</td>
-                          <td className="py-2.5 pl-2 text-right tabular-nums font-semibold text-ink">
-                            {formatPricePerM2(row.soldValueEur, primaryMarketCurrency, exchangeRate)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            );
-          })()}
-        </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         <div id="market" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           {/* Тот же паттерн, что у "Первичного рынка" выше — пилюля валюты
