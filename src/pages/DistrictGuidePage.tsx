@@ -494,21 +494,37 @@ const groceryBreakdown: { label: string; count: number }[] = [
 ];
 const groceryMax = Math.max(...groceryBreakdown.map((b) => b.count));
 
-// ПВЗ — webarchive, поиск "пункт выдачи заказов", 46 строк, но владелец
-// попросил учитывать только Ozon и Wildberries — в выдачу попали лишние
-// организации (Emall.by, Lamoda и другие агрегаторы/магазины с похожей
-// категорией, не относящиеся к запросу).
-// 2026-08-25: Ozon/Wildberries на Брилевская, 27/31 сначала убирались как
-// ошибочно попавшие за пределы района, но это была ошибка (см.
-// "ИСПРАВЛЕНА ошибка" в districtPlaces.ts) — восстановлены.
-// 2026-08-26: обновлено исчерпывающим поквартирным сбором (17 из 20
-// кварталов) — нашлось заметно больше обеих сетей (Ozon 11→22, Wildberries
-// 20→34), логично: ПВЗ маркетплейсов часто прячутся внутри других
-// магазинов/помещений без отдельной вывески, узкий поиск по категории их
-// пропускал чаще, чем поиск по каждому дому напрямую.
-const pvzOzonCount = 22;
-const pvzWildberriesCount = 34;
-const pvzTotal = pvzOzonCount + pvzWildberriesCount;
+// ПВЗ — изначально (2026-08-25/26) считали только Ozon/Wildberries: узкий
+// webarchive-поиск "пункт выдачи заказов" ловил и посторонние организации
+// с похожей категорией (Emall.by, Lamoda и т.п.), их тогда сознательно
+// исключили. 2026-09-10: владелец, глядя на карточку на живом проде,
+// передумал — "кроме вб и озона, там есть ПВЗ более мелких магазинов, я бы
+// указал все бренды". Пересчитано ПО ФАКТУ через исчерпывающий поквартирный
+// снепшот (district_business_points, raw_category ILIKE '%выдач%',
+// сгруппировано по title — реальные названия организаций, не выдумано):
+// 75 точек, 17 разных брендов. Wildberries (34) и Ozon (22) совпали один в
+// один с уже существовавшими pvzWildberriesCount/pvzOzonCount — эти два
+// числа были и остаются верны, просто раньше не показывали остальные 15.
+const pvzBreakdown: { label: string; count: number }[] = [
+  { label: 'Wildberries', count: 34 },
+  { label: 'Ozon', count: 22 },
+  { label: 'Emall.by', count: 3 },
+  { label: '21vek.by', count: 2 },
+  { label: '7745.by', count: 2 },
+  { label: 'Thm.by', count: 1 },
+  { label: 'Гиппо market', count: 1 },
+  { label: 'Фаберлик', count: 1 },
+  { label: 'Литл Паус', count: 1 },
+  { label: 'Ялина', count: 1 },
+  { label: 'Sadon.by', count: 1 },
+  { label: 'Lamoda', count: 1 },
+  { label: 'Sd-parts.by', count: 1 },
+  { label: 'Kubik-shop.by', count: 1 },
+  { label: 'Три хвоста', count: 1 },
+  { label: 'Ratov.by', count: 1 },
+  { label: 'Belklubnika', count: 1 },
+];
+const pvzTotal = pvzBreakdown.reduce((sum, b) => sum + b.count, 0);
 
 // Цветочные магазины — webarchive, поиск "цветы", 36 строк, все уникальны.
 // 2026-08-25: куст на Брилевская ул. сначала убирался целиком как
@@ -870,21 +886,39 @@ const parkingSegments: {
   },
 ];
 
-const parkingAddresses: { category: string; house: string; address: string | null }[] = [
-  { category: 'Крытые', house: 'Паркинг 1.6', address: 'ул. Германовская, 7' },
-  { category: 'Крытые', house: 'Паркинг 13.1', address: 'ул. Леонида Щемелёва, 11' },
-  { category: 'Крытые', house: 'Паркинг 21.1', address: null },
-  { category: 'Подземные', house: 'Паркинг 11.1', address: null },
-  { category: 'Подземные', house: 'Паркинг 11.2', address: null },
-  { category: 'Подземные', house: 'Паркинг 11.3', address: null },
-  { category: 'Подземные', house: 'Паркинг 11.4', address: null },
-  { category: 'Подземные', house: 'Паркинг 11.5', address: null },
-  { category: 'Подземные', house: 'Паркинг 16.38', address: 'ул. Жореса Алфёрова, 22' },
-  { category: 'Подземные', house: 'Паркинг 16.39', address: 'ул. Михаила Савицкого, 24' },
-  { category: 'Подземные', house: 'Паркинг 24.2.6', address: null },
-  { category: 'Подземные', house: 'Паркинг 24.2.7', address: null },
-  { category: 'Подземные', house: 'Паркинг 28.4', address: 'ул. Михаила Савицкого, 23' },
-  { category: 'Подземные', house: 'Паркинг 28.8', address: 'ул. Игоря Лученка, 16' },
+// 2026-09-10 — владелец: "мы знаем уже все адреса домов, они присвоены.
+// Предлагаю сделать сортировку по построенным и строящимся. Какие адреса
+// не знаешь, спросишь". Номер перед точкой в коде паркинга — номер
+// КВАРТАЛА застройщика (сверено по data/districtQuarters.ts,
+// QUARTER_HOUSE_INDEX/DISTRICT_QUARTERS.numbers — не импортирую этот файл
+// сюда: он тянет за собой полигоны и весь QUARTER_HOUSE_INDEX, специально
+// вынесенные в отдельный lazy-чанк карты по кварталам, см. комментарий там
+// же про PAGESPEED; посчитано один раз вручную и записано как built ниже):
+// 1→«Эмиратс» (подтверждено адресом Германовская,7), 16→«Родная страна»
+// (подтверждено адресами Жореса Алфёрова,22 и Михаила Савицкого,24),
+// 21→«Мировые танцы», 24→«Чемпионов», 28→«Happy Planet» (подтверждено
+// адресами Михаила Савицкого,23 и Игоря Лученка,16) — все пять кварталов
+// уже сданы (не входят в NOT_DELIVERED_QUARTER_IDS). Номера «11» и «13» не
+// присвоены НИ ОДНОМУ известному кварталу в справочнике (ни сданному, ни
+// строящемуся) — дом «Леонида Щемелёва, 11» (Паркинг 13.1) тоже не
+// нашёлся в QUARTER_HOUSE_INDEX напрямую. Не гадаю — built: null,
+// показывается как "уточняется", решение по этим 7 паркингам (13.1 и
+// 11.1–11.5) — за владельцем.
+const parkingAddresses: { category: string; house: string; address: string | null; built: boolean | null }[] = [
+  { category: 'Крытые', house: 'Паркинг 1.6', address: 'ул. Германовская, 7', built: true },
+  { category: 'Крытые', house: 'Паркинг 13.1', address: 'ул. Леонида Щемелёва, 11', built: null },
+  { category: 'Крытые', house: 'Паркинг 21.1', address: null, built: true },
+  { category: 'Подземные', house: 'Паркинг 11.1', address: null, built: null },
+  { category: 'Подземные', house: 'Паркинг 11.2', address: null, built: null },
+  { category: 'Подземные', house: 'Паркинг 11.3', address: null, built: null },
+  { category: 'Подземные', house: 'Паркинг 11.4', address: null, built: null },
+  { category: 'Подземные', house: 'Паркинг 11.5', address: null, built: null },
+  { category: 'Подземные', house: 'Паркинг 16.38', address: 'ул. Жореса Алфёрова, 22', built: true },
+  { category: 'Подземные', house: 'Паркинг 16.39', address: 'ул. Михаила Савицкого, 24', built: true },
+  { category: 'Подземные', house: 'Паркинг 24.2.6', address: null, built: true },
+  { category: 'Подземные', house: 'Паркинг 24.2.7', address: null, built: true },
+  { category: 'Подземные', house: 'Паркинг 28.4', address: 'ул. Михаила Савицкого, 23', built: true },
+  { category: 'Подземные', house: 'Паркинг 28.8', address: 'ул. Игоря Лученка, 16', built: true },
 ];
 
 // "Виды коммерческой недвижимости в Минск Мире" (владелец, август 2026) —
@@ -1468,7 +1502,16 @@ export function DistrictGuidePage() {
         <span className="font-black text-primary-hover">RED</span>EVELOPMENT
       </Link>
 
-      <div className="border-b border-border py-5">
+      {/* На мобильном (<sm) шапка отдельным баром с большими отступами
+          создавала лишний "воздух" сверху страницы (владелец, скриншот:
+          "очень много воздуха сверху... я бы вписал логотип в основной
+          блок, просто сделал отступ") — на телефоне здесь и так нет ничего,
+          кроме логотипа (меню — hidden ... sm:flex, см. ниже), отдельный
+          бар с бордером/паддингом был чистым накладным расходом высоты.
+          Ниже sm бар скрыт целиком, логотип переехал в обычный поток
+          контента (см. "mx-auto flex max-w-3xl flex-col" ниже) с обычным
+          отступом по сетке колонки, не фиксированной высотой бара. */}
+      <div className="hidden border-b border-border py-5 sm:block">
         <div className="mx-auto max-w-6xl px-4 sm:px-8">
           <div className="flex items-center justify-between lg:grid lg:grid-cols-[200px_1fr] lg:items-center lg:gap-10">
             <Link to="/minsk" className="shrink-0 text-lg font-extrabold tracking-wide text-ink lg:invisible">
@@ -1493,7 +1536,7 @@ export function DistrictGuidePage() {
       {/* <main> — единственный main-landmark страницы (PageSpeed
           Accessibility «Document does not have a main landmark»): шапка с
           логотипом/меню и hero выше остаются вне него, как и положено. */}
-      <main className="mx-auto max-w-6xl px-4 py-12 sm:px-8">
+      <main className="mx-auto max-w-6xl px-4 pt-4 pb-12 sm:px-8 sm:pt-12">
         <div className="lg:grid lg:grid-cols-[200px_1fr] lg:gap-10">
           <aside ref={navAsideRef} className="hidden lg:block">
             <nav
@@ -1523,19 +1566,33 @@ export function DistrictGuidePage() {
             </nav>
           </aside>
 
-          <div className="mx-auto flex max-w-3xl flex-col gap-6">
+          <div className="mx-auto flex max-w-3xl flex-col gap-4 sm:gap-6">
+        {/* Логотип на мобильном — часть обычного потока колонки (см.
+            комментарий у шапки выше), не отдельный бар: тот же логотип, что
+            в шапке на sm+, просто с обычным отступом gap-4 колонки вместо
+            фиксированной высоты бара. На sm+ скрыт (там уже виден полноценный
+            бар с меню выше). */}
+        <Link to="/minsk" className="text-base font-extrabold tracking-wide text-ink sm:hidden">
+          <span className="font-black text-primary-hover">RED</span>EVELOPMENT
+        </Link>
         {/* Единая liquid-glass подложка под заголовком/подзаголовком и фото —
             раньше текст стоял прямо на фоне страницы, а фото было в своей
             отдельной рамке; теперь один блок. Колонки не 50/50
             (sm:grid-cols-2), а 3:2 — заголовку описания больше не тесно,
             фото просто пропорционально сузилось вместе со своей колонкой
-            (aspect-[4/5] не трогали). Карточки с цифрами были ненадолго
-            убраны с первого экрана в параллельном заходе — владелец в этом
-            же диалоге явно попросил вернуть их сюда, отдельным блоком
-            "Ключевые цифры" сразу после hero, перед "Застройщиком района"
-            (см. statTiles, id="key-stats" ниже). */}
+            (aspect-[4/5] не трогали, кроме мобильного — см. ниже). Карточки
+            с цифрами были ненадолго убраны с первого экрана в параллельном
+            заходе — владелец в этом же диалоге явно попросил вернуть их
+            сюда, отдельным блоком "Ключевые цифры" сразу после hero, перед
+            "Застройщиком района" (см. statTiles, id="key-stats" ниже).
+            На мобильном (владелец: "хочу чтобы реально всё влезло на
+            первый экран айфона 13") — p-4 вместо p-6, gap-4 вместо gap-6
+            между текстом и фото, и более короткий aspect-video вместо
+            высокого портретного aspect-[4/5] — портретное фото шириной
+            ~320px и так даёт ~400px высоты, вместе с текстом это гораздо
+            больше первого экрана. */}
         <div
-          className={cn('grid grid-cols-1 gap-6 p-6 sm:grid-cols-[3fr_2fr] sm:items-center sm:p-8', glassCardClass)}
+          className={cn('grid grid-cols-1 gap-4 p-4 sm:grid-cols-[3fr_2fr] sm:items-center sm:gap-6 sm:p-8', glassCardClass)}
           style={glassCardShadow}
         >
           <div className="flex flex-col gap-3">
@@ -1559,7 +1616,7 @@ export function DistrictGuidePage() {
             <HeroImageSlider
               images={HERO_IMAGES}
               alt="Аэрофото района Минск Мир"
-              aspectClassName="aspect-[4/5]"
+              aspectClassName="aspect-video sm:aspect-[4/5]"
               imageWidth={512}
               imageHeight={640}
             />
@@ -1973,55 +2030,110 @@ export function DistrictGuidePage() {
             <p className="text-sm text-ink-muted">Данные пока не собраны.</p>
           )}
 
-          {primaryMarketOffers && primaryMarketOffers.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] border-collapse text-sm">
-                {/* caption/scope — машиночитаемая семантика таблицы для
-                    поисковиков (Google читает таблицы для сниппетов);
-                    sr-only — визуально ничего не добавляет. */}
-                <caption className="sr-only">
-                  Первичный рынок коммерческой недвижимости Минск Мира: количество предложений и цены за м² по
-                  категориям (данные bir.by)
-                </caption>
-                <thead>
-                  <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                    <th scope="col" className="py-2 pr-3 text-left">Категория</th>
-                    <th scope="col" className="py-2 px-2 text-right font-semibold">Предложений</th>
-                    <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь</th>
-                    <th scope="col" className="py-2 px-2 text-right font-semibold">Мин, {currencySymbols[primaryMarketCurrency]}/м²</th>
-                    <th scope="col" className="py-2 px-2 text-right font-semibold">
-                      Средняя, {currencySymbols[primaryMarketCurrency]}/м²
-                    </th>
-                    <th scope="col" className="py-2 pl-2 text-right font-semibold">Макс, {currencySymbols[primaryMarketCurrency]}/м²</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {buildPrimaryMarketPivot(primaryMarketOffers).map((row) => (
-                    <tr
+          {primaryMarketOffers && primaryMarketOffers.length > 0 && (() => {
+            const primaryRows = buildPrimaryMarketPivot(primaryMarketOffers);
+            return (
+              <>
+                {/* Мобильная версия (владелец, скриншот: "не нравится верстка
+                    таблиц, особенно горизонтальный скролл... надо, чтобы вся
+                    инфа умещалась на экран без скролла") — карточки вместо
+                    таблицы, тот же принцип label+value плитками, что уже
+                    используется на карточках объекта/БЦ. Настоящая <table>
+                    ниже (hidden sm:block) не удалена — остаётся видимой на
+                    sm+, где колонки помещаются без скролла, и сохраняет
+                    table-семантику для поисковиков (Google индексирует
+                    страницу с мобильного вьюпорта по умолчанию, но текст тот
+                    же, разметка эквивалентна — обычный responsive-паттерн,
+                    не скрытый от ботов контент). */}
+                <div className="flex flex-col gap-3 sm:hidden">
+                  {primaryRows.map((row) => (
+                    <button
                       key={row.key}
+                      type="button"
                       onClick={() => setPrimaryMarketProKey(row.key)}
-                      className="cursor-pointer hover:bg-surface-muted"
+                      className="flex flex-col gap-2 rounded-control border border-border bg-white p-4 text-left shadow-card"
                     >
-                      <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
-                      <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
-                      <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="font-bold text-ink">{row.label}</span>
+                        <span className="shrink-0 text-xs text-ink-muted">{row.count} предл.</span>
+                      </div>
+                      <p className="text-xs text-ink-muted">
                         {row.areaMin === row.areaMax ? `${row.areaMin}` : `${row.areaMin}–${row.areaMax}`} м²
-                      </td>
-                      <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
-                        {formatPricePerM2(row.priceMinEur, primaryMarketCurrency, exchangeRate)}
-                      </td>
-                      <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
-                        {formatPricePerM2(row.priceAvgEur, primaryMarketCurrency, exchangeRate)}
-                      </td>
-                      <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
-                        {formatPricePerM2(row.priceMaxEur, primaryMarketCurrency, exchangeRate)}
-                      </td>
-                    </tr>
+                      </p>
+                      <div className="grid grid-cols-3 gap-2 pt-1">
+                        <div className="flex flex-col">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Мин</span>
+                          <span className="text-sm tabular-nums text-ink-muted">
+                            {formatPricePerM2(row.priceMinEur, primaryMarketCurrency, exchangeRate)}
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Средняя</span>
+                          <span className="text-sm font-bold tabular-nums text-ink">
+                            {formatPricePerM2(row.priceAvgEur, primaryMarketCurrency, exchangeRate)}
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Макс</span>
+                          <span className="text-sm tabular-nums text-ink-muted">
+                            {formatPricePerM2(row.priceMaxEur, primaryMarketCurrency, exchangeRate)}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                </div>
+
+                <div className="hidden overflow-x-auto sm:block">
+                  <table className="w-full min-w-[640px] border-collapse text-sm">
+                    {/* caption/scope — машиночитаемая семантика таблицы для
+                        поисковиков (Google читает таблицы для сниппетов);
+                        sr-only — визуально ничего не добавляет. */}
+                    <caption className="sr-only">
+                      Первичный рынок коммерческой недвижимости Минск Мира: количество предложений и цены за м² по
+                      категориям (данные bir.by)
+                    </caption>
+                    <thead>
+                      <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                        <th scope="col" className="py-2 pr-3 text-left">Категория</th>
+                        <th scope="col" className="py-2 px-2 text-right font-semibold">Предложений</th>
+                        <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь</th>
+                        <th scope="col" className="py-2 px-2 text-right font-semibold">Мин, {currencySymbols[primaryMarketCurrency]}/м²</th>
+                        <th scope="col" className="py-2 px-2 text-right font-semibold">
+                          Средняя, {currencySymbols[primaryMarketCurrency]}/м²
+                        </th>
+                        <th scope="col" className="py-2 pl-2 text-right font-semibold">Макс, {currencySymbols[primaryMarketCurrency]}/м²</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {primaryRows.map((row) => (
+                        <tr
+                          key={row.key}
+                          onClick={() => setPrimaryMarketProKey(row.key)}
+                          className="cursor-pointer hover:bg-surface-muted"
+                        >
+                          <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
+                          <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
+                          <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                            {row.areaMin === row.areaMax ? `${row.areaMin}` : `${row.areaMin}–${row.areaMax}`} м²
+                          </td>
+                          <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                            {formatPricePerM2(row.priceMinEur, primaryMarketCurrency, exchangeRate)}
+                          </td>
+                          <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
+                            {formatPricePerM2(row.priceAvgEur, primaryMarketCurrency, exchangeRate)}
+                          </td>
+                          <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
+                            {formatPricePerM2(row.priceMaxEur, primaryMarketCurrency, exchangeRate)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
 
           {primaryMarketOffers && primaryMarketOffers.length > 0 && (
             <button
@@ -2084,52 +2196,97 @@ export function DistrictGuidePage() {
               <p className="text-xs text-ink-muted">
                 Цена с отделкой и без — разные рынки, поэтому не смешиваем их в одной цифре.
               </p>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[640px] border-collapse text-sm">
-                  <caption className="sr-only">
-                    Вторичный рынок коммерческой недвижимости Минск Мира: количество предложений и цены за м² по
-                    типу помещения и диапазону площади (данные Kufar, Realt)
-                  </caption>
-                  <thead>
-                    <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                      <th scope="col" className="py-2 pr-3 text-left">Тип помещения</th>
-                      <th scope="col" className="py-2 px-2 text-right font-semibold">Предложений</th>
-                      <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь</th>
-                      <th scope="col" className="py-2 px-2 text-right font-semibold">
-                        Мин, {currencySymbols[marketCurrency]}/м²{marketDealType === 'Аренда' ? '/мес' : ''}
-                      </th>
-                      <th scope="col" className="py-2 px-2 text-right font-semibold">
-                        Медиана, {currencySymbols[marketCurrency]}/м²{marketDealType === 'Аренда' ? '/мес' : ''}
-                      </th>
-                      <th scope="col" className="py-2 pl-2 text-right font-semibold">
-                        Макс, {currencySymbols[marketCurrency]}/м²{marketDealType === 'Аренда' ? '/мес' : ''}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {buildMarketPivot(
-                      marketOffers,
-                      marketDealType === 'Продажа' ? 'sale' : 'rent',
-                      MARKET_FINISH_TO_DB[marketFinish],
-                    ).map((row) => (
-                      <tr key={row.key}>
-                        <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.propertyType}</th>
-                        <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
-                        <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.areaLabel}</td>
-                        <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
-                          {formatSecondaryPricePerM2(row.priceMinUsd, marketCurrency, exchangeRate)}
-                        </td>
-                        <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
-                          {formatSecondaryPricePerM2(row.priceMedianUsd, marketCurrency, exchangeRate)}
-                        </td>
-                        <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
-                          {formatSecondaryPricePerM2(row.priceMaxUsd, marketCurrency, exchangeRate)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              {(() => {
+                const secondaryRows = buildMarketPivot(
+                  marketOffers,
+                  marketDealType === 'Продажа' ? 'sale' : 'rent',
+                  MARKET_FINISH_TO_DB[marketFinish],
+                );
+                const perMonthSuffix = marketDealType === 'Аренда' ? '/мес' : '';
+                return (
+                  <>
+                    {/* Мобильная карточная версия — тот же принцип, что и у
+                        "Первичного рынка" выше (см. комментарий там). */}
+                    <div className="flex flex-col gap-3 sm:hidden">
+                      {secondaryRows.map((row) => (
+                        <div key={row.key} className="flex flex-col gap-2 rounded-control border border-border bg-white p-4">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="font-bold text-ink">{row.propertyType}</span>
+                            <span className="shrink-0 text-xs text-ink-muted">{row.count} предл.</span>
+                          </div>
+                          <p className="text-xs text-ink-muted">{row.areaLabel}</p>
+                          <div className="grid grid-cols-3 gap-2 pt-1">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Мин</span>
+                              <span className="text-sm tabular-nums text-ink-muted">
+                                {formatSecondaryPricePerM2(row.priceMinUsd, marketCurrency, exchangeRate)}
+                                {perMonthSuffix}
+                              </span>
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Медиана</span>
+                              <span className="text-sm font-bold tabular-nums text-ink">
+                                {formatSecondaryPricePerM2(row.priceMedianUsd, marketCurrency, exchangeRate)}
+                                {perMonthSuffix}
+                              </span>
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Макс</span>
+                              <span className="text-sm tabular-nums text-ink-muted">
+                                {formatSecondaryPricePerM2(row.priceMaxUsd, marketCurrency, exchangeRate)}
+                                {perMonthSuffix}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="hidden overflow-x-auto sm:block">
+                      <table className="w-full min-w-[640px] border-collapse text-sm">
+                        <caption className="sr-only">
+                          Вторичный рынок коммерческой недвижимости Минск Мира: количество предложений и цены за м² по
+                          типу помещения и диапазону площади (данные Kufar, Realt)
+                        </caption>
+                        <thead>
+                          <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                            <th scope="col" className="py-2 pr-3 text-left">Тип помещения</th>
+                            <th scope="col" className="py-2 px-2 text-right font-semibold">Предложений</th>
+                            <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь</th>
+                            <th scope="col" className="py-2 px-2 text-right font-semibold">
+                              Мин, {currencySymbols[marketCurrency]}/м²{perMonthSuffix}
+                            </th>
+                            <th scope="col" className="py-2 px-2 text-right font-semibold">
+                              Медиана, {currencySymbols[marketCurrency]}/м²{perMonthSuffix}
+                            </th>
+                            <th scope="col" className="py-2 pl-2 text-right font-semibold">
+                              Макс, {currencySymbols[marketCurrency]}/м²{perMonthSuffix}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {secondaryRows.map((row) => (
+                            <tr key={row.key}>
+                              <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.propertyType}</th>
+                              <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
+                              <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.areaLabel}</td>
+                              <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                                {formatSecondaryPricePerM2(row.priceMinUsd, marketCurrency, exchangeRate)}
+                              </td>
+                              <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
+                                {formatSecondaryPricePerM2(row.priceMedianUsd, marketCurrency, exchangeRate)}
+                              </td>
+                              <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
+                                {formatSecondaryPricePerM2(row.priceMaxUsd, marketCurrency, exchangeRate)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="flex items-start gap-2.5 rounded-control border border-success/30 bg-success-bg px-4 py-3">
                 <Sparkles className="h-4 w-4 shrink-0 translate-y-0.5 text-success" />
@@ -2328,12 +2485,16 @@ export function DistrictGuidePage() {
           <div className="flex items-end gap-3">
             <span className="text-5xl font-black leading-none text-primary">{pvzTotal}</span>
             <span className="pb-1 text-sm text-ink-muted">
-              точка Ozon и Wildberries — сильный спрос на маркетплейсы
+              точек — Wildberries и Ozon крупнее всех, но точки есть и у мелких сетей
             </span>
           </div>
-          <p className="text-xs text-ink-muted">
-            Wildberries — {pvzWildberriesCount}, Ozon — {pvzOzonCount}
-          </p>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {pvzBreakdown.map(({ label, count }) => (
+              <span key={label} className="rounded-full bg-surface-muted px-2.5 py-1 text-xs font-medium text-ink">
+                {label} — {count}
+              </span>
+            ))}
+          </div>
         </div>
 
         <div className="flex flex-col gap-3 px-6 py-6">
@@ -2510,11 +2671,25 @@ export function DistrictGuidePage() {
                   <ul className="flex flex-col gap-1">
                     {parkingAddresses
                       .filter((p) => p.category === category)
-                      .map(({ house, address }) => (
-                        <li key={house} className="text-sm text-ink-muted">
-                          <span className="font-medium text-ink">{house}</span>
-                          {' — '}
-                          {address ?? <span className="text-ink-faint">адрес не присвоен</span>}
+                      // Сданные — сначала, "уточняется" — в конце (владелец:
+                      // "сделай сортировку по построенным и строящимся").
+                      .sort((a, b) => Number(b.built === true) - Number(a.built === true))
+                      .map(({ house, address, built }) => (
+                        <li key={house} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-muted">
+                          <span>
+                            <span className="font-medium text-ink">{house}</span>
+                            {' — '}
+                            {address ?? <span className="text-ink-faint">адрес не присвоен</span>}
+                          </span>
+                          {built === true ? (
+                            <span className="shrink-0 rounded-full bg-success-bg px-2 py-0.5 text-[10px] font-semibold text-[#0f6b3d]">
+                              Сдан
+                            </span>
+                          ) : (
+                            <span className="shrink-0 rounded-full bg-surface-muted px-2 py-0.5 text-[10px] font-semibold text-ink-faint">
+                              Уточняется
+                            </span>
+                          )}
                         </li>
                       ))}
                   </ul>
