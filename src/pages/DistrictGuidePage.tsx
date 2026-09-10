@@ -2708,6 +2708,65 @@ export function DistrictGuidePage() {
             ))}
           </div>
         </div>
+
+        {/* 2026-09-10 — владелец: "какие категории бизнеса у нас не освещены
+            в текстовой аналитике... как будто есть не все, что на картах" —
+            4 категории (Розница/Мебель/Образование/Зоотовары), добавленные
+            на карту и в плитки этим же днём чуть раньше, текстом ещё не
+            были описаны. Черновик текста — Gemini по брифу с реальными
+            фактами (сети/адреса из data/districtPlaces.ts), проверено перед
+            вставкой. Школы/детские сады — по прямой просьбе владельца сюда
+            не добавлены (уже упомянуты в другом блоке страницы). */}
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <ShoppingBag className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Розница и товары</h3>
+          </div>
+          <p className="text-sm leading-relaxed text-ink-muted">
+            <span className="font-semibold text-ink">{retailTotal} точки</span>, значительная часть которых
+            сконцентрирована в Avia Mall, где представлены международные сети одежды и аксессуаров. Отдельно
+            выделяется необычно развитая ниша доставки питьевой воды — 9 точек от 4 разных брендов, что характерно
+            для нового района, где жители ещё не установили стационарные системы фильтрации.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <Sofa className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Мебель и товары для дома</h3>
+          </div>
+          <p className="text-sm leading-relaxed text-ink-muted">
+            <span className="font-semibold text-ink">{furnitureTotal} точек</span>, формирующих типичный для
+            новостройки кластер — от напольных покрытий и сантехники до кухонь на заказ и декора. Помимо продажи
+            товаров, широко представлены услуги по ремонту и отделке. На рынке есть сетевой игрок — «Кухни Черри» с
+            тремя точками.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <GraduationCap className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Образование</h3>
+          </div>
+          <p className="text-sm leading-relaxed text-ink-muted">
+            <span className="font-semibold text-ink">{educationTotal} точек</span>, в основном небольшие частные
+            курсы и центры дополнительного образования для детей и взрослых — курсы английского языка, детские
+            развивающие центры, IT-школы для детей. Рынок раздроблен, крупных сетевых игроков нет. Это не
+            общеобразовательные школы и детские сады — те посчитаны отдельно.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <PawPrint className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Зоотовары и ветеринария</h3>
+          </div>
+          <p className="text-sm leading-relaxed text-ink-muted">
+            <span className="font-semibold text-ink">{petsTotal} точек</span>, где ключевой игрок в рознице — сеть
+            «Зообазар» с 4 магазинами. Заметную долю занимают груминг-салоны, тогда как ветеринарные услуги
+            представлены лишь одним кабинетом — ниша явно смещена в сторону ухода за животными, а не их лечения.
+          </p>
+        </div>
           </div>
         </div>
 
