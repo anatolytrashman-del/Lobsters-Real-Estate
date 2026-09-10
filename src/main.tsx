@@ -4,6 +4,11 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import { ErrorBoundary, clearCrashReloadFlag } from './components/ErrorBoundary'
+import { initSentry } from './lib/sentry'
+
+// P1.3 аудита безопасности — как можно раньше в жизненном цикле приложения,
+// до первого рендера (см. src/lib/sentry.ts).
+initSentry()
 
 const container = document.getElementById('root')!
 

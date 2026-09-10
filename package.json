@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@sentry/react": "^10.74.0",
     "@supabase/supabase-js": "^2.112.3",
     "@vercel/functions": "^3.9.5",
     "docx-preview": "^0.4.0",
