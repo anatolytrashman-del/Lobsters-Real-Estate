@@ -15,6 +15,8 @@ import { fetchYandexWebmasterStats } from '../lib/yandexWebmasterStatsApi';
 import type { YandexWebmasterStat } from '../data/yandexWebmasterStats';
 import { fetchGoogleSearchConsoleStats } from '../lib/googleSearchConsoleStatsApi';
 import type { GoogleSearchConsoleStat } from '../data/googleSearchConsoleStats';
+import { fetchGoogleSearchConsolePageIndex } from '../lib/googleSearchConsolePageIndexApi';
+import type { GoogleSearchConsolePageIndex } from '../data/googleSearchConsolePageIndex';
 
 // Показатели посещаемости сайта из Яндекс.Метрики (счётчик 111858495) —
 // не отчёт по staff-активности (это отдельная /admin/metrics, RequireSuperAdmin,
@@ -43,6 +45,21 @@ import type { GoogleSearchConsoleStat } from '../data/googleSearchConsoleStats';
 // try/catch на фетч (нет токена/ещё не подключено — блок просто не
 // рендерится, не роняет страницу), pagesIndexed — состояние на сегодня,
 // не сумма по дням.
+//
+// "Проиндексировано страниц" (из Sitemaps.get) — тот же день, живой прогон
+// на реальном сайте показал 0, хотя реально уже несколько страниц в
+// индексе — известная особенность Google, число из отчёта по sitemap
+// считается отдельным, медленным конвейером и может отставать от
+// реального индекса на недели (владелец спросил "это правда 0?", проверка
+// через URL Inspection API опровергла). Из-за этого рядом — второй,
+// точный блок "Индексация ключевых страниц" (google_search_console_
+// page_index, тот же sync-скрипт, urlInspection.index:inspect по
+// куратированному списку хабов + реальных лендингов) — именно ему верить,
+// не агрегату из sitemap. Скрипт умеет пропускать уже подтверждённо
+// проиндексированные страницы на следующих прогонах (по прямой просьбе
+// владельца — статус "в индексе" не откатывается назад, перепроверять
+// смысла нет), так что `checkedAt` у части строк может быть старше, чем у
+// остальных — это ожидаемо, не баг застрявшего синка.
 
 type PeriodDays = 7 | 30 | 90;
 const PERIOD_LABELS: Record<PeriodDays, string> = { 7: '7 дней', 30: '30 дней', 90: '90 дней' };
@@ -173,6 +190,26 @@ function resolvePageBaseLabel(base: string): string {
   return base;
 }
 
+// Статусы, реально встречающиеся у Google в indexStatusResult.coverageState
+// (URL Inspection API) — переводим на понятный текст + цвет бейджа, честный
+// перевод один в один под то, что видно в самом Search Console. Незнакомое
+// значение показывается как есть, не прячется.
+const COVERAGE_STATE_LABELS: Record<string, { label: string; tone: 'success' | 'warning' | 'neutral' }> = {
+  'Submitted and indexed': { label: 'В индексе', tone: 'success' },
+  'Indexed, not submitted in sitemap': { label: 'В индексе (не через sitemap)', tone: 'success' },
+  'Discovered - currently not indexed': { label: 'Обнаружена, не в индексе', tone: 'warning' },
+  'Crawled - currently not indexed': { label: 'Просканирована, не в индексе', tone: 'warning' },
+  'URL is unknown to Google': { label: 'Пока неизвестна Google', tone: 'neutral' },
+  'Page with redirect': { label: 'Редирект', tone: 'neutral' },
+  'Duplicate without user-selected canonical': { label: 'Дубль без канонического URL', tone: 'warning' },
+  'Alternate page with proper canonical tag': { label: 'Альтернативный URL (есть канонический)', tone: 'neutral' },
+};
+
+function coverageStateInfo(state: string | null): { label: string; tone: 'success' | 'warning' | 'neutral' } {
+  if (!state) return { label: '—', tone: 'neutral' };
+  return COVERAGE_STATE_LABELS[state] ?? { label: state, tone: 'neutral' };
+}
+
 function pluralPages(n: number): string {
   const mod100 = n % 100;
   const mod10 = n % 10;
@@ -290,6 +327,7 @@ export function SiteMetrics() {
   const [goalCompletions, setGoalCompletions] = useState<MetrikaGoalCompletion[] | null>(null);
   const [webmasterStats, setWebmasterStats] = useState<YandexWebmasterStat[] | null>(null);
   const [googleStats, setGoogleStats] = useState<GoogleSearchConsoleStat[] | null>(null);
+  const [googlePageIndex, setGooglePageIndex] = useState<GoogleSearchConsolePageIndex[] | null>(null);
   const [error, setError] = useState('');
   const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
   const [topPagesExpanded, setTopPagesExpanded] = useState(false);
@@ -306,14 +344,16 @@ export function SiteMetrics() {
       // всё равно Метрика.
       fetchYandexWebmasterStats().catch(() => []),
       fetchGoogleSearchConsoleStats().catch(() => []),
+      fetchGoogleSearchConsolePageIndex().catch(() => []),
     ])
-      .then(([daily, traffic, pages, goals, webmaster, google]) => {
+      .then(([daily, traffic, pages, goals, webmaster, google, googlePages]) => {
         setDailyStats(daily);
         setTrafficSources(traffic);
         setTopPages(pages);
         setGoalCompletions(goals);
         setWebmasterStats(webmaster);
         setGoogleStats(google);
+        setGooglePageIndex(googlePages);
       })
       .catch(() => setError('Не удалось загрузить показатели.'));
   }, []);
@@ -353,6 +393,19 @@ export function SiteMetrics() {
     return null;
   }, [currentGoogle]);
   const hasGoogleQueryData = currentGoogle.some((d) => d.impressions !== null || d.clicks !== null);
+
+  // Точный трекер ключевых страниц — проиндексированные наверх (позитивное
+  // подтверждение важнее списка "ещё не в индексе"), внутри группы —
+  // алфавит пути (как отдаёт сам запрос).
+  const sortedGooglePageIndex = useMemo(() => {
+    const rows = googlePageIndex ?? [];
+    return [...rows].sort((a, b) => {
+      const aIndexed = a.coverageState === 'Submitted and indexed' ? 0 : 1;
+      const bIndexed = b.coverageState === 'Submitted and indexed' ? 0 : 1;
+      return aIndexed - bIndexed;
+    });
+  }, [googlePageIndex]);
+  const googleIndexedCount = sortedGooglePageIndex.filter((r) => r.coverageState === 'Submitted and indexed').length;
 
   const maxUpdatedAt = useMemo(() => {
     const dates = (trafficSources ?? []).map((s) => s.updatedAt);
@@ -565,12 +618,46 @@ export function SiteMetrics() {
                   </div>
                 )}
               </div>
+              <p className="text-xs text-ink-muted">
+                «Проиндексировано страниц» считается по отдельному, медленному отчёту Google и может отставать от
+                реального индекса на недели — точный статус конкретных страниц смотрите в блоке ниже.
+              </p>
             </Card>
           )}
           {webmasterStats !== null && googleStats !== null && currentWebmaster.length > 0 && currentGoogle.length === 0 && (
             <Card className="text-sm text-ink-muted">
               Google Search Console пока не подключён — данные по индексации в Google появятся здесь, как только
               владелец пройдёт разовую авторизацию (см. scripts/get-google-search-console-refresh-token.mjs).
+            </Card>
+          )}
+
+          {sortedGooglePageIndex.length > 0 && (
+            <Card className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-ink">Индексация ключевых страниц (точная проверка)</h3>
+                  <p className="text-xs text-ink-muted">
+                    Реальный статус в индексе Google по каждой странице — куратированный список хабов и лендингов, не
+                    все страницы сайта.
+                  </p>
+                </div>
+                <Badge tone={googleIndexedCount > 0 ? 'success' : 'neutral'}>
+                  {googleIndexedCount} из {sortedGooglePageIndex.length} в индексе
+                </Badge>
+              </div>
+              <div className="flex flex-col divide-y divide-border">
+                {sortedGooglePageIndex.map((p) => {
+                  const info = coverageStateInfo(p.coverageState);
+                  return (
+                    <div key={p.path} className="flex items-center justify-between gap-3 py-2 text-sm">
+                      <span className="truncate text-ink" title={`/${p.path}`}>
+                        {readablePageLabel(`/${p.path}`)}
+                      </span>
+                      <Badge tone={info.tone}>{info.label}</Badge>
+                    </div>
+                  );
+                })}
+              </div>
             </Card>
           )}
 

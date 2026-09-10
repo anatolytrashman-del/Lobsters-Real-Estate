@@ -27,6 +27,29 @@
 // sites.list на лету, найденное свойство может быть либо URL-префиксом
 // ("https://redevelopment.pro/"), либо доменным свойством
 // ("sc-domain:redevelopment.pro") — сверяем оба формата по домену.
+//
+// 2026-09-10, доп. заход в ТОТ ЖЕ день — владелец спросил "написано, что в
+// поиске 0 страниц, это правда?" после первого живого прогона. Проверка
+// вживую через URL Inspection API (реальный, per-URL статус из индекса
+// Google, не агрегат из sitemap) на 5 страницах показала: 3 из 5 реально
+// "Submitted and indexed", а Sitemaps.get отдавал 0 — известная особенность
+// Google: отчёт по sitemap считается отдельным, гораздо более медленным
+// конвейером и может отставать от реального индекса на недели. Число
+// pages_submitted (просто "сколько URL Google распарсил из sitemap") этой
+// проблемы не имеет — оставлено как есть. pages_indexed из Sitemaps.get
+// тоже оставлен (дёшево, часть той же истории по дням), но теперь это
+// вспомогательная, не главная метрика — реальный, точный статус даёт
+// per-page трекер ниже (google_search_console_page_index).
+//
+// Трекер намеренно НЕ проверяет весь сайт (285+ URL — дорого, упёрлось бы
+// в квоту urlInspection и заняло бы минуты) — только куратированный список
+// самых важных страниц (KEY_PAGE_PATHS: городские/аналитические хабы,
+// гид района, каталог БЦ) + лендинги реальных объектов (objects.landing_slug,
+// читается напрямую из базы тем же сервисным ключом, что и весь скрипт —
+// не хардкодится, появится новый объект с лендингом — появится и в трекере
+// на следующий день). Одна инспекция — один HTTP-запрос, при провале одной
+// страницы (сеть/квота/что угодно) остальные не страдают — try/catch на
+// каждую отдельно, ошибка только логируется.
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -34,8 +57,30 @@ const SUPABASE_URL = 'https://iohcdylttyuhwovztrbk.supabase.co';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DRY_RUN = process.argv.includes('--dry-run');
 const SEARCH_CONSOLE_API = 'https://www.googleapis.com/webmasters/v3';
+const SEARCH_CONSOLE_INSPECTION_API = 'https://searchconsole.googleapis.com/v1';
 const TARGET_DOMAIN = 'redevelopment.pro';
+const SITE_ORIGIN = 'https://redevelopment.pro';
 const SITEMAP_PATH = 'https://redevelopment.pro/sitemap.xml';
+
+// Куратированный список ключевых страниц для точной проверки — тот же
+// принцип отбора, что уже применялся при переобходе Яндекса тем же днём
+// ("хабы, не единичные карточки БЦ/объектов"): хаб-страницы, приводящие ко
+// всему остальному через внутренние ссылки, важнее сотен листовых страниц.
+const KEY_PAGE_PATHS = [
+  'minsk',
+  'minsk/minsk-mir',
+  'minsk/analytics',
+  'minsk/analytics/metodika',
+  'minsk/analytics/minsk-mir',
+  'minsk/analytics/rajony',
+  'minsk/analytics/ofisy/arenda',
+  'minsk/analytics/torgovye/arenda',
+  'minsk/analytics/sklady/arenda',
+  'minsk/analytics/mashinomesta/arenda',
+  'minsk/bcminsk',
+  'minsk/bcminsk/reyting',
+  'minsk/bcminsk/stroyashchiesya',
+];
 
 // Сколько дней истории запросов подтягивать за один прогон — у Search
 // Console данные приходят с лагом 2-3 дня, запас с лихвой не портит.
@@ -145,6 +190,96 @@ async function fetchQueryHistory(accessToken, siteUrl) {
   return byDate;
 }
 
+async function fetchLandingPagePaths() {
+  const { data, error } = await supabase.from('objects').select('landing_slug').not('landing_slug', 'is', null);
+  if (error) throw new Error(`Не удалось прочитать objects.landing_slug: ${error.message}`);
+  return (data ?? [])
+    .map((r) => r.landing_slug)
+    .filter((slug) => typeof slug === 'string' && slug.trim() !== '')
+    .map((slug) => `minsk/${slug}`);
+}
+
+async function inspectUrl(accessToken, siteUrl, path) {
+  const inspectionUrl = `${SITE_ORIGIN}/${path}`;
+  const res = await fetch(`${SEARCH_CONSOLE_INSPECTION_API}/urlInspection/index:inspect`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inspectionUrl, siteUrl }),
+  });
+  if (!res.ok) {
+    throw new Error(`urlInspection для ${path} вернул ${res.status}: ${await res.text()}`);
+  }
+  const body = await res.json();
+  const result = body.inspectionResult?.indexStatusResult ?? {};
+  return {
+    path,
+    verdict: result.verdict ?? null,
+    coverage_state: result.coverageState ?? null,
+    last_crawl_time: result.lastCrawlTime ?? null,
+    checked_at: new Date().toISOString(),
+  };
+}
+
+// Владелец, 2026-09-10, сразу после первого живого прогона: "если страница
+// уже в поиске, во второй раз гонять скрипт не надо — просто прогоняй новые
+// страницы на предмет попадания в выдачу". "В индексе" — стабильный
+// результат (Google не выкидывает страницу из индекса просто так), поэтому
+// уже подтверждённые ("Submitted and indexed") пропускаем на последующих
+// прогонах — экономим квоту urlInspection и время. Перепроверяем только те,
+// что ещё НЕ в индексе (могли появиться в поиске с прошлого прогона) и
+// новые (появившиеся в KEY_PAGE_PATHS/landingPaths после прошлого раза).
+async function fetchAlreadyIndexedPaths() {
+  const { data, error } = await supabase
+    .from('google_search_console_page_index')
+    .select('path')
+    .eq('coverage_state', 'Submitted and indexed');
+  if (error) throw new Error(`Не удалось прочитать google_search_console_page_index: ${error.message}`);
+  return new Set((data ?? []).map((r) => r.path));
+}
+
+async function syncPageIndex(accessToken, siteUrl) {
+  const landingPaths = await fetchLandingPagePaths();
+  const allPaths = [...new Set([...KEY_PAGE_PATHS, ...landingPaths])];
+  const alreadyIndexed = await fetchAlreadyIndexedPaths();
+  const paths = allPaths.filter((p) => !alreadyIndexed.has(p));
+
+  if (paths.length === 0) {
+    console.log(`Все ${allPaths.length} ключевых страниц уже подтверждённо в индексе — новых проверок не требуется.`);
+    return;
+  }
+  console.log(`Проверяю ${paths.length} из ${allPaths.length} ключевых страниц (${allPaths.length - paths.length} уже в индексе — пропускаю).`);
+
+  const rows = [];
+  for (const path of paths) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      rows.push(await inspectUrl(accessToken, siteUrl, path));
+    } catch (err) {
+      console.error(`Не удалось проверить ${path}:`, err.message ?? err);
+    }
+  }
+
+  if (rows.length === 0) {
+    console.log('Ни одну ключевую страницу не удалось проверить — пропускаю запись в google_search_console_page_index.');
+    return;
+  }
+
+  const newlyIndexed = rows.filter((r) => r.coverage_state === 'Submitted and indexed').length;
+  const totalIndexed = alreadyIndexed.size + newlyIndexed;
+  console.log(
+    `Проверено ${rows.length} страниц, из них ${newlyIndexed} впервые попали в индекс. Всего в индексе: ${totalIndexed} из ${allPaths.length}.`,
+  );
+
+  if (DRY_RUN) {
+    console.log('[dry-run] Записал бы в google_search_console_page_index:');
+    console.log(JSON.stringify(rows, null, 2));
+    return;
+  }
+
+  const { error } = await supabase.from('google_search_console_page_index').upsert(rows, { onConflict: 'path' });
+  if (error) throw error;
+}
+
 async function main() {
   const credentials = await fetchCredentials();
   const accessToken = await getAccessToken(credentials);
@@ -189,19 +324,23 @@ async function main() {
 
   if (rows.length === 0) {
     console.log('Нет данных для сохранения.');
-    return;
-  }
-
-  if (DRY_RUN) {
+  } else if (DRY_RUN) {
     console.log('[dry-run] Записал бы в google_search_console_stats:');
     console.log(JSON.stringify(rows, null, 2));
-    return;
+  } else {
+    const { error } = await supabase.from('google_search_console_stats').upsert(rows, { onConflict: 'date' });
+    if (error) throw error;
+    console.log(`Сохранено ${rows.length} записей в google_search_console_stats.`);
   }
 
-  const { error } = await supabase.from('google_search_console_stats').upsert(rows, { onConflict: 'date' });
-  if (error) throw error;
-
-  console.log(`Сохранено ${rows.length} записей в google_search_console_stats.`);
+  // Точная проверка ключевых страниц — отдельный шаг, не роняет сохранение
+  // агрегатной статистики выше, даже если сам этот блок целиком упадёт
+  // (квота урezана, сеть моргнула и т.п.).
+  try {
+    await syncPageIndex(accessToken, siteUrl);
+  } catch (err) {
+    console.error('Проверка ключевых страниц не удалась:', err.message ?? err);
+  }
 }
 
 main().catch((err) => {
