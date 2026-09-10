@@ -231,6 +231,7 @@ async function applyExtractionToOffer(
     managerName: offer.managerName,
     country: offer.country,
     websiteUrl: offer.websiteUrl,
+    listingUrl: offer.listingUrl,
     catalogModelName: offer.catalogModelName,
     catalogModelPhoto: offer.catalogModelPhoto,
     price: extraction.price ?? offer.price,

@@ -21,6 +21,10 @@ const WEB_SEARCH_TIMEOUT_MS = 280000;
 export interface SupplierSearchResult {
   name: string;
   website: string;
+  // Прямая ссылка на найденную позицию/товар на сайте (не главная страница
+  // сайта) — владелец, 2026-09-10: "чтобы вручную на сайте не искать".
+  // Пустая строка, если модель не нашла в поиске страницу конкретного товара.
+  link: string;
   phone: string;
   email: string;
   note: string;
