@@ -30,8 +30,10 @@ interface AvailableUnitsTableProps {
   onRowHover?: (zone: BuildingPlanZone | null) => void;
   // Отдельная кнопка "Посмотреть на плане" — в отличие от onRowClick (который
   // открывает карточку кабинета) только переключает этаж и подсвечивает
-  // контур, не закрывая план модалкой.
-  onLocateClick: (zone: BuildingPlanZone) => void;
+  // контур, не закрывая план модалкой. Не передаётся там, где просмотр
+  // плана вообще скрыт (лендинг объекта, см. PublicPlanAndUnits) — тогда
+  // кнопка и место под неё не рендерятся.
+  onLocateClick?: (zone: BuildingPlanZone) => void;
   // Только на публичных страницах — открывает форму брони сразу, без
   // промежуточного клика по кабинету. В админке не передаётся, поэтому
   // кнопка и место под неё там не показываются.
@@ -157,20 +159,22 @@ export function AvailableUnitsTable({
                 </span>
                 <span className="min-w-0 truncate font-medium text-ink">{formatMoney(u.price)}</span>
                 <div className="flex shrink-0 items-center justify-end gap-1.5">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onLocateClick(u.zone);
-                    }}
-                    className={cn(
-                      'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium hover:border-primary hover:text-primary',
-                      glass ? 'border-white/50 bg-white/30 text-ink backdrop-blur-md' : 'border-border text-ink-muted',
-                    )}
-                  >
-                    <MapPin className="h-3.5 w-3.5" />
-                    Посмотреть на плане
-                  </button>
+                  {onLocateClick && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onLocateClick(u.zone);
+                      }}
+                      className={cn(
+                        'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium hover:border-primary hover:text-primary',
+                        glass ? 'border-white/50 bg-white/30 text-ink backdrop-blur-md' : 'border-border text-ink-muted',
+                      )}
+                    >
+                      <MapPin className="h-3.5 w-3.5" />
+                      Посмотреть на плане
+                    </button>
+                  )}
                   {onBookClick && (
                     <button
                       type="button"
@@ -211,20 +215,22 @@ export function AvailableUnitsTable({
                   <span>{u.isWorkstation ? `Свободно ${u.remaining} мест` : `${u.area} м²`}</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onLocateClick(u.zone);
-                    }}
-                    className={cn(
-                      'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium hover:border-primary hover:text-primary',
-                      glass ? 'border-white/80 bg-white/60 text-ink backdrop-blur-md' : 'border-border text-ink-muted',
-                    )}
-                  >
-                    <MapPin className="h-3.5 w-3.5" />
-                    На плане
-                  </button>
+                  {onLocateClick && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onLocateClick(u.zone);
+                      }}
+                      className={cn(
+                        'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium hover:border-primary hover:text-primary',
+                        glass ? 'border-white/80 bg-white/60 text-ink backdrop-blur-md' : 'border-border text-ink-muted',
+                      )}
+                    >
+                      <MapPin className="h-3.5 w-3.5" />
+                      На плане
+                    </button>
+                  )}
                   {onBookClick && (
                     <button
                       type="button"
