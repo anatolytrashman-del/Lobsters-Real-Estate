@@ -1,0 +1,24 @@
+name: Sync Yandex Metrika stats
+
+on:
+  schedule:
+    # Раз в сутки, 04:00 UTC — не совпадает по времени ни с одним другим
+    # sync-воркфлоу этого репозитория (см. соседние файлы).
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/sync-yandex-metrika.mjs
+        env:
+          # OAuth-токен Яндекса НЕ передаётся сюда секретом — скрипт читает
+          # его из таблицы external_api_tokens тем же сервисным ключом.
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
