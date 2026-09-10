@@ -174,6 +174,13 @@ export interface SupplierOffer {
   // цены отдельно по Беларуси и по России в рамках одной категории (запроса).
   country: string;
   websiteUrl: string;
+  // Ссылка на конкретную позицию/товар/раздел каталога на сайте (не просто
+  // главная страница сайта, как websiteUrl) — владелец, 2026-09-10:
+  // "давай добавлять... ссылку на саму позицию искомую, чтобы вручную на
+  // сайте не искать". Заполняется автоматически при добавлении из
+  // веб-поиска (см. SupplierWebSearchModal/addWebSearchResults в
+  // Suppliers.tsx), но остаётся обычным редактируемым полем.
+  listingUrl: string;
   catalogModelName: string;
   catalogModelPhoto: DocumentFile | null;
   // Итоговая цена/валюта — больше не редактируется вручную (владелец,
@@ -220,6 +227,7 @@ export interface SupplierOfferRow {
   manager_name: string | null;
   country: string | null;
   website_url: string;
+  listing_url: string | null;
   catalog_model_name: string;
   catalog_model_photo: DocumentFile | null;
   price: number;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText } from 'lucide-react';
+import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -195,6 +195,7 @@ const emptyOfferForm = {
   managerName: '',
   country: '',
   websiteUrl: '',
+  listingUrl: '',
   catalogModelName: '',
   catalogModelPhoto: null as DocumentFile | null,
   // Владелец, 2026-09-09: файлы теперь грузятся сразу по выбору (как и
@@ -871,6 +872,17 @@ function SupplierWebSearchModal({
                     {siteLabel(r.website)}
                   </a>
                 )}
+                {r.link && (
+                  <a
+                    href={/^https?:\/\//.test(r.link) ? r.link : `https://${r.link}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1.5 font-medium text-primary hover:underline"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                    Открыть позицию
+                  </a>
+                )}
                 {r.phone && (
                   <span className="flex items-center gap-1.5">
                     <Phone className="h-3.5 w-3.5 shrink-0" />
@@ -998,6 +1010,21 @@ function OfferDetailModal({
             <span className="text-ink">—</span>
           )}
         </div>
+
+        {offer.listingUrl && (
+          <div className="flex flex-col gap-1 text-sm">
+            <span className="text-ink-faint">Ссылка на позицию</span>
+            <a
+              href={/^https?:\/\//.test(offer.listingUrl) ? offer.listingUrl : `https://${offer.listingUrl}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex w-fit items-center gap-1.5 text-primary hover:underline"
+            >
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              Открыть позицию на сайте
+            </a>
+          </div>
+        )}
 
         {(offer.catalogModelName || offer.catalogModelPhoto) && (
           <div className="flex flex-col gap-1 text-sm">
@@ -1838,6 +1865,7 @@ export function Suppliers() {
             managerName: '',
             country: guessCountryFromWebsite(r.website),
             websiteUrl: r.website,
+            listingUrl: r.link,
             catalogModelName: '',
             catalogModelPhoto: null,
             price: 0,
@@ -1892,6 +1920,7 @@ export function Suppliers() {
       // только предзаполняет форму.
       country: o.country || guessCountryFromWebsite(o.websiteUrl),
       websiteUrl: o.websiteUrl,
+      listingUrl: o.listingUrl,
       catalogModelName: o.catalogModelName,
       catalogModelPhoto: o.catalogModelPhoto,
       existingFiles: o.files,
@@ -2034,6 +2063,7 @@ export function Suppliers() {
       offerForm.email.trim().length > 0 ||
       offerForm.country.trim().length > 0 ||
       offerForm.websiteUrl.trim().length > 0 ||
+      offerForm.listingUrl.trim().length > 0 ||
       offerForm.catalogModelName.trim().length > 0 ||
       offerForm.existingFiles.length > 0 ||
       offerForm.price.trim().length > 0 ||
@@ -2062,6 +2092,7 @@ export function Suppliers() {
         managerName: offerForm.managerName.trim(),
         country: offerForm.country,
         websiteUrl: offerForm.websiteUrl.trim(),
+        listingUrl: offerForm.listingUrl.trim(),
         catalogModelName: offerForm.catalogModelName.trim(),
         catalogModelPhoto: offerForm.catalogModelPhoto,
         price: offerForm.price.trim() ? Number(offerForm.price) : 0,
@@ -2711,6 +2742,13 @@ export function Suppliers() {
               // трогает страну, если она уже выбрана (вручную или раньше).
               setOfferForm((f) => ({ ...f, websiteUrl, country: f.country || guessCountryFromWebsite(websiteUrl) }));
             }}
+          />
+
+          <Input
+            label="Ссылка на позицию"
+            placeholder="https://... (страница конкретного товара, не главная сайта)"
+            value={offerForm.listingUrl}
+            onChange={(e) => setOfferForm((f) => ({ ...f, listingUrl: e.target.value }))}
           />
 
           <AddableSelect
