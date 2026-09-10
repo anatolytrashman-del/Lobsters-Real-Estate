@@ -102,6 +102,10 @@ function isPlausiblePrice(dealType, pricePerSqm) {
 // одинаковая проблема и одинаковое решение для обоих источников. Разовая
 // чистка (33 мёртвые ссылки, 26 из них — Realt) сделана вручную, здесь —
 // постоянная защита на будущее.
+//
+// 2026-09-10: расширено на все строки источника (не только необработанные) —
+// тот же самый комментарий, что и в sync-kufar-market-offers.mjs, объясняет
+// причину подробнее.
 async function checkLinkAlive(url) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -119,14 +123,13 @@ async function pruneDeadOffers(adIdsThisRun) {
     .from('market_offers')
     .select('id, ad_id, ad_link')
     .eq('source', 'Realt')
-    .eq('reviewed', false)
     .eq('rejected', false)
     .eq('flagged_for_discussion', false)
     .not('ad_id', 'in', `(${adIdsThisRun.length ? adIdsThisRun.map((id) => `"${id}"`).join(',') : '""'})`);
   if (error) throw error;
   if (!candidates || candidates.length === 0) return;
 
-  console.log(`Realt: ${candidates.length} необработанных строк пропали из свежего скрейпа — проверяю ссылки...`);
+  console.log(`Realt: ${candidates.length} строк (обработанных и нет) пропали из свежего скрейпа — проверяю ссылки...`);
   const deadIds = [];
   for (const c of candidates) {
     const alive = await checkLinkAlive(c.ad_link);

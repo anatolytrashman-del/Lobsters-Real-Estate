@@ -48,8 +48,31 @@
 // Ссылка на объявление сохраняется у каждой строки (owner: "у каждого
 // помещения есть своя ссылка, эту ссылку нужно фиксировать") — общая
 // практика проекта для внешних источников, не только на случай террас.
+//
+// Автозапуск и чистка проданных/снятых объектов (2026-09-10, владелец:
+// "автоматически парсить рынок первички 1-го числа и обновлять инфу") —
+// раньше этот скрипт существовал, но не был подключён ни к одному
+// расписанию вовсе (был только .github/workflows/sync-market-offers-stats.yml
+// для Kufar/Realt) — первичка не обновлялась автоматически никогда, только
+// разовыми ручными прогонами. Теперь — .github/workflows/sync-bir-primary-market.yml,
+// 1-го числа месяца.
+//
+// Проданные/снятые объекты — та же идея, что и pruneDeadOffers в
+// sync-kufar-market-offers.mjs/sync-realt-market-offers.mjs (не доверять
+// одному "не нашли в свежем скрейпе" — это может быть и сбоем скрейпа, не
+// только продажей), но проще: у primary_market_offers нет ручной верификации
+// (владелец подтвердил, что она тут не нужна), поэтому подтверждённо
+// пропавшие строки не помечаются "не подходит", а удаляются по-настоящему —
+// см. pruneStaleOffers ниже. HANDLED_CATEGORIES — категории, которые этот
+// скрипт реально собирает; "Машиноместа (крытые/подземные)" сюда НЕ входят —
+// та часть primary_market_offers дозагружена отдельным разовым запуском (см.
+// комментарий в начале файла) и этим скриптом не обновляется вовсе — если
+// не исключить эти категории явно, чистка стёрла бы их целиком при каждом
+// прогоне (в свежем скрейпе их никогда и не будет).
 
 import { createClient } from '@supabase/supabase-js';
+
+const HANDLED_CATEGORIES = ['Бизнес-апартаменты', 'Кладовые', 'Торговые помещения', 'Офисы'];
 
 const SUPABASE_URL = 'https://iohcdylttyuhwovztrbk.supabase.co';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -226,6 +249,74 @@ async function fetchCommercial() {
     });
 }
 
+// Тот же приём, что и checkLinkAlive в sync-kufar-market-offers.mjs/
+// sync-realt-market-offers.mjs — реальный HTTP-запрос перед тем, как что-то
+// удалять, не доверяем одному "пропало из свежего скрейпа". Честная
+// оговорка: что именно отдаёт bir.by для проданного/снятого объекта — 404
+// или, например, 200 с "объект недоступен" в теле — на живом прогоне до сих
+// пор не проверялось (объекты в базе никогда раньше не пропадали настолько
+// массово, чтобы поймать такой случай). Если окажется, что это не 404 —
+// проверка просто ничего не найдёт и строки останутся висеть (безопасный
+// исход, не наоборот) — тогда стоит поправить условие под реальный ответ.
+async function checkLinkAlive(url) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, { redirect: 'follow' });
+      return res.status !== 404;
+    } catch {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  return null; // сеть не ответила дважды подряд — не судим, пропускаем строку
+}
+
+// Удаляет по-настоящему проданные/снятые объекты (см. большой комментарий в
+// начале файла про HANDLED_CATEGORIES). Скоуп — ТОЛЬКО категории, которые
+// этот скрипт реально собирает, и ТОЛЬКО те из них, где свежий скрейп дал
+// хоть один результат (пустой список для категории — вероятнее сбой
+// скрейпа, чем "распродали всё подчистую разом" — в этом случае существующие
+// строки этой категории не трогаем вовсе, до следующего прогона).
+async function pruneStaleOffers(offers) {
+  const freshIdsByCategory = new Map(HANDLED_CATEGORIES.map((c) => [c, new Set()]));
+  for (const o of offers) {
+    if (freshIdsByCategory.has(o.category)) freshIdsByCategory.get(o.category).add(o.external_id);
+  }
+
+  const deadIds = [];
+  for (const category of HANDLED_CATEGORIES) {
+    const freshIds = freshIdsByCategory.get(category);
+    if (freshIds.size === 0) {
+      console.log(`bir.by (${category}): свежий скрейп дал 0 объявлений — похоже на сбой, существующие строки не трогаю.`);
+      continue;
+    }
+
+    const { data: candidates, error } = await supabase
+      .from('primary_market_offers')
+      .select('id, external_id, ad_link')
+      .eq('source', 'bir.by')
+      .eq('category', category)
+      .not('external_id', 'in', `(${[...freshIds].map((id) => `"${id}"`).join(',')})`);
+    if (error) throw error;
+    if (!candidates || candidates.length === 0) continue;
+
+    console.log(`bir.by (${category}): ${candidates.length} строк пропало из свежего скрейпа — проверяю ссылки...`);
+    for (const c of candidates) {
+      const alive = c.ad_link ? await checkLinkAlive(c.ad_link) : null;
+      if (alive === false) deadIds.push(c.id);
+      await new Promise((r) => setTimeout(r, 300)); // не спамить источник частыми запросами подряд
+    }
+  }
+
+  if (deadIds.length === 0) {
+    console.log('bir.by: подтверждённо проданных/снятых объектов не найдено.');
+    return;
+  }
+
+  const { error: deleteError } = await supabase.from('primary_market_offers').delete().in('id', deadIds);
+  if (deleteError) throw deleteError;
+  console.log(`bir.by: ${deadIds.length} проданных/снятых объектов удалено из primary_market_offers.`);
+}
+
 async function main() {
   const [apartments, pantry, commercial] = await Promise.all([fetchApartments(), fetchPantry(), fetchCommercial()]);
   const offers = [...apartments, ...pantry, ...commercial];
@@ -255,6 +346,8 @@ async function main() {
     .upsert(offers, { onConflict: 'source,external_id' });
   if (error) throw error;
   console.log(`Сохранено ${offers.length} объявлений в primary_market_offers.`);
+
+  await pruneStaleOffers(offers);
 }
 
 main().catch((err) => {
