@@ -1577,43 +1577,43 @@ export function DistrictGuidePage() {
         </Link>
         {/* Единая liquid-glass подложка под заголовком/подзаголовком и фото —
             раньше текст стоял прямо на фоне страницы, а фото было в своей
-            отдельной рамке; теперь один блок. Колонки не 50/50
-            (sm:grid-cols-2), а 3:2 — заголовку описания больше не тесно,
-            фото просто пропорционально сузилось вместе со своей колонкой
-            (aspect-[4/5] не трогали, кроме мобильного — см. ниже). Карточки
-            с цифрами были ненадолго убраны с первого экрана в параллельном
-            заходе — владелец в этом же диалоге явно попросил вернуть их
-            сюда, отдельным блоком "Ключевые цифры" сразу после hero, перед
-            "Застройщиком района" (см. statTiles, id="key-stats" ниже).
-            На мобильном (владелец: "хочу чтобы реально всё влезло на
-            первый экран айфона 13") — p-4 вместо p-6, gap-4 вместо gap-6
-            между текстом и фото, и более короткий aspect-video вместо
-            высокого портретного aspect-[4/5] — портретное фото шириной
-            ~320px и так даёт ~400px высоты, вместе с текстом это гораздо
-            больше первого экрана. */}
-        {/* overflow-hidden — реальная причина бага "картинка вылезает за
-            пределы блока, следующий блок влезает" (владелец, скриншот
-            после первого захода): у HeroImageSlider есть drop-shadow-фильтр
-            с blur-радиусом до 32px (см. filter в HeroImageSlider.tsx) — на
-            высоком портретном фото (400px, старый p-6/gap-6 с запасом)
-            тень не выходила за пределы карточки, но на укороченном
-            мобильном фото (aspect-video, ~180px) вместе с урезанными
-            мобильными отступами (p-4/gap-4) буфера под тень стало не
-            хватать — она визуально "протекала" в соседнюю карточку
-            "Ключевые цифры", хотя геометрически (getBoundingClientRect)
-            элементы не пересекались. overflow-hidden обрезает именно
-            ПОКРАСКУ (тень/диагональный срез clip-path), не задевая
-            border-radius самой карточки — стандартное поведение. */}
+            отдельной рамке; теперь один блок. На sm+ — 3:2 колонки (текст |
+            фото), aspect-[4/5] у фото не трогаем. На мобильном — свой
+            порядок (владелец: "Лого / Заголовок / Фотка / Описание / Бейдж
+            обновлено"), для чего заголовок/описание/бейдж перестали быть
+            одним общим блоком — они прямые дети контейнера с CSS `order`,
+            а на sm+ группа снова собирается в одну колонку через
+            `sm:contents` → `sm:flex sm:flex-col` (техника "responsive
+            reorder": на мобильном `contents` убирает у обёртки собственный
+            бокс, её дети становятся дырами верхнего уровня и участвуют в
+            `order` наравне с блоком фото; на sm+ обёртка возвращает себе
+            обычный бокс и снова группирует текст в одну колонку grid'а).
+            На мобильном контейнер — `flex` (не `grid-cols-1`): два захода
+            подряд с CSS Grid + `aspect-ratio` у фото на реальном iPhone
+            Safari владелец ловил баг "фото обрезается снизу, высота
+            карточки посчитана меньше, чем реально нужно" — в headless
+            Chromium это не воспроизводилось (см. журнал сессии), поэтому
+            вместо гадания дальше — просто не используем Grid для
+            одноколоночного мобильного случая: flex+gap для одной колонки
+            не имеет такой историчекой связки багов с aspect-ratio, как
+            CSS Grid. Фото — снова во ВЕСЬ доступный размер карточки, без
+            узкого max-w-xs и без укороченного aspect-video (владелец:
+            "у тебя достаточно места, чтобы разместить фото в полный
+            размер" — предыдущий заход пытался уместить весь hero в
+            один экран ценой обрезки фото, теперь в приоритете именно
+            неурезанное фото, с прокруткой было не столько проблем). */}
         <div
           className={cn(
-            'grid grid-cols-1 gap-4 overflow-hidden p-4 sm:grid-cols-[3fr_2fr] sm:items-center sm:gap-6 sm:p-8',
+            'flex flex-col gap-4 overflow-hidden p-4 sm:grid sm:grid-cols-[3fr_2fr] sm:items-center sm:gap-6 sm:p-8',
             glassCardClass,
           )}
           style={glassCardShadow}
         >
-          <div className="flex flex-col gap-3">
-            <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">{PAGE_H1}</h1>
-            <p className="text-base text-ink-muted">{INTRO_TEXT}</p>
+          <div className="contents sm:flex sm:flex-col sm:gap-3">
+            <h1 className="order-1 text-2xl font-extrabold leading-tight text-ink sm:order-none sm:text-3xl">
+              {PAGE_H1}
+            </h1>
+            <p className="order-3 text-base text-ink-muted sm:order-none">{INTRO_TEXT}</p>
             {/* Пометка свежести — владелец: "чтобы инфа выглядела супер-
                 актуальной", спокойный зелёный, не просто блёклый текст.
                 BadgeCheck вместо точки/иконки календаря — читается как
@@ -1623,16 +1623,16 @@ export function DistrictGuidePage() {
                 мелкого текста (аудит Accessibility PageSpeed это поймал);
                 глобальный токен не трогаем (задевает всё приложение), точечная
                 более тёмная версия только здесь — 5,9:1. */}
-            <span className="flex w-fit items-center gap-1.5 rounded-full border border-success/30 bg-success-bg px-3 py-1 text-xs font-semibold text-[#0f6b3d]">
+            <span className="order-4 flex w-fit items-center gap-1.5 rounded-full border border-success/30 bg-success-bg px-3 py-1 text-xs font-semibold text-[#0f6b3d] sm:order-none">
               <BadgeCheck className="h-3.5 w-3.5 shrink-0" />
               {UPDATED_BADGE_LABEL}
             </span>
           </div>
-          <div className="mx-auto w-full max-w-xs sm:max-w-none">
+          <div className="order-2 w-full sm:order-none">
             <HeroImageSlider
               images={HERO_IMAGES}
               alt="Аэрофото района Минск Мир"
-              aspectClassName="aspect-video sm:aspect-[4/5]"
+              aspectClassName="aspect-[4/5]"
               imageWidth={512}
               imageHeight={640}
             />
