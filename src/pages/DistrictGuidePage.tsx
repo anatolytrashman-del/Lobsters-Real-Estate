@@ -23,6 +23,7 @@ import {
   ExternalLink,
   Flower2,
   Globe,
+  GraduationCap,
   Grid2x2,
   HardHat,
   Landmark,
@@ -31,12 +32,13 @@ import {
   MapPin,
   Menu,
   Package,
+  PawPrint,
   Phone,
-  Pill,
   Scissors,
   ShieldCheck,
   ShoppingBag,
   ShoppingBasket,
+  Sofa,
   Sparkles,
   Stethoscope,
   Store,
@@ -595,16 +597,35 @@ function densityTier(count: number): DensityTier {
   return 'low';
 }
 
+// 2026-09-10 — владелец: "актуализируй вообще все заведения" + следом
+// попросил 5 новых категорий (Розница/Мебель/Образование/Зоотовары и
+// объединение аптек+медицины в "Здоровье") "и в карте, и в аналитике на
+// сайте (в том числе текстом в плиточках), и в карте конкуренции". Числа
+// здесь — не живой импорт data/districtPlaces.ts (тот тянет ~60 КБ в
+// главный чанк лендинга, см. комментарий про lazy() у карт выше), а те же
+// плоские константы, что и у остальных плиток этого блока — сняты прямым
+// подсчётом мест в соответствующих категориях сразу после актуализации
+// карты в этом же заходе.
+const healthTotal = 51;
+const retailTotal = 74;
+const furnitureTotal = 57;
+const educationTotal = 14;
+const petsTotal = 12;
+
 const densityData: { icon: LucideIcon; label: string; count: number }[] = [
   { icon: Scissors, label: 'Салоны красоты', count: beautyTotal },
   { icon: Coffee, label: 'Общепит', count: foodServiceTotal },
   { icon: ShoppingBasket, label: 'Продукты', count: groceryTotal },
   { icon: Flower2, label: 'Цветы', count: flowerTotal },
   { icon: Package, label: 'ПВЗ', count: pvzTotal },
-  { icon: Pill, label: 'Аптеки', count: pharmacyTotal },
+  { icon: Stethoscope, label: 'Здоровье', count: healthTotal },
   { icon: Cigarette, label: 'Табак / вейп', count: tobaccoVapeTotal },
   { icon: CreditCard, label: 'Банки', count: bankPointsTotal },
   { icon: Dumbbell, label: 'Спорт и фитнес', count: sportTotal },
+  { icon: ShoppingBag, label: 'Розница и товары', count: retailTotal },
+  { icon: Sofa, label: 'Мебель и товары для дома', count: furnitureTotal },
+  { icon: GraduationCap, label: 'Образование', count: educationTotal },
+  { icon: PawPrint, label: 'Зоотовары и ветеринария', count: petsTotal },
 ];
 
 // Строка не показывается, если для текущего типа сделки по ней нет ни
