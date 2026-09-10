@@ -637,6 +637,10 @@ const educationCategories: { label: string; text: string }[] = [
 // Владелец, 2026-09-10: "расположи от большего к меньшему" — сортировка
 // применяется к отображению, не переставляет сам список выше (порядок
 // объявления там смысловой, не по величине).
+// 2026-09-10 — "Банки" убраны из этой сетки плиток по прямой просьбе
+// владельца (карточка сама по себе осталась нужной в "Аналитике по сферам
+// бизнеса" — там своя таблица с отделениями/банкоматами, bankPointsTotal
+// используется и там, не стал трогать), заодно число плиток стало чётным.
 const densityData: { icon: LucideIcon; label: string; count: number }[] = [
   { icon: Scissors, label: 'Салоны красоты', count: beautyTotal },
   { icon: Coffee, label: 'Общепит', count: foodServiceTotal },
@@ -645,7 +649,6 @@ const densityData: { icon: LucideIcon; label: string; count: number }[] = [
   { icon: Package, label: 'ПВЗ', count: pvzTotal },
   { icon: Stethoscope, label: 'Здоровье', count: healthTotal },
   { icon: Cigarette, label: 'Табак / вейп', count: tobaccoVapeTotal },
-  { icon: CreditCard, label: 'Банки', count: bankPointsTotal },
   { icon: Dumbbell, label: 'Спорт и фитнес', count: sportTotal },
   { icon: ShoppingBag, label: 'Розница и товары', count: retailTotal },
   { icon: Sofa, label: 'Мебель и товары для дома', count: furnitureTotal },
