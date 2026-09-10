@@ -61,3 +61,13 @@ export async function fetchDocumentFileAsAttachment(file: { url: string; fileNam
   const contentBase64 = await blobToBase64(blob);
   return { fileName: file.fileName, contentType: guessContentType(file.fileName, blob.type), contentBase64 };
 }
+
+// Владелец, 2026-09-10: "мне нужна возможность прикреплять файлы к письму:
+// картинки, таблицы, не ограничивай форматы" — произвольный File из
+// <input type="file"> (не по URL, как у карточки организации выше) в тот
+// же формат вложения, что уже ждёт Resend (см. api/purchase-send-email.js).
+// Без ограничения по расширению/типу — что выбрал в проводнике, то и уйдёт.
+export async function fileToAttachment(file: File): Promise<EmailAttachment> {
+  const contentBase64 = await blobToBase64(file);
+  return { fileName: file.name, contentType: guessContentType(file.name, file.type), contentBase64 };
+}
