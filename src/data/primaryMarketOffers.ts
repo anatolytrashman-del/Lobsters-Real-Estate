@@ -26,6 +26,16 @@ export interface PrimaryMarketOffer {
   priceTotalEur: number;
   adLink: string | null;
   scrapedAt: string;
+  // 2026-09-10 (владелец: "раз у нас есть инфа, сколько юнитов снял с сайта
+  // застройщик, значит у нас есть инфа по продажам") — заполняется
+  // scripts/sync-bir-primary-market.mjs (pruneStaleOffers), когда объект
+  // подтверждённо пропал с bir.by (ссылка отдаёт 404). null — объект всё
+  // ещё в продаже. Не факт сделки, а вывод из снятия объявления — bir.by
+  // это собственный сайт застройщика, у объекта там обычно нет причины
+  // пропасть, кроме продажи, но 100% гарантии нет (могла быть и техническая
+  // правка) — поэтому везде на страницах формулировка "предположительно
+  // продано", не "продано".
+  soldAt: string | null;
 }
 
 export interface PrimaryMarketOfferRow {
@@ -45,6 +55,7 @@ export interface PrimaryMarketOfferRow {
   price_total_eur: number;
   ad_link: string | null;
   scraped_at: string;
+  sold_at: string | null;
 }
 
 // Чистая площадь — общая минус терраса (тот же принцип, что netSize у
@@ -114,10 +125,17 @@ export const PRIMARY_MARKET_ROW_ORDER: { key: string; label: string; filter: (o:
   { key: 'parking-underground', label: 'Машиноместа подземные', filter: (o) => o.category === 'Машиноместа (подземные)' },
 ];
 
+// Сводка "что сейчас продаётся" — предположительно проданные (soldAt задан,
+// см. комментарий у PrimaryMarketOffer.soldAt) объекты сюда не входят, они
+// больше не предложение на рынке. Фильтр применяется здесь ОДИН РАЗ, а не в
+// каждом вызывающем компоненте по отдельности — так безопаснее (не забудешь
+// отфильтровать в новом месте) и сам смысл "рыночного среза" требует именно
+// активных предложений, ничего другого эта функция и не должна показывать.
 export function buildPrimaryMarketPivot(offers: PrimaryMarketOffer[]): PrimaryMarketPivotRow[] {
+  const active = offers.filter((o) => !o.soldAt);
   const rows: PrimaryMarketPivotRow[] = [];
   for (const { key, label, filter } of PRIMARY_MARKET_ROW_ORDER) {
-    const matched = offers.filter(filter);
+    const matched = active.filter(filter);
     if (matched.length === 0) continue;
     const areas = matched.map(primaryNetAreaM2);
     const prices = matched.map(primaryNetPricePerM2Eur);
@@ -133,4 +151,51 @@ export function buildPrimaryMarketPivot(offers: PrimaryMarketOffer[]): PrimaryMa
     });
   }
   return rows;
+}
+
+export interface PrimarySalesStat {
+  key: string;
+  label: string;
+  soldCount: number;
+  soldAreaM2: number;
+  // Сумма ПОСЛЕДНЕЙ известной цены объявления на момент, когда оно пропало
+  // с bir.by — не факт сделки (застройщик мог согласовать скидку/рассрочку
+  // на иных условиях), явно так и подписано на страницах, не "выручка".
+  soldValueEur: number;
+}
+
+// Продажи застройщика (владелец, 2026-09-10: "раз у нас есть инфа, сколько
+// юнитов снял с сайта застройщик, значит у нас есть инфа по продажам
+// застройщика") — считается по тем же категориям и в том же порядке, что и
+// buildPrimaryMarketPivot, только по объектам с soldAt (задаётся
+// scripts/sync-bir-primary-market.mjs при подтверждённом снятии с публикации,
+// см. комментарий у PrimaryMarketOffer.soldAt). Отслеживание запущено
+// 2026-09-10 — до этой даты объекты пропадали с сайта незамеченными
+// (скрипт их не удалял и не помечал), поэтому это не полная история продаж
+// комплекса с открытия, а только то, что зафиксировано автоматической
+// проверкой с этого момента.
+export function buildPrimarySalesSummary(offers: PrimaryMarketOffer[]): PrimarySalesStat[] {
+  const rows: PrimarySalesStat[] = [];
+  for (const { key, label, filter } of PRIMARY_MARKET_ROW_ORDER) {
+    const sold = offers.filter((o) => o.soldAt != null && filter(o));
+    if (sold.length === 0) continue;
+    rows.push({
+      key,
+      label,
+      soldCount: sold.length,
+      soldAreaM2: Math.round(sold.reduce((sum, o) => sum + primaryNetAreaM2(o), 0) * 10) / 10,
+      soldValueEur: Math.round(sold.reduce((sum, o) => sum + o.priceTotalEur, 0)),
+    });
+  }
+  return rows;
+}
+
+// Самая ранняя дата в имеющихся soldAt — используется как "отслеживаем с
+// {дата}" на странице, не хардкодится: если понадобится когда-нибудь снести
+// и пересобрать отслеживание заново, подпись сама подстроится под реальные
+// данные, не будет врать про уже неактуальную дату запуска.
+export function earliestSoldAt(offers: PrimaryMarketOffer[]): string | null {
+  const dates = offers.map((o) => o.soldAt).filter((d): d is string => d != null);
+  if (dates.length === 0) return null;
+  return dates.reduce((min, d) => (d < min ? d : min));
 }

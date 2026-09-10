@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -23,6 +23,7 @@ import {
   ExternalLink,
   Flower2,
   Globe,
+  GraduationCap,
   Grid2x2,
   HardHat,
   Landmark,
@@ -31,12 +32,14 @@ import {
   MapPin,
   Menu,
   Package,
+  PackageCheck,
+  PawPrint,
   Phone,
-  Pill,
   Scissors,
   ShieldCheck,
   ShoppingBag,
   ShoppingBasket,
+  Sofa,
   Sparkles,
   Stethoscope,
   Store,
@@ -61,7 +64,7 @@ import { fetchPublicMarketOffers } from '../lib/marketOffersApi';
 import { AREA_BUCKET_ORDER, areaBucket, MARKET_PROPERTY_TYPES, netSize, netPricePerSqm } from '../data/marketOffers';
 import type { MarketOffer } from '../data/marketOffers';
 import { fetchPrimaryMarketOffers } from '../lib/primaryMarketOffersApi';
-import { buildPrimaryMarketPivot } from '../data/primaryMarketOffers';
+import { buildPrimaryMarketPivot, buildPrimarySalesSummary, earliestSoldAt } from '../data/primaryMarketOffers';
 import type { PrimaryMarketOffer } from '../data/primaryMarketOffers';
 import { fetchTodayRateOrLatestCached } from '../lib/exchangeRatesApi';
 import { convertToEur, convertFromEur } from '../lib/currencyConvert';
@@ -595,43 +598,68 @@ function densityTier(count: number): DensityTier {
   return 'low';
 }
 
+// 2026-09-10 — владелец: "актуализируй вообще все заведения" + следом
+// попросил 5 новых категорий (Розница/Мебель/Образование/Зоотовары и
+// объединение аптек+медицины в "Здоровье") "и в карте, и в аналитике на
+// сайте (в том числе текстом в плиточках), и в карте конкуренции". Числа
+// здесь — не живой импорт data/districtPlaces.ts (тот тянет ~60 КБ в
+// главный чанк лендинга, см. комментарий про lazy() у карт выше), а те же
+// плоские константы, что и у остальных плиток этого блока — сняты прямым
+// подсчётом мест в соответствующих категориях сразу после актуализации
+// карты в этом же заходе.
+const healthTotal = 51;
+const retailTotal = 74;
+const furnitureTotal = 57;
+const educationTotal = 14;
+const petsTotal = 12;
+
+// Владелец: "они все одинаковые [4 новых блока], а предыдущие блоки у нас
+// в разном дизайне... старые шаблоны блоков отличные" — переиспользованы
+// существующие визуальные шаблоны этого же раздела (пилюли-разбивка, как
+// у "Общепита"/ПВЗ; крупная цифра, как у "Салонов красоты"; список
+// подкатегорий, как у "Медицины"; две колонки сравнения, как у "СТО"),
+// не изобретал новых. "Живая Вода"/"Живая вода" — две разные компании с
+// почти одинаковым названием (см. дубли-проверку при актуализации карты),
+// сведены в одну пилюлю по смыслу, не задваивая на вид неотличимые строки.
+const retailWaterBreakdown: { label: string; count: number }[] = [
+  { label: 'Живая вода', count: 5 },
+  { label: 'Питьевая вода', count: 2 },
+  { label: 'Чистая вода', count: 2 },
+];
+
+const educationCategories: { label: string; text: string }[] = [
+  { label: 'Языковые курсы:', text: 'English VIP, Сол Минск, Britannica, Smile, «Лаборатория английского языка»' },
+  { label: 'Детское развитие:', text: '«Бум Кидс», «Территория детства», Sreda' },
+  { label: 'Репетиторы и учебные центры:', text: '«Мир знаний», репетитор по математике, ИП Ташбаев В. А.' },
+  { label: 'Другое:', text: 'автошкола «Дорожная азбука», коррекционный центр ГимельТав, IT и робототехника КиберЛаб' },
+];
+
+// Владелец, 2026-09-10: "расположи от большего к меньшему" — сортировка
+// применяется к отображению, не переставляет сам список выше (порядок
+// объявления там смысловой, не по величине).
+// 2026-09-10 — "Банки" убраны из этой сетки плиток по прямой просьбе
+// владельца (карточка сама по себе осталась нужной в "Аналитике по сферам
+// бизнеса" — там своя таблица с отделениями/банкоматами, bankPointsTotal
+// используется и там, не стал трогать), заодно число плиток стало чётным.
 const densityData: { icon: LucideIcon; label: string; count: number }[] = [
   { icon: Scissors, label: 'Салоны красоты', count: beautyTotal },
   { icon: Coffee, label: 'Общепит', count: foodServiceTotal },
   { icon: ShoppingBasket, label: 'Продукты', count: groceryTotal },
   { icon: Flower2, label: 'Цветы', count: flowerTotal },
   { icon: Package, label: 'ПВЗ', count: pvzTotal },
-  { icon: Pill, label: 'Аптеки', count: pharmacyTotal },
+  { icon: Stethoscope, label: 'Здоровье', count: healthTotal },
   { icon: Cigarette, label: 'Табак / вейп', count: tobaccoVapeTotal },
-  { icon: CreditCard, label: 'Банки', count: bankPointsTotal },
   { icon: Dumbbell, label: 'Спорт и фитнес', count: sportTotal },
-];
+  { icon: ShoppingBag, label: 'Розница и товары', count: retailTotal },
+  { icon: Sofa, label: 'Мебель и товары для дома', count: furnitureTotal },
+  { icon: GraduationCap, label: 'Образование', count: educationTotal },
+  { icon: PawPrint, label: 'Зоотовары и ветеринария', count: petsTotal },
+].sort((a, b) => b.count - a.count);
 
 // Строка не показывается, если для текущего типа сделки по ней нет ни
 // одного предложения. Сам порядок — MARKET_PROPERTY_TYPES (data/marketOffers.ts),
 // общий со страницей верификации /admin/market-offers.
 const MARKET_PROPERTY_TYPE_ORDER = MARKET_PROPERTY_TYPES;
-
-// Плоская строка "тип помещения × диапазон площади" — владелец, 2026-09-09:
-// "Сделай таблицу вторичного рынка по дизайну и оформлению 1 в 1 как и
-// первичный рынок" (см. buildPrimaryMarketPivot в data/primaryMarketOffers.ts).
-// Раньше это была сводная матрица (строка — тип помещения, столбец — диапазон
-// площади, в ячейке — count+медиана друг под другом) — по внешнему виду
-// заметно отличалась от таблицы первичного рынка (там — обычный плоский
-// список категорий с колонками Предложений/Площадь/Мин/Средняя/Макс). Теперь
-// строка — это одна КОНКРЕТНАЯ комбинация (тип помещения, диапазон площади),
-// а колонки повторяют первичный рынок буквально: Предложений/Площадь/Мин/
-// Медиана/Макс (столбец назван "Медиана", не "Средняя" — это действительно
-// медиана, не среднее, ради устойчивости к выбросам ценам).
-interface MarketPivotRow {
-  key: string;
-  propertyType: string;
-  areaLabel: string;
-  count: number;
-  priceMinUsd: number;
-  priceMedianUsd: number;
-  priceMaxUsd: number;
-}
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -653,53 +681,17 @@ function median(values: number[]): number {
 // верифицирует объявление на /admin/market-offers, оно на этой же
 // перезагрузке страницы появится в сводке — без отдельного шага "включить
 // в статистику".
-function buildMarketPivot(offers: MarketOffer[], dealType: 'sale' | 'rent', finishStatus: string): MarketPivotRow[] {
-  const byType = new Map<string, Map<string, number[]>>();
-
-  for (const offer of offers) {
-    if (!offer.reviewed || offer.rejected || offer.dealType !== dealType || offer.finishStatus !== finishStatus) continue;
-    if (!byType.has(offer.propertyType)) byType.set(offer.propertyType, new Map());
-    const byBucket = byType.get(offer.propertyType)!;
-    const bucket = areaBucket(netSize(offer));
-    if (!byBucket.has(bucket)) byBucket.set(bucket, []);
-    byBucket.get(bucket)!.push(netPricePerSqm(offer));
-  }
-
-  const rows: MarketPivotRow[] = [];
-  for (const propertyType of MARKET_PROPERTY_TYPE_ORDER) {
-    const byBucket = byType.get(propertyType);
-    if (!byBucket) continue;
-    for (const bucket of AREA_BUCKET_ORDER) {
-      const prices = byBucket.get(bucket);
-      if (!prices || prices.length === 0) continue;
-      rows.push({
-        key: `${propertyType}__${bucket}`,
-        propertyType,
-        areaLabel: bucket,
-        count: prices.length,
-        priceMinUsd: Math.round(Math.min(...prices)),
-        priceMedianUsd: Math.round(median(prices)),
-        priceMaxUsd: Math.round(Math.max(...prices)),
-      });
-    }
-  }
-  return rows;
-}
-
-// Владелец, 2026-09-10 (мобильные карточки вторичного рынка): "не нравится,
-// что по несколько строк на одинаковые категории. Бизнес-апартаменты —
-// одна строка, а внутри уже аналитика по площадям. Сделай по формату
-// первички" — та же идея, что и "По площади" в PrimaryMarketProModal
-// (см. этот же комментарий там), только не в отдельной Pro-модалке, а
-// прямо внутри карточки категории ("внутри", буквально). ТОЛЬКО для
-// мобильных карточек — desktop-таблица (buildMarketPivot выше) сознательно
-// не тронута: она была специально сведена к плоским строкам "тип ×
-// площадь" по прямому запросу владельца 2026-09-09 ("1 в 1 как первичка"),
-// и в этом заходе владелец жаловался только на вид мобильных карточек, не
-// на таблицу. Дублирует часть логики buildMarketPivot (группировка по
-// типу/площади, тот же median/netSize/netPricePerSqm) — сознательно не
-// рефакторил buildMarketPivot под общий код, чтобы не трогать проверенный
-// desktop-путь ради потребности только одной, отдельной мобильной вёрстки.
+//
+// Одна строка на тип помещения (агрегат по всем площадям), разбивка по
+// диапазону площади — подстроками внутри (`buckets`). Раньше (владелец,
+// 2026-09-09: "1 в 1 как первичка") это была отдельная плоская функция
+// (buildMarketPivot) — одна строка на каждую комбинацию тип×площадь, без
+// группировки — сначала применили только к мобильным карточкам
+// (владелец, 2026-09-10: "одна строка, а внутри уже аналитика по
+// площадям"), затем тем же днём владелец увидел, что desktop-таблица
+// осталась старой, принял её за баг с дублями ("объединяли же в одну") —
+// в итоге обе версии (мобильная и desktop) сведены на эту единую функцию,
+// плоская buildMarketPivot удалена как более не используемая.
 interface MarketAreaBucketStat {
   areaLabel: string;
   count: number;
@@ -811,6 +803,18 @@ function formatLatestUpdate(offers: MarketOffer[]): string {
   const latest = offers.reduce((max, o) => (o.updatedAt > max ? o.updatedAt : max), offers[0].updatedAt);
   const date = new Date(latest);
   return `${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+}
+
+// "Зафиксировано с {дата}" у блока "Продажи застройщика" — берётся из
+// earliestSoldAt (data/primaryMarketOffers.ts), не хардкодится: если
+// когда-нибудь отслеживание перезапустят с нуля, подпись сама подстроится
+// под реальные данные. День перед месяцем требует родительного падежа
+// ("10 сентября", не "10 сентябрь") — MONTH_NAMES выше в именительном
+// (годится для "Обновлено: сентябрь 2026", где месяц не после числа), для
+// этого случая проще и надёжнее взять готовый Intl, чем заводить ещё один
+// массив склонений в файле, где их и так уже несколько.
+function formatSoldSinceDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
 // "Не указано" убрано из переключателя (владелец, 2026-08-25: "убирай
@@ -1332,10 +1336,15 @@ const districtFaq: FaqItem[] = [
 // У "Частые вопросы"/"Red One" своей иконки в заголовке секции нет (FAQ —
 // просто текст, Red One — CTA-блок без иконки), для меню всё равно нужна
 // своя — CircleHelp/ArrowRight не заняты нигде на странице.
+// Порядок записей ниже — ровно порядок блоков в JSX (сверен построчно, не
+// на глаз), несколько раз расходился после точечных переносов блоков
+// (карта района → под "Управляющая компания", FAQ → под Red One) —
+// держать в актуальном состоянии при любом следующем переносе секции.
 const SECTION_NAV: { id: string; label: string; icon: LucideIcon }[] = [
   { id: 'key-stats', label: 'Ключевые цифры', icon: Sparkles },
   { id: 'developer', label: 'Застройщик', icon: HardHat },
   { id: 'management-company', label: 'Управляющая компания', icon: ShieldCheck },
+  { id: 'map', label: 'Карта района', icon: MapPin },
   { id: 'audience', label: 'Целевая аудитория', icon: Users },
   { id: 'traffic', label: 'Генераторы трафика', icon: Landmark },
   { id: 'population-density', label: 'Плотность населения', icon: Building2 },
@@ -1344,13 +1353,13 @@ const SECTION_NAV: { id: string; label: string; icon: LucideIcon }[] = [
   { id: 'property-types', label: 'Виды недвижимости', icon: Layers },
   { id: 'business-centers', label: 'Бизнес-центры', icon: Building2 },
   { id: 'primary-market', label: 'Первичный рынок', icon: Banknote },
+  { id: 'developer-sales', label: 'Продажи застройщика', icon: PackageCheck },
   { id: 'market', label: 'Вторичный рынок', icon: TrendingUp },
   { id: 'business-analytics', label: 'Аналитика по сферам бизнеса', icon: LayoutGrid },
   { id: 'transport', label: 'Транспорт', icon: TrainFront },
   { id: 'parking', label: 'Паркинги', icon: Car },
-  { id: 'map', label: 'Карта района', icon: MapPin },
-  { id: 'faq', label: 'Частые вопросы', icon: CircleHelp },
   { id: 'red-one', label: 'Red One', icon: ArrowRight },
+  { id: 'faq', label: 'Частые вопросы', icon: CircleHelp },
 ];
 
 // Гид для предпринимателей и собственников коммерческой недвижимости, не
@@ -1365,6 +1374,19 @@ export function DistrictGuidePage() {
   const [marketFinish, setMarketFinish] = useState<(typeof MARKET_FINISH_OPTIONS)[number]>('С отделкой');
   const [primaryMarketOffers, setPrimaryMarketOffers] = useState<PrimaryMarketOffer[] | null>(null);
   const [primaryMarketProKey, setPrimaryMarketProKey] = useState<string | null>(null);
+
+  // Владелец, 2026-09-10: "Если свежей статистики у нас нет, то не выводи
+  // этот блок на странице вообще" — блок "Продажи застройщика" (см. ниже)
+  // рендерится целиком, только когда есть хотя бы одна подтверждённая
+  // продажа; пока автопроверка (scripts/sync-bir-primary-market.mjs) ещё
+  // ни разу не отработала успешно до конца, блока на странице просто нет —
+  // ни заголовка, ни заглушки "отслеживание запущено". Вынесено в общий
+  // useMemo, чтобы одно и то же число управляло и самим блоком, и пунктом
+  // меню-оглавления на него (см. developerSalesNavVisible ниже).
+  const developerSalesTotalCount = useMemo(() => {
+    if (!primaryMarketOffers) return 0;
+    return buildPrimarySalesSummary(primaryMarketOffers).reduce((sum, r) => sum + r.soldCount, 0);
+  }, [primaryMarketOffers]);
 
   // Переключатель валют (первичный/вторичный рынок) — владелец: "справа от
   // заголовка просится переключатель EUR/USD/BYN/RUB, курсы с bnb.by".
@@ -1468,6 +1490,10 @@ export function DistrictGuidePage() {
   // только когда видна целиком, а длинные блоки (например "Первичный рынок")
   // никогда не помещаются в экран целиком.
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  // "Продажи застройщика" появляется в DOM позже (асинхронно, после того как
+  // developerSalesTotalCount станет > 0) — без этой зависимости обсёрвер,
+  // однажды настроенный на пустой DOM без этого блока, никогда бы его не
+  // подхватил (эффект с [] выполняется один раз при монтировании).
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -1483,7 +1509,15 @@ export function DistrictGuidePage() {
       if (el) observer.observe(el);
     }
     return () => observer.disconnect();
-  }, []);
+  }, [developerSalesTotalCount]);
+
+  // Пункт меню-оглавления "Продажи застройщика" виден, только пока виден и
+  // сам блок (developerSalesTotalCount > 0) — иначе ссылка вела бы на
+  // несуществующий якорь.
+  const visibleSectionNav = useMemo(
+    () => SECTION_NAV.filter((item) => item.id !== 'developer-sales' || developerSalesTotalCount > 0),
+    [developerSalesTotalCount],
+  );
 
   // Само меню-оглавление тоже скроллится (высокий список разделов не
   // влезает в max-h экрана) — владелец: активный пункт при длинном скролле
@@ -1534,7 +1568,7 @@ export function DistrictGuidePage() {
             <X className="h-4 w-4" />
           </button>
         </div>
-        {SECTION_NAV.map(({ id, label, icon: Icon }) => (
+        {visibleSectionNav.map(({ id, label, icon: Icon }) => (
           <a
             key={id}
             href={`#${id}`}
@@ -1626,7 +1660,7 @@ export function DistrictGuidePage() {
               style={navBox ? { ...glassCardShadow, left: navBox.left, width: navBox.width } : { visibility: 'hidden' }}
             >
               <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">На странице</p>
-              {SECTION_NAV.map(({ id, label, icon: Icon }) => (
+              {visibleSectionNav.map(({ id, label, icon: Icon }) => (
                 <a
                   key={id}
                   href={`#${id}`}
@@ -1868,6 +1902,26 @@ export function DistrictGuidePage() {
               </a>
             </div>
           </div>
+        </div>
+
+        {/* Владелец, 2026-09-10: "Карту района переносим наверх, ставим
+            после блока Управляющая компания" — была в самом низу страницы,
+            рядом с FAQ/Red One. ref/districtMapInView (useInView — карта
+            грузится лениво, только когда реально доскроллили) не трогал,
+            просто переехал сам JSX-блок целиком. */}
+        <div
+          id="map"
+          ref={districtMapSectionRef}
+          className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)}
+          style={glassCardShadow}
+        >
+          {districtMapInView ? (
+            <Suspense fallback={<div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
+              <DistrictMap />
+            </Suspense>
+          ) : (
+            <div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
+          )}
         </div>
 
         <div id="audience" className={cn('flex scroll-mt-6 flex-col gap-3 p-6 sm:flex-row sm:gap-6', glassCardClass)} style={glassCardShadow}>
@@ -2265,6 +2319,88 @@ export function DistrictGuidePage() {
           )}
         </div>
 
+        {/* Продажи застройщика (владелец, 2026-09-10: "раз у нас есть инфа,
+            сколько юнитов снял с сайта застройщик, значит у нас есть инфа по
+            продажам застройщика — я бы выводил эту инфу"). Источник —
+            PrimaryMarketOffer.soldAt, который проставляет
+            scripts/sync-bir-primary-market.mjs (pruneStaleOffers), когда
+            объект подтверждённо пропадает с bir.by (реальная HTTP-проверка
+            ссылки на 404, не просто "не нашли в скрейпе"). Честная оговорка
+            в тексте — снятие с продажи не то же самое, что подтверждённая
+            сделка (см. комментарий у PrimaryMarketOffer.soldAt в
+            data/primaryMarketOffers.ts), формулировки на странице
+            намеренно осторожные ("предположительно"), не "продано".
+
+            Владелец, тем же днём: "Если свежей статистики у нас нет, то не
+            выводи этот блок на странице вообще" — весь блок (включая
+            заголовок и заглушку "отслеживание запущено", которая тут раньше
+            была) рендерится ТОЛЬКО когда developerSalesTotalCount > 0, то
+            есть когда есть хотя бы одна подтверждённая (HTTP-проверенной
+            пропажей объявления) продажа. Первый прогон синка упал на
+            транзитном 520 от Supabase, не успев пройти шаг проверки — до
+            следующего успешного прогона (плановый — 1-го числа, либо
+            повторный ручной запуск) блока на странице физически нет. */}
+        {primaryMarketOffers !== null && developerSalesTotalCount > 0 && (() => {
+          const salesRows = buildPrimarySalesSummary(primaryMarketOffers);
+          const since = earliestSoldAt(primaryMarketOffers);
+          const totalValueEur = salesRows.reduce((sum, r) => sum + r.soldValueEur, 0);
+
+          return (
+            <div id="developer-sales" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
+              <div className="flex min-w-0 items-center gap-3">
+                <PackageCheck className="h-5 w-5 shrink-0 text-ink" />
+                <h2 className="text-lg font-bold text-ink">Продажи застройщика</h2>
+              </div>
+              <p className="text-sm text-ink-muted">
+                Объекты первичного рынка (bir.by), которые пропали из продажи после того, как ранее там числились —
+                предположительно проданы или переданы в бронь. Не факт сделки: сумма ниже — по последней известной
+                цене объявления на момент снятия, не по цене реального договора.
+              </p>
+
+              {since && <p className="-mt-1 text-xs text-ink-muted">Зафиксировано с {formatSoldSinceDate(since)}</p>}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                  <span className="text-xs text-ink-faint">Продано/снято с продажи</span>
+                  <span className="text-lg font-extrabold text-ink">{developerSalesTotalCount.toLocaleString('ru-RU')}</span>
+                </div>
+                <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                  <span className="text-xs text-ink-faint">Оценочная сумма</span>
+                  <span className="text-lg font-extrabold text-ink">
+                    {formatPricePerM2(totalValueEur, primaryMarketCurrency, exchangeRate)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[420px] border-collapse text-sm">
+                  <caption className="sr-only">Продажи застройщика по категориям — количество и оценочная сумма</caption>
+                  <thead>
+                    <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                      <th scope="col" className="py-2 pr-3 text-left">Категория</th>
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">Продано/снято</th>
+                      <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь, м²</th>
+                      <th scope="col" className="py-2 pl-2 text-right font-semibold">Сумма</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {salesRows.map((row) => (
+                      <tr key={row.key}>
+                        <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
+                        <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.soldCount}</td>
+                        <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.soldAreaM2}</td>
+                        <td className="py-2.5 pl-2 text-right tabular-nums font-semibold text-ink">
+                          {formatPricePerM2(row.soldValueEur, primaryMarketCurrency, exchangeRate)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
+
         <div id="market" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           {/* Тот же паттерн, что у "Первичного рынка" выше — пилюля валюты
               в одной строке с заголовком даже на мобильном, items-center
@@ -2308,11 +2444,6 @@ export function DistrictGuidePage() {
                 Цена с отделкой и без — разные рынки, поэтому не смешиваем их в одной цифре.
               </p>
               {(() => {
-                const secondaryRows = buildMarketPivot(
-                  marketOffers,
-                  marketDealType === 'Продажа' ? 'sale' : 'rent',
-                  MARKET_FINISH_TO_DB[marketFinish],
-                );
                 const secondaryGroups = buildMarketPivotGrouped(
                   marketOffers,
                   marketDealType === 'Продажа' ? 'sale' : 'rent',
@@ -2329,8 +2460,8 @@ export function DistrictGuidePage() {
                         разбивка по площади — списком внутри той же карточки,
                         показывается только если площадей несколько (иначе
                         дублировала бы уже показанную сверху сводку). Desktop-
-                        таблица ниже не тронута, использует secondaryRows
-                        (плоские строки), как и раньше. */}
+                        таблица ниже использует те же secondaryGroups (сведена
+                        к тому же формату чуть позже в тот же день). */}
                     <div className="flex flex-col gap-3 sm:hidden">
                       {secondaryGroups.map((group) => (
                         <div key={group.key} className="flex flex-col gap-3 rounded-control border border-border bg-white p-4">
@@ -2383,11 +2514,24 @@ export function DistrictGuidePage() {
                       ))}
                     </div>
 
+                    {/* Владелец, 2026-09-10, чуть позже того же дня, увидев
+                        десктопную версию: "какого хера дубли строк? Объединяли
+                        же в одну, по 1 строчке на каждый тип" — путал с
+                        мобильными карточками (те уже свели в одну строку на
+                        тип чуть раньше в тот же день, см. коммент выше). Строки
+                        не были дублями (разные диапазоны площади — разные
+                        цифры), но по факту это никогда и не давало настоящего
+                        паритета с первичным рынком (buildPrimaryMarketPivot —
+                        одна строка на категорию, без разбивки по площади в
+                        самой таблице). Теперь и здесь — одна строка на тип
+                        (secondaryGroups), разбивка по площади — подстроками
+                        под ней, тем же принципом, что и в мобильных карточках
+                        (только при buckets.length > 1). */}
                     <div className="hidden overflow-x-auto sm:block">
                       <table className="w-full min-w-[640px] border-collapse text-sm">
                         <caption className="sr-only">
                           Вторичный рынок коммерческой недвижимости Минск Мира: количество предложений и цены за м² по
-                          типу помещения и диапазону площади (данные Kufar, Realt)
+                          типу помещения, с разбивкой по диапазону площади (данные Kufar, Realt)
                         </caption>
                         <thead>
                           <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
@@ -2406,21 +2550,48 @@ export function DistrictGuidePage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border">
-                          {secondaryRows.map((row) => (
-                            <tr key={row.key}>
-                              <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.propertyType}</th>
-                              <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.count}</td>
-                              <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.areaLabel}</td>
-                              <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
-                                {formatSecondaryPricePerM2(row.priceMinUsd, marketCurrency, exchangeRate)}
-                              </td>
-                              <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
-                                {formatSecondaryPricePerM2(row.priceMedianUsd, marketCurrency, exchangeRate)}
-                              </td>
-                              <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
-                                {formatSecondaryPricePerM2(row.priceMaxUsd, marketCurrency, exchangeRate)}
-                              </td>
-                            </tr>
+                          {secondaryGroups.map((group) => (
+                            <Fragment key={group.key}>
+                              <tr>
+                                <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">
+                                  {group.propertyType}
+                                </th>
+                                <td className="py-2.5 px-2 text-right tabular-nums text-ink">{group.count}</td>
+                                <td className="whitespace-nowrap py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                                  {group.areaMin === group.areaMax ? `${group.areaMin}` : `${group.areaMin}–${group.areaMax}`} м²
+                                </td>
+                                <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">
+                                  {formatSecondaryPricePerM2(group.priceMinUsd, marketCurrency, exchangeRate)}
+                                </td>
+                                <td className="py-2.5 px-2 text-right tabular-nums font-semibold text-ink">
+                                  {formatSecondaryPricePerM2(group.priceMedianUsd, marketCurrency, exchangeRate)}
+                                </td>
+                                <td className="py-2.5 pl-2 text-right tabular-nums text-ink-muted">
+                                  {formatSecondaryPricePerM2(group.priceMaxUsd, marketCurrency, exchangeRate)}
+                                </td>
+                              </tr>
+                              {group.buckets.length > 1 &&
+                                group.buckets.map((bucket) => (
+                                  <tr key={bucket.areaLabel} className="bg-surface-muted/40 text-xs">
+                                    <th scope="row" className="whitespace-nowrap py-1.5 pr-3 pl-4 text-left font-normal text-ink-muted">
+                                      ↳ по площади
+                                    </th>
+                                    <td className="py-1.5 px-2 text-right tabular-nums text-ink-muted">{bucket.count}</td>
+                                    <td className="whitespace-nowrap py-1.5 px-2 text-right tabular-nums text-ink-muted">
+                                      {bucket.areaLabel}
+                                    </td>
+                                    <td className="py-1.5 px-2 text-right tabular-nums text-ink-muted">
+                                      {formatSecondaryPricePerM2(bucket.priceMinUsd, marketCurrency, exchangeRate)}
+                                    </td>
+                                    <td className="py-1.5 px-2 text-right tabular-nums font-semibold text-ink-muted">
+                                      {formatSecondaryPricePerM2(bucket.priceMedianUsd, marketCurrency, exchangeRate)}
+                                    </td>
+                                    <td className="py-1.5 pl-2 text-right tabular-nums text-ink-muted">
+                                      {formatSecondaryPricePerM2(bucket.priceMaxUsd, marketCurrency, exchangeRate)}
+                                    </td>
+                                  </tr>
+                                ))}
+                            </Fragment>
                           ))}
                         </tbody>
                       </table>
@@ -2684,6 +2855,93 @@ export function DistrictGuidePage() {
             ))}
           </div>
         </div>
+
+        {/* 2026-09-10 — владелец: "какие категории бизнеса у нас не освещены
+            в текстовой аналитике... как будто есть не все, что на картах" —
+            4 категории (Розница/Мебель/Образование/Зоотовары), добавленные
+            на карту и в плитки этим же днём чуть раньше, текстом ещё не
+            были описаны. Черновик текста — Gemini по брифу с реальными
+            фактами (сети/адреса из data/districtPlaces.ts), проверено перед
+            вставкой. Школы/детские сады — по прямой просьбе владельца сюда
+            не добавлены (уже упомянуты в другом блоке страницы). */}
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <ShoppingBag className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Розница и товары</h3>
+          </div>
+          <p className="text-sm leading-relaxed text-ink-muted">
+            <span className="font-semibold text-ink">{retailTotal} точки</span>, значительная часть которых
+            сконцентрирована в Avia Mall, где представлены международные сети одежды и аксессуаров. Отдельно
+            выделяется необычно развитая ниша доставки питьевой воды — характерно для нового района, где жители ещё
+            не установили стационарные системы фильтрации.
+          </p>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {retailWaterBreakdown.map(({ label, count }) => (
+              <span key={label} className="rounded-full bg-surface-muted px-2.5 py-1 text-xs font-medium text-ink">
+                {label} — {count}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <Sofa className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Мебель и товары для дома</h3>
+          </div>
+          <div className="flex items-end gap-3">
+            <span className="text-5xl font-black leading-none text-primary">{furnitureTotal}</span>
+            <span className="pb-1 text-sm text-ink-muted">
+              точек — типичный для новостройки кластер, где жители массово делают ремонт
+            </span>
+          </div>
+          <p className="text-xs text-ink-muted">
+            От напольных покрытий и сантехники до кухонь на заказ и декора; помимо продажи товаров широко
+            представлены и услуги по ремонту и отделке. Сетевой игрок — «Кухни Черри», 3 точки.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <GraduationCap className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Образование</h3>
+          </div>
+          <p className="text-sm text-ink-muted">
+            <span className="font-semibold text-ink">{educationTotal} точек</span> дополнительного образования для
+            детей и взрослых — рынок раздроблен, крупных сетевых игроков нет. Это не общеобразовательные школы и
+            детские сады, те посчитаны отдельно.
+          </p>
+          <ul className="flex flex-col gap-1.5 pt-1">
+            {educationCategories.map(({ label, text }) => (
+              <li key={label} className="text-sm text-ink-muted">
+                <span className="font-semibold text-ink">{label}</span> {text}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="flex flex-col gap-3 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <PawPrint className="h-5 w-5 shrink-0 text-ink" />
+            <h3 className="text-base font-bold text-ink">Зоотовары и ветеринария</h3>
+          </div>
+          <p className="text-sm text-ink-muted">
+            <span className="font-semibold text-ink">{petsTotal} точек</span> — ниша явно смещена в сторону ухода за
+            животными, а не их лечения.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1 rounded-control border border-dashed border-border p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Розница и уход</p>
+              <p className="text-sm text-ink-muted">
+                Сеть «Зообазар» — 4 магазина, плюс несколько груминг-салонов (стрижка и уход за животными).
+              </p>
+            </div>
+            <div className="flex flex-col gap-1 rounded-control border border-white bg-white/60 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary">Ветеринария</p>
+              <p className="text-sm text-ink-muted">Всего один кабинет — «Доктор Вет», лечение животных в дефиците.</p>
+            </div>
+          </div>
+        </div>
           </div>
         </div>
 
@@ -2845,29 +3103,7 @@ export function DistrictGuidePage() {
               ))}
             </div>
           </details>
-
-          <p className="text-xs text-ink-muted">
-            Источник — актуальный срез объявлений bir.by на продажу машиномест в Минск Мире, 2769 позиций (август
-            2026).
-          </p>
         </div>
-
-        <div
-          id="map"
-          ref={districtMapSectionRef}
-          className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)}
-          style={glassCardShadow}
-        >
-          {districtMapInView ? (
-            <Suspense fallback={<div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>}>
-              <DistrictMap />
-            </Suspense>
-          ) : (
-            <div className="flex h-[420px] items-center justify-center text-sm text-ink-muted">Загрузка карты…</div>
-          )}
-        </div>
-
-        <FaqAccordion id="faq" title="Частые вопросы о районе" items={districtFaq} />
 
         <div id="red-one" className={cn('flex scroll-mt-6 flex-col gap-3 p-6', glassCardClass)} style={glassCardShadow}>
           <h2 className="text-lg font-bold text-ink">Red One — готовый центр коммерческой активности</h2>
@@ -2884,6 +3120,10 @@ export function DistrictGuidePage() {
             Смотреть кабинеты в Red One →
           </Link>
         </div>
+
+        {/* Владелец, 2026-09-10: "Частые вопросы о районе — ставим под
+            Red One" — была сразу перед Red One. */}
+        <FaqAccordion id="faq" title="Частые вопросы о районе" items={districtFaq} />
 
         {/* Посадочные под подсказки Google (аудит 2026-09-07) — гид остаётся
             хабом, каждая страница берёт свой срез: бизнес-центры, коворкинг,
@@ -2905,6 +3145,53 @@ export function DistrictGuidePage() {
             ))}
           </div>
         </div>
+
+        {/* Юридический дисклеймер — владелец: "не отдельным блоком, а как бы
+            на фоне серого фона сайта обычным текстом размером в половину от
+            стандартного, с кликабельными ссылками на источники". Текст
+            составлен через Gemini (тот же приём "бриф → Gemini → правки
+            владельца", что и у остальных Gemini-текстов страницы) и дополнен
+            ссылками — URL'ы источников не выдуманы, взяты из уже
+            используемых на сайте (GENERAL_DATA_SOURCES в
+            BusinessCenterDetailPage.tsx — Kufar/Realt/Яндекс.Карты;
+            DEVELOPER_LINKS/MANAGEMENT_COMPANY этого же файла — bir.by/dpm.by).
+            Без glassCardClass намеренно — не карточка, просто текст в общем
+            потоке страницы на фоне body. */}
+        <p className="pt-2 text-xs leading-relaxed text-ink-muted">
+          Все товарные знаки, логотипы и наименования компаний, упомянутые на странице — в том числе{' '}
+          <a href="https://yandex.by/maps/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Яндекс.Карты
+          </a>
+          ,{' '}
+          <a href="https://www.kufar.by/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Kufar
+          </a>
+          ,{' '}
+          <a href="https://realt.by/" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Realt.by
+          </a>
+          ,{' '}
+          <a href="https://bir.by" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            bir.by
+          </a>
+          , Dana Holding и управляющая компания{' '}
+          <a href="https://dpm.by" target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+            Happy Planet
+          </a>{' '}
+          — принадлежат их законным правообладателям и используются исключительно в информационных и описательных
+          целях, не подразумевая аффилированности или партнёрства. Представленные данные основаны на
+          общедоступной информации из открытых источников на дату публикации и могут не отражать актуальное
+          состояние рынка. Фотоматериалы заимствованы из публичного Instagram-аккаунта{' '}
+          <a
+            href="https://www.instagram.com/promir_by/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-ink"
+          >
+            @promir_by
+          </a>{' '}
+          в информационных целях и будут незамедлительно удалены по обоснованному требованию правообладателя.
+        </p>
           </div>
         </div>
       </main>

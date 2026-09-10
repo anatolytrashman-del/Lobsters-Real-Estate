@@ -1,4 +1,4 @@
-import { Clock, ExternalLink, Globe } from 'lucide-react';
+import { BadgeCheck, Clock, ExternalLink, Globe } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
@@ -34,17 +34,21 @@ const MINSK_MIR_TOPIC_ADMIN_NOTES: Record<MinskMirTopicSlug, string> = {
 // ("Требует проработки") — для записей без url вообще. 'in-progress'
 // ("В работе", владелец 2026-09-04) — для уже опубликованных страниц
 // (url есть, карточка кликается), которые ещё дорабатываются — например,
-// "Бизнес-центры Минска" ждут фото от владельца.
+// "Бизнес-центры Минска" ждут фото от владельца. 'done' ("Готова",
+// владелец 2026-09-10) — явная зелёная отметка "полностью готова", не
+// просто отсутствие статуса (без status карточка выглядит нейтрально, не
+// как явное подтверждение готовности).
 interface LandingEntry {
   title: string;
   description: string;
   url?: string;
-  status?: 'needs-work' | 'in-progress';
+  status?: 'needs-work' | 'in-progress' | 'done';
 }
 
 const LANDING_STATUS_LABEL: Record<NonNullable<LandingEntry['status']>, string> = {
   'needs-work': 'Требует проработки',
   'in-progress': 'В работе',
+  done: 'Готова',
 };
 
 const LANDINGS: LandingEntry[] = [
@@ -62,6 +66,7 @@ const LANDINGS: LandingEntry[] = [
     title: 'Страница про Минск-Мир',
     description: 'Гид и аналитика по офисам и коммерческим помещениям в районе Минск Мир — контентная SEO-страница.',
     url: 'https://redevelopment.pro/minsk/minsk-mir',
+    status: 'done',
   },
   {
     title: 'Статья: Бизнес-апартаменты',
@@ -177,12 +182,18 @@ export function Landings() {
                 ) : (
                   <span className="text-xs text-ink-faint">Страницы ещё нет</span>
                 )}
-                {l.status && (
-                  <span className="flex shrink-0 items-center gap-1 rounded-full border border-warning/30 bg-warning-bg px-2 py-0.5 text-[11px] font-semibold text-warning">
-                    <Clock className="h-3 w-3 shrink-0" />
-                    {LANDING_STATUS_LABEL[l.status]}
-                  </span>
-                )}
+                {l.status &&
+                  (l.status === 'done' ? (
+                    <span className="flex shrink-0 items-center gap-1 rounded-full border border-success/30 bg-success-bg px-2 py-0.5 text-[11px] font-semibold text-success">
+                      <BadgeCheck className="h-3 w-3 shrink-0" />
+                      {LANDING_STATUS_LABEL[l.status]}
+                    </span>
+                  ) : (
+                    <span className="flex shrink-0 items-center gap-1 rounded-full border border-warning/30 bg-warning-bg px-2 py-0.5 text-[11px] font-semibold text-warning">
+                      <Clock className="h-3 w-3 shrink-0" />
+                      {LANDING_STATUS_LABEL[l.status]}
+                    </span>
+                  ))}
               </div>
               <div className="flex items-start justify-between gap-2">
                 <span className="font-semibold text-ink">{l.title}</span>

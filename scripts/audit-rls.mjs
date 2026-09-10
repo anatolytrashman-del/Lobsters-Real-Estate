@@ -56,6 +56,23 @@ const CLOSED = [
   // см. комментарий у PUBLIC_INSERT_ONLY выше — сам факт, что он разрешён,
   // проверен вручную отдельно.
   'workstation_seat_leads',
+  // external_api_tokens: OAuth-токен Яндекса (2026-09-10) — RLS включён БЕЗ
+  // единой политики, как у deploy_debounce, доступен только service_role
+  // (читает scripts/sync-yandex-metrika.mjs). anon/authenticated тут делать
+  // нечего вовсе, даже read — это секрет, не рабочие данные.
+  'external_api_tokens',
+  // yandex_metrika_* (2026-09-10): у anon вообще нет доступа (даже read) —
+  // только authenticated-select (страница «Показатели», за PasswordGate +
+  // Supabase Auth); пишет их только сервисный ключ crон-скрипта.
+  'yandex_metrika_daily_stats',
+  'yandex_metrika_traffic_sources',
+  'yandex_metrika_top_pages',
+  'yandex_metrika_goal_completions',
+  // yandex_webmaster_stats (2026-09-10, параллельная сессия) — anon без
+  // доступа вовсе, authenticated — полный CRUD (authenticated_all, тот же
+  // паттерн, что у большинства приватных CRM-таблиц), для анон-аудита
+  // разницы нет — 0 доступа в обоих случаях.
+  'yandex_webmaster_stats',
 ];
 
 // anon select ожидаемо разрешён (публичные лендинги/гид района), запись — нет.

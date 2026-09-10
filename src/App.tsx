@@ -84,6 +84,10 @@ const FinModelReport = lazy(() => import('./pages/FinModelReport').then((m) => (
 const Financing = lazy(() => import('./pages/Financing').then((m) => ({ default: m.Financing })));
 const DesignProjects = lazy(() => import('./pages/DesignProjects').then((m) => ({ default: m.DesignProjects })));
 const Landings = lazy(() => import('./pages/Landings').then((m) => ({ default: m.Landings })));
+// "Показатели" (посещаемость сайта из Яндекс.Метрики) — SiteMetrics/
+// site-metrics, НЕ Metrics/metrics (та страница — про другое, см. её же
+// комментарий и комментарий у data/pages.ts).
+const SiteMetrics = lazy(() => import('./pages/SiteMetrics').then((m) => ({ default: m.SiteMetrics })));
 const MarketOffersReview = lazy(() => import('./pages/MarketOffersReview').then((m) => ({ default: m.MarketOffersReview })));
 const ActivityLog = lazy(() => import('./pages/ActivityLog').then((m) => ({ default: m.ActivityLog })));
 const Metrics = lazy(() => import('./pages/Metrics').then((m) => ({ default: m.Metrics })));
@@ -300,6 +304,7 @@ export default function App() {
         />
         <Route path="leads" element={<RequirePage page="leads"><Leads /></RequirePage>} />
         <Route path="landings" element={<RequirePage page="landings"><Landings /></RequirePage>} />
+        <Route path="site-metrics" element={<RequirePage page="siteMetrics"><SiteMetrics /></RequirePage>} />
         <Route
           path="market-offers"
           element={

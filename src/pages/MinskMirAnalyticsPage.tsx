@@ -15,7 +15,7 @@ import {
 import { fetchPublicMarketOffers } from '../lib/marketOffersApi';
 import { fetchPrimaryMarketOffers } from '../lib/primaryMarketOffersApi';
 import { AREA_BUCKET_ORDER, MARKET_PROPERTY_TYPES, areaBucket, netPricePerSqm, netSize, type MarketOffer } from '../data/marketOffers';
-import { buildPrimaryMarketPivot, type PrimaryMarketOffer } from '../data/primaryMarketOffers';
+import { buildPrimaryMarketPivot, buildPrimarySalesSummary, earliestSoldAt, type PrimaryMarketOffer } from '../data/primaryMarketOffers';
 
 // Сводные таблицы вторичного рынка (buildMarketPivot/countSmallFinishedOffices/
 // median) — та же логика, что и в DistrictGuidePage.tsx (её собственный блок
@@ -85,6 +85,10 @@ export function MinskMirAnalyticsPage() {
   }, []);
 
   const primaryPivot = useMemo(() => (primaryOffers ? buildPrimaryMarketPivot(primaryOffers) : []), [primaryOffers]);
+  const salesRows = useMemo(() => (primaryOffers ? buildPrimarySalesSummary(primaryOffers) : []), [primaryOffers]);
+  const salesSince = useMemo(() => (primaryOffers ? earliestSoldAt(primaryOffers) : null), [primaryOffers]);
+  const totalSoldCount = useMemo(() => salesRows.reduce((sum, r) => sum + r.soldCount, 0), [salesRows]);
+  const totalSoldValueEur = useMemo(() => salesRows.reduce((sum, r) => sum + r.soldValueEur, 0), [salesRows]);
   const secondaryReviewedCount = useMemo(
     () => (marketOffers ?? []).filter((o) => o.reviewed && !o.rejected).length,
     [marketOffers],
@@ -116,6 +120,12 @@ export function MinskMirAnalyticsPage() {
         answer: `От застройщика — от ${apartsSdano.priceMinEur.toLocaleString('ru-RU')} до ${apartsSdano.priceMaxEur.toLocaleString('ru-RU')} EUR/м² (в среднем ${apartsSdano.priceAvgEur.toLocaleString('ru-RU')} EUR/м², ${apartsSdano.count} предложений).`,
       });
     }
+    if (totalSoldCount > 0) {
+      faq.push({
+        question: 'Сколько объектов уже продал застройщик?',
+        answer: `Автоматическое отслеживание фиксирует объекты, пропавшие с bir.by после того, как ранее там продавались — предположительно проданы или переданы в бронь: ${totalSoldCount} объектов на сумму примерно ${Math.round(totalSoldValueEur).toLocaleString('ru-RU')} EUR (по последней известной цене объявления, не факт сделки).`,
+      });
+    }
     faq.push({
       question: 'Чем первичный рынок отличается от вторичного в этих цифрах?',
       answer:
@@ -127,7 +137,7 @@ export function MinskMirAnalyticsPage() {
         'Первичный рынок — с портала застройщика bir.by. Вторичный — с Kufar и Realt.by, каждое объявление проверяется вручную перед тем, как попасть в сводку. Подробный гид по району — на отдельной странице.',
     });
     setFaqJsonLd(faq);
-  }, [primaryPivot]);
+  }, [primaryPivot, totalSoldCount, totalSoldValueEur]);
 
   return (
     <div className="min-h-svh bg-bg">
@@ -188,6 +198,66 @@ export function MinskMirAnalyticsPage() {
             </div>
           )}
         </section>
+
+        {/* Продажи застройщика (владелец, 2026-09-10: "раз у нас есть инфа,
+            сколько юнитов снял с сайта застройщик, значит у нас есть инфа по
+            продажам застройщика — я бы выводил эту инфу"). Та же логика, что
+            и на гиде района (DistrictGuidePage.tsx) — общий data/primaryMarketOffers.ts,
+            не дублируется.
+
+            Владелец, тем же днём: "Если свежей статистики у нас нет, то не
+            выводи этот блок на странице вообще" — вся секция (была заглушка
+            "отслеживание запущено") рендерится ТОЛЬКО при totalSoldCount > 0. */}
+        {totalSoldCount > 0 && (
+          <section className={cn('flex flex-col gap-3 p-5', glassCardClass)} style={glassCardShadow}>
+            <h2 className="text-lg font-bold text-ink">Продажи застройщика</h2>
+            <p className="text-sm text-ink-muted">
+              Объекты, пропавшие с bir.by после того, как ранее там продавались — предположительно проданы или
+              переданы в бронь. Не факт сделки: сумма ниже — по последней известной цене объявления, не по цене
+              договора.
+            </p>
+            {salesSince && (
+              <p className="-mt-1 text-xs text-ink-muted">
+                Зафиксировано с{' '}
+                {new Date(salesSince).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}
+              </p>
+            )}
+            <div className="grid grid-cols-2 gap-3 sm:w-fit sm:grid-cols-2">
+              <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                <span className="text-xs text-ink-faint">Продано/снято</span>
+                <span className="text-lg font-extrabold text-ink">{totalSoldCount.toLocaleString('ru-RU')}</span>
+              </div>
+              <div className="flex flex-col gap-1 rounded-control border border-border p-3">
+                <span className="text-xs text-ink-faint">Оценочная сумма</span>
+                <span className="text-lg font-extrabold text-ink">{Math.round(totalSoldValueEur).toLocaleString('ru-RU')} EUR</span>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[420px] border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                    <th scope="col" className="py-2 pr-3 text-left">Категория</th>
+                    <th scope="col" className="py-2 px-2 text-right font-semibold">Продано/снято</th>
+                    <th scope="col" className="py-2 px-2 text-right font-semibold">Площадь, м²</th>
+                    <th scope="col" className="py-2 pl-2 text-right font-semibold">Сумма, EUR</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {salesRows.map((row) => (
+                    <tr key={row.key}>
+                      <th scope="row" className="whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink">{row.label}</th>
+                      <td className="py-2.5 px-2 text-right tabular-nums text-ink">{row.soldCount}</td>
+                      <td className="py-2.5 px-2 text-right tabular-nums text-ink-muted">{row.soldAreaM2}</td>
+                      <td className="py-2.5 pl-2 text-right tabular-nums font-semibold text-ink">
+                        {row.soldValueEur.toLocaleString('ru-RU')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
         <section className={cn('flex flex-col gap-3 p-5', glassCardClass)} style={glassCardShadow}>
           <div className="flex min-w-0 items-center gap-3">
