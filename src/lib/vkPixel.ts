@@ -18,3 +18,19 @@ export function vkPixelHit() {
 export function vkPixelGoal(goal: string) {
   tmr()?.push({ id: VK_PIXEL_ID, type: 'reachGoal', goal });
 }
+
+// VK-аудитории (панель "События на сайте" в VK Рекламе) строятся по
+// именованным событиям, а не по условию "URL содержит", как цели в
+// Метрике — там просто список того, что реально прилетело с пикселя.
+// Поэтому под каждую нужную аудиторию явно шлём свой reachGoal с той
+// страницы, которая должна в неё попасть (тот же набор путей, что и у
+// целей "Смотрел аналитику"/"Смотрел лендинг Red One" в Метрике).
+export function vkPageGoalForPath(pathname: string): string | null {
+  if (pathname.startsWith('/minsk/analytics') || pathname.startsWith('/minsk/bcminsk')) {
+    return 'viewed_analytics';
+  }
+  if (pathname.startsWith('/minsk/one')) {
+    return 'viewed_red_one';
+  }
+  return null;
+}

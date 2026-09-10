@@ -24,7 +24,7 @@ import { BriefPublicPage } from './pages/BriefPublicPage';
 import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
 import { metrikaHit } from './lib/metrika';
-import { vkPixelHit } from './lib/vkPixel';
+import { vkPixelHit, vkPixelGoal, vkPageGoalForPath } from './lib/vkPixel';
 
 // Вся админка (CRM с десятком разделов — финмодели, сметы, документы и т.д.)
 // нужна только за PasswordGate на /admin/*, но раньше грузилась тем же JS-
@@ -158,6 +158,19 @@ function useSpaPageviewHits() {
   }, [location.pathname, location.search]);
 }
 
+// VK-аудитории по конкретным страницам (см. lib/vkPixel.ts) — в отличие
+// от общего pageview выше, здесь ПЕРВЫЙ рендер не пропускается: обычный
+// init пикселя сам такое именованное событие не шлёт, только generic
+// "Посещение сайта", а нам нужно засчитать и прямой заход на страницу, не
+// только переход внутри SPA.
+function useVkPageGoals() {
+  const location = useLocation();
+  useEffect(() => {
+    const goal = vkPageGoalForPath(location.pathname);
+    if (goal) vkPixelGoal(goal);
+  }, [location.pathname]);
+}
+
 // Старые ссылки без /minsk (индексировались недолго, до переезда на
 // city-scoped структуру урлов — см. CLAUDE.md) — /one, /redstorage и любой
 // будущий объект по тому же паттерну автоматически редиректятся на новый
@@ -181,6 +194,7 @@ function AdminChunkFallback() {
 export default function App() {
   usePreventPageZoom();
   useSpaPageviewHits();
+  useVkPageGoals();
   return (
     <Routes>
       {/* Публичная часть — без AppLayout и без пароля, для клиентов и рекламы.
