@@ -24,6 +24,7 @@ import { BriefPublicPage } from './pages/BriefPublicPage';
 import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
 import { metrikaHit } from './lib/metrika';
+import { vkPixelHit } from './lib/vkPixel';
 
 // Вся админка (CRM с десятком разделов — финмодели, сметы, документы и т.д.)
 // нужна только за PasswordGate на /admin/*, но раньше грузилась тем же JS-
@@ -138,13 +139,13 @@ function usePreventPageZoom() {
   }, []);
 }
 
-// Яндекс.Метрика (index.html) сама считает только ПЕРВУЮ загрузку страницы —
-// SPA-переходы react-router не порождают новых просмотров, внутренняя
-// навигация (в т.ч. конверсионный переход гид района → /minsk/one) была
-// невидима в статистике. Штатный для SPA способ от Яндекса — вручную слать
-// hit на каждую смену маршрута; первую загрузку пропускаем, её уже засчитал
-// init.
-function useMetrikaSpaHits() {
+// Яндекс.Метрика и VK-пиксель (Top.Mail.Ru, index.html) сами считают
+// только ПЕРВУЮ загрузку страницы — SPA-переходы react-router не порождают
+// новых просмотров, внутренняя навигация (в т.ч. конверсионный переход гид
+// района → /minsk/one) была невидима в статистике обоих. Штатный для SPA
+// способ — вручную слать pageview на каждую смену маршрута; первую загрузку
+// пропускаем, её уже засчитал init обоих счётчиков.
+function useSpaPageviewHits() {
   const location = useLocation();
   const isFirstRender = useRef(true);
   useEffect(() => {
@@ -153,6 +154,7 @@ function useMetrikaSpaHits() {
       return;
     }
     metrikaHit(location.pathname + location.search);
+    vkPixelHit();
   }, [location.pathname, location.search]);
 }
 
@@ -178,7 +180,7 @@ function AdminChunkFallback() {
 
 export default function App() {
   usePreventPageZoom();
-  useMetrikaSpaHits();
+  useSpaPageviewHits();
   return (
     <Routes>
       {/* Публичная часть — без AppLayout и без пароля, для клиентов и рекламы.
