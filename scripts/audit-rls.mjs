@@ -68,6 +68,11 @@ const CLOSED = [
   'yandex_metrika_traffic_sources',
   'yandex_metrika_top_pages',
   'yandex_metrika_goal_completions',
+  // yandex_webmaster_stats (2026-09-10, параллельная сессия) — anon без
+  // доступа вовсе, authenticated — полный CRUD (authenticated_all, тот же
+  // паттерн, что у большинства приватных CRM-таблиц), для анон-аудита
+  // разницы нет — 0 доступа в обоих случаях.
+  'yandex_webmaster_stats',
 ];
 
 // anon select ожидаемо разрешён (публичные лендинги/гид района), запись — нет.

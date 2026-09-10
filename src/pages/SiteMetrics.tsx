@@ -11,6 +11,8 @@ import {
   fetchMetrikaGoalCompletions,
 } from '../lib/metrikaStatsApi';
 import type { MetrikaDailyStat, MetrikaTrafficSource, MetrikaTopPage, MetrikaGoalCompletion } from '../data/metrikaStats';
+import { fetchYandexWebmasterStats } from '../lib/yandexWebmasterStatsApi';
+import type { YandexWebmasterStat } from '../data/yandexWebmasterStats';
 
 // Показатели посещаемости сайта из Яндекс.Метрики (счётчик 111858495) —
 // не отчёт по staff-активности (это отдельная /admin/metrics, RequireSuperAdmin,
@@ -25,6 +27,14 @@ import type { MetrikaDailyStat, MetrikaTrafficSource, MetrikaTopPage, MetrikaGoa
 // комментарий в самом скрипте синка, WINDOW_DAYS=90) — это один снимок за
 // последние 90 дней, полностью перезаписываемый каждым синком, выбор
 // периода на них не влияет (явно подписано в интерфейсе, не скрыто).
+//
+// Блок "Индексация и поисковые запросы" — данные Яндекс.Вебмастера (не
+// Метрики), из отдельного синка scripts/sync-yandex-webmaster-stats.mjs
+// (параллельная сессия, 2026-09-10, тот же OAuth-токен из external_api_
+// tokens) — владелец явно попросил показать их на этой же странице, не
+// заводить отдельную. impressions/clicks/avgPosition у молодого сайта
+// почти наверняка null (сам синк-скрипт это документирует) — компонент
+// должен честно показывать "данных пока нет", а не подставлять нули.
 
 type PeriodDays = 7 | 30 | 90;
 const PERIOD_LABELS: Record<PeriodDays, string> = { 7: '7 дней', 30: '30 дней', 90: '90 дней' };
@@ -164,6 +174,7 @@ export function SiteMetrics() {
   const [trafficSources, setTrafficSources] = useState<MetrikaTrafficSource[] | null>(null);
   const [topPages, setTopPages] = useState<MetrikaTopPage[] | null>(null);
   const [goalCompletions, setGoalCompletions] = useState<MetrikaGoalCompletion[] | null>(null);
+  const [webmasterStats, setWebmasterStats] = useState<YandexWebmasterStat[] | null>(null);
   const [error, setError] = useState('');
   const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
 
@@ -173,12 +184,17 @@ export function SiteMetrics() {
       fetchMetrikaTrafficSources(),
       fetchMetrikaTopPages(),
       fetchMetrikaGoalCompletions(),
+      // Отдельный try/catch: если синк Вебмастера ещё ни разу не прошёл
+      // или упал, это не должно ронять всю страницу — её главный предмет
+      // всё равно Метрика.
+      fetchYandexWebmasterStats().catch(() => []),
     ])
-      .then(([daily, traffic, pages, goals]) => {
+      .then(([daily, traffic, pages, goals, webmaster]) => {
         setDailyStats(daily);
         setTrafficSources(traffic);
         setTopPages(pages);
         setGoalCompletions(goals);
+        setWebmasterStats(webmaster);
       })
       .catch(() => setError('Не удалось загрузить показатели.'));
   }, []);
@@ -196,6 +212,18 @@ export function SiteMetrics() {
     () => (goalCompletions ?? []).slice(-periodDays * 2, -periodDays),
     [goalCompletions, periodDays],
   );
+
+  const currentWebmaster = useMemo(() => (webmasterStats ?? []).slice(-periodDays), [webmasterStats, periodDays]);
+  // "Страниц в поиске" — не сумма по дням (это счётчик состояния, не
+  // событие), берём последнее известное значение в периоде.
+  const latestPagesInSearch = useMemo(() => {
+    for (let i = currentWebmaster.length - 1; i >= 0; i--) {
+      const v = currentWebmaster[i].pagesInSearch;
+      if (v !== null) return v;
+    }
+    return null;
+  }, [currentWebmaster]);
+  const hasSearchQueryData = currentWebmaster.some((d) => d.impressions !== null || d.clicks !== null);
 
   const maxUpdatedAt = useMemo(() => {
     const dates = (trafficSources ?? []).map((s) => s.updatedAt);
@@ -332,6 +360,40 @@ export function SiteMetrics() {
             <Card className="text-sm text-ink-muted">
               Цель «бронирование кабинета» пока не найдена в данных — либо ещё не было ни одной брони за выбранный
               период, либо цель ещё не завершила первый синк.
+            </Card>
+          )}
+
+          {currentWebmaster.length > 0 && (
+            <Card className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-ink">Индексация и поисковые запросы (Яндекс.Вебмастер)</h3>
+                <p className="text-xs text-ink-muted">Не путать с трафиком выше — это данные о видимости в поиске Яндекса, не о посетителях.</p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiTile label="Страниц в поиске" value={latestPagesInSearch !== null ? latestPagesInSearch.toLocaleString('ru-RU') : '—'} />
+                {hasSearchQueryData ? (
+                  <>
+                    <KpiTile label="Показы в поиске" value={sum(currentWebmaster.map((d) => d.impressions)).toLocaleString('ru-RU')} />
+                    <KpiTile label="Клики из поиска" value={sum(currentWebmaster.map((d) => d.clicks)).toLocaleString('ru-RU')} />
+                    <KpiTile label="Средняя позиция" value={(average(currentWebmaster.map((d) => d.avgPosition)) ?? 0).toFixed(1)} />
+                  </>
+                ) : (
+                  <div className="flex items-center sm:col-span-3">
+                    <p className="text-sm text-ink-muted">
+                      Данных по показам/кликам пока нет — сайт ещё молодой в поиске Яндекса, либо запросов слишком мало,
+                      чтобы Вебмастер их показал.
+                    </p>
+                  </div>
+                )}
+              </div>
+              <div>
+                <p className="mb-2 text-xs text-ink-muted">Страниц в поиске по дням</p>
+                <Sparkbars
+                  data={currentWebmaster
+                    .filter((d) => d.pagesInSearch !== null)
+                    .map((d) => ({ date: d.date, value: d.pagesInSearch as number }))}
+                />
+              </div>
             </Card>
           )}
 
