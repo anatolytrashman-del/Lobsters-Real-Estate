@@ -15,8 +15,6 @@ import { fetchYandexWebmasterStats } from '../lib/yandexWebmasterStatsApi';
 import type { YandexWebmasterStat } from '../data/yandexWebmasterStats';
 import { fetchGoogleSearchConsoleStats } from '../lib/googleSearchConsoleStatsApi';
 import type { GoogleSearchConsoleStat } from '../data/googleSearchConsoleStats';
-import { fetchGoogleSearchConsolePageIndex } from '../lib/googleSearchConsolePageIndexApi';
-import type { GoogleSearchConsolePageIndex } from '../data/googleSearchConsolePageIndex';
 
 // Показатели посещаемости сайта из Яндекс.Метрики (счётчик 111858495) —
 // не отчёт по staff-активности (это отдельная /admin/metrics, RequireSuperAdmin,
@@ -51,15 +49,14 @@ import type { GoogleSearchConsolePageIndex } from '../data/googleSearchConsolePa
 // индексе — известная особенность Google, число из отчёта по sitemap
 // считается отдельным, медленным конвейером и может отставать от
 // реального индекса на недели (владелец спросил "это правда 0?", проверка
-// через URL Inspection API опровергла). Из-за этого рядом — второй,
-// точный блок "Индексация ключевых страниц" (google_search_console_
-// page_index, тот же sync-скрипт, urlInspection.index:inspect по
-// куратированному списку хабов + реальных лендингов) — именно ему верить,
-// не агрегату из sitemap. Скрипт умеет пропускать уже подтверждённо
-// проиндексированные страницы на следующих прогонах (по прямой просьбе
-// владельца — статус "в индексе" не откатывается назад, перепроверять
-// смысла нет), так что `checkedAt` у части строк может быть старше, чем у
-// остальных — это ожидаемо, не баг застрявшего синка.
+// через URL Inspection API опровергла).
+//
+// Точная проверка по каждой странице (urlInspection.index:inspect,
+// google_search_console_page_index) по-прежнему собирается тем же
+// sync-скриптом раз в сутки — 2026-09-10 владелец попросил убрать
+// соответствующий блок с этой страницы ("не нужен"), данные не удалялись,
+// просто больше не выводятся здесь; смотреть напрямую в таблице, если
+// понадобится точный статус конкретной страницы.
 
 type PeriodDays = 7 | 30 | 90;
 const PERIOD_LABELS: Record<PeriodDays, string> = { 7: '7 дней', 30: '30 дней', 90: '90 дней' };
@@ -190,26 +187,6 @@ function resolvePageBaseLabel(base: string): string {
   return base;
 }
 
-// Статусы, реально встречающиеся у Google в indexStatusResult.coverageState
-// (URL Inspection API) — переводим на понятный текст + цвет бейджа, честный
-// перевод один в один под то, что видно в самом Search Console. Незнакомое
-// значение показывается как есть, не прячется.
-const COVERAGE_STATE_LABELS: Record<string, { label: string; tone: 'success' | 'warning' | 'neutral' }> = {
-  'Submitted and indexed': { label: 'В индексе', tone: 'success' },
-  'Indexed, not submitted in sitemap': { label: 'В индексе (не через sitemap)', tone: 'success' },
-  'Discovered - currently not indexed': { label: 'Обнаружена, не в индексе', tone: 'warning' },
-  'Crawled - currently not indexed': { label: 'Просканирована, не в индексе', tone: 'warning' },
-  'URL is unknown to Google': { label: 'Пока неизвестна Google', tone: 'neutral' },
-  'Page with redirect': { label: 'Редирект', tone: 'neutral' },
-  'Duplicate without user-selected canonical': { label: 'Дубль без канонического URL', tone: 'warning' },
-  'Alternate page with proper canonical tag': { label: 'Альтернативный URL (есть канонический)', tone: 'neutral' },
-};
-
-function coverageStateInfo(state: string | null): { label: string; tone: 'success' | 'warning' | 'neutral' } {
-  if (!state) return { label: '—', tone: 'neutral' };
-  return COVERAGE_STATE_LABELS[state] ?? { label: state, tone: 'neutral' };
-}
-
 function pluralPages(n: number): string {
   const mod100 = n % 100;
   const mod10 = n % 10;
@@ -274,8 +251,9 @@ interface SparkbarsProps {
 
 // Один ряд тонких столбиков (магнитуда одной серии — свой акцентный цвет,
 // легенда не нужна, заголовок карточки уже называет серию). Подсказка —
-// нативный title, без отдельного компонента тултипа: страница внутренняя,
-// не публичная витрина.
+// видимая при наведении карточка со значением (не только нативный title,
+// который показывается с задержкой и не всегда заметен) — владелец прямо
+// попросил, чтобы число было видно при наведении.
 function Sparkbars({ data }: SparkbarsProps) {
   const max = Math.max(1, ...data.map((d) => d.value));
   return (
@@ -283,14 +261,23 @@ function Sparkbars({ data }: SparkbarsProps) {
     // явно): если обернуть столбик ещё одним div без своей высоты, процент
     // не от чего считать (родитель — auto) и столбик схлопывается в 0 —
     // столбик обязан быть САМИМ флекс-элементом, не вложенным в обёртку.
+    // Тултип — абсолютно спозиционированный ребёнок ВНУТРИ этого же
+    // элемента (не в отдельной обёртке снаружи) — abs-позиционирование
+    // вынимает его из потока, на расчёт высоты столбика не влияет.
     <div className="flex h-24 items-end gap-px">
       {data.map((d) => (
         <div
           key={d.date}
-          className="flex-1 rounded-t bg-primary/70 transition-colors hover:bg-primary"
+          className="group relative flex-1 rounded-t bg-primary/70 transition-colors hover:bg-primary"
           style={{ height: `${Math.max(2, (d.value / max) * 100)}%` }}
-          title={`${formatDateShort(d.date)}: ${d.value.toLocaleString('ru-RU')}`}
-        />
+        >
+          <span
+            className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-ink px-2 py-1 text-xs font-medium text-bg opacity-0 shadow-lg transition-opacity group-hover:opacity-100"
+            role="tooltip"
+          >
+            {formatDateShort(d.date)}: {d.value.toLocaleString('ru-RU')}
+          </span>
+        </div>
       ))}
     </div>
   );
@@ -327,7 +314,6 @@ export function SiteMetrics() {
   const [goalCompletions, setGoalCompletions] = useState<MetrikaGoalCompletion[] | null>(null);
   const [webmasterStats, setWebmasterStats] = useState<YandexWebmasterStat[] | null>(null);
   const [googleStats, setGoogleStats] = useState<GoogleSearchConsoleStat[] | null>(null);
-  const [googlePageIndex, setGooglePageIndex] = useState<GoogleSearchConsolePageIndex[] | null>(null);
   const [error, setError] = useState('');
   const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
   const [topPagesExpanded, setTopPagesExpanded] = useState(false);
@@ -344,16 +330,14 @@ export function SiteMetrics() {
       // всё равно Метрика.
       fetchYandexWebmasterStats().catch(() => []),
       fetchGoogleSearchConsoleStats().catch(() => []),
-      fetchGoogleSearchConsolePageIndex().catch(() => []),
     ])
-      .then(([daily, traffic, pages, goals, webmaster, google, googlePages]) => {
+      .then(([daily, traffic, pages, goals, webmaster, google]) => {
         setDailyStats(daily);
         setTrafficSources(traffic);
         setTopPages(pages);
         setGoalCompletions(goals);
         setWebmasterStats(webmaster);
         setGoogleStats(google);
-        setGooglePageIndex(googlePages);
       })
       .catch(() => setError('Не удалось загрузить показатели.'));
   }, []);
@@ -393,19 +377,6 @@ export function SiteMetrics() {
     return null;
   }, [currentGoogle]);
   const hasGoogleQueryData = currentGoogle.some((d) => d.impressions !== null || d.clicks !== null);
-
-  // Точный трекер ключевых страниц — проиндексированные наверх (позитивное
-  // подтверждение важнее списка "ещё не в индексе"), внутри группы —
-  // алфавит пути (как отдаёт сам запрос).
-  const sortedGooglePageIndex = useMemo(() => {
-    const rows = googlePageIndex ?? [];
-    return [...rows].sort((a, b) => {
-      const aIndexed = a.coverageState === 'Submitted and indexed' ? 0 : 1;
-      const bIndexed = b.coverageState === 'Submitted and indexed' ? 0 : 1;
-      return aIndexed - bIndexed;
-    });
-  }, [googlePageIndex]);
-  const googleIndexedCount = sortedGooglePageIndex.filter((r) => r.coverageState === 'Submitted and indexed').length;
 
   const maxUpdatedAt = useMemo(() => {
     const dates = (trafficSources ?? []).map((s) => s.updatedAt);
@@ -620,7 +591,7 @@ export function SiteMetrics() {
               </div>
               <p className="text-xs text-ink-muted">
                 «Проиндексировано страниц» считается по отдельному, медленному отчёту Google и может отставать от
-                реального индекса на недели — точный статус конкретных страниц смотрите в блоке ниже.
+                реального индекса на недели — реальный статус страницы может быть точнее, чем показывает эта цифра.
               </p>
             </Card>
           )}
@@ -628,36 +599,6 @@ export function SiteMetrics() {
             <Card className="text-sm text-ink-muted">
               Google Search Console пока не подключён — данные по индексации в Google появятся здесь, как только
               владелец пройдёт разовую авторизацию (см. scripts/get-google-search-console-refresh-token.mjs).
-            </Card>
-          )}
-
-          {sortedGooglePageIndex.length > 0 && (
-            <Card className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-semibold text-ink">Индексация ключевых страниц (точная проверка)</h3>
-                  <p className="text-xs text-ink-muted">
-                    Реальный статус в индексе Google по каждой странице — куратированный список хабов и лендингов, не
-                    все страницы сайта.
-                  </p>
-                </div>
-                <Badge tone={googleIndexedCount > 0 ? 'success' : 'neutral'}>
-                  {googleIndexedCount} из {sortedGooglePageIndex.length} в индексе
-                </Badge>
-              </div>
-              <div className="flex flex-col divide-y divide-border">
-                {sortedGooglePageIndex.map((p) => {
-                  const info = coverageStateInfo(p.coverageState);
-                  return (
-                    <div key={p.path} className="flex items-center justify-between gap-3 py-2 text-sm">
-                      <span className="truncate text-ink" title={`/${p.path}`}>
-                        {readablePageLabel(`/${p.path}`)}
-                      </span>
-                      <Badge tone={info.tone}>{info.label}</Badge>
-                    </div>
-                  );
-                })}
-              </div>
             </Card>
           )}
 
