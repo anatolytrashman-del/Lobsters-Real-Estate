@@ -7,6 +7,7 @@ import {
   Building2,
   Calendar,
   Camera,
+  Check,
   DollarSign,
   HardHat,
   Layers,
@@ -239,6 +240,26 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
   // скрывалось") — тот же паттерн шторки, что и SECTION_NAV в DistrictGuidePage.tsx.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [metroListExpanded, setMetroListExpanded] = useState(false);
+  // Множественный выбор станций метро (владелец, 2026-09-07: "выбрать одну
+  // или несколько станций метро") — поверх уже существующего одноосевого
+  // хаба станции (metroSlug/metroHubUrl, аудит поиска 2026-09-07, см. ниже):
+  // тот хаб остаётся отдельным индексируемым URL на ОДНУ станцию (клик по
+  // названию станции — обычная навигация на её страницу, как и было), а
+  // этот Set — чисто клиентский слой для чек-боксов рядом с названием,
+  // сужающий список без смены URL. Комбинаторный URL на несколько станций
+  // сразу не заводили (та же причина, что и у класса×района×метро — риск
+  // тонкого контента на редких сочетаниях, никто не просил). Затравка —
+  // текущая станция из роута, если она есть; сбрасывается/пересеивается при
+  // смене любой другой оси (см. useEffect ниже).
+  const [metroSelection, setMetroSelection] = useState<Set<string>>(new Set());
+  const toggleMetroStation = (name: string) => {
+    setMetroSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
   const [streetListExpanded, setStreetListExpanded] = useState(false);
 
   const classFilter = classSlug ? (CLASS_SLUG_TO_VALUE[classSlug] ?? null) : null;
@@ -260,6 +281,13 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
   // и у пустого пересечения класс×район.
   const metroEmpty =
     metroFilter !== null && centers !== null && !centers.some((c) => metroHubDistance(c, metroFilter) !== null);
+  // metroSelection — затравка станцией из роута при заходе на её хаб, сброс
+  // до пустого при уходе на другую ось (класс/район/микрорайон/стройка) или
+  // на общий каталог — иначе выбор с предыдущего хаба тихо продолжал бы
+  // сужать список там, где его уже не видно в сайдбаре.
+  useEffect(() => {
+    setMetroSelection(metroFilter ? new Set([metroFilter]) : new Set());
+  }, [classSlug, districtSlug, microdistrictSlug, metroSlug, underConstruction]);
   // Улица — ещё одна независимая ось (аудит 2026-09-07), см. STREET_SLUGS.
   const streetFilter = streetSlug ? (STREET_SLUG_TO_NAME[streetSlug] ?? null) : null;
   const badStreetSlug = Boolean(streetSlug) && streetFilter === null;
@@ -463,6 +491,11 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
   }, [centers]);
 
+  // metroSelection — затравлена станцией из роута (см. useEffect выше), плюс
+  // любые станции, добавленные чек-боксами в сайдбаре: БЦ виден, если он в
+  // радиусе METRO_HUB_MAX_DISTANCE_M хотя бы от ОДНОЙ выбранной станции (та
+  // же метрика, что и у одноосевого хаба metroSlug — членство в фильтре
+  // всегда совпадает с тем, что показал бы отдельный хаб этой станции).
   const visibleCenters = useMemo(
     () =>
       (centers ?? []).filter(
@@ -471,24 +504,31 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
           (districtFilter === null || c.district === districtFilter) &&
           (microdistrictFilter === null || c.microdistrict === microdistrictFilter) &&
           (!underConstruction || c.status === 'under_construction') &&
-          (metroFilter === null || metroHubDistance(c, metroFilter) !== null) &&
+          (metroSelection.size === 0 || Array.from(metroSelection).some((st) => metroHubDistance(c, st) !== null)) &&
           (streetFilter === null || streetOfAddress(c.address) === streetFilter),
       ),
-    [centers, classFilter, districtFilter, microdistrictFilter, underConstruction, metroFilter, streetFilter],
+    [centers, classFilter, districtFilter, microdistrictFilter, underConstruction, metroSelection, streetFilter],
   );
-  // На хабе станции карточки — по возрастанию расстояния до неё (ближайшие
-  // первыми), не по общему sort_order каталога.
-  const orderedCenters = useMemo(
-    () =>
-      metroFilter
-        ? [...visibleCenters].sort(
-            (a, b) => (metroHubDistance(a, metroFilter) ?? Infinity) - (metroHubDistance(b, metroFilter) ?? Infinity),
-          )
-        : visibleCenters,
-    [visibleCenters, metroFilter],
-  );
+  // На хабе одной станции (metroFilter — из роута) — по возрастанию расстояния
+  // до неё; при множественном выборе без роута — по возрастанию расстояния до
+  // БЛИЖАЙШЕЙ из выбранных станций; иначе — общий sort_order каталога.
+  const orderedCenters = useMemo(() => {
+    if (metroFilter) {
+      return [...visibleCenters].sort(
+        (a, b) => (metroHubDistance(a, metroFilter) ?? Infinity) - (metroHubDistance(b, metroFilter) ?? Infinity),
+      );
+    }
+    if (metroSelection.size > 0) {
+      const nearestOfSelected = (c: BusinessCenter) =>
+        Math.min(...Array.from(metroSelection).map((st) => metroHubDistance(c, st) ?? Infinity));
+      return [...visibleCenters].sort((a, b) => nearestOfSelected(a) - nearestOfSelected(b));
+    }
+    return visibleCenters;
+  }, [visibleCenters, metroFilter, metroSelection]);
   // Станции для сайдбара — только те, где в радиусе хаба есть хотя бы 1 БЦ,
-  // по убыванию числа БЦ (открытый список, как микрорайоны).
+  // по убыванию числа БЦ (открытый список, как микрорайоны) — независимо от
+  // класса/района/микрорайона (та же логика, что и у самого метро: не
+  // комбинируется с другими осями, доступна отовсюду).
   const metroStations = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const c of centers ?? []) {
@@ -498,6 +538,19 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
     }
     return Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
   }, [centers]);
+  // Список для рендера в сайдбаре: свёрнутый (топ-8) + текущая станция
+  // роута, если она не по счёту в топ-8 — иначе при заходе на хаб редкой
+  // станции (например «Уручье», 5 БЦ) в свёрнутом виде сайдбар показал бы
+  // "Сбросить", но саму станцию — только после клика "Ещё N станций",
+  // непонятно, что именно выбрано.
+  const visibleMetroStations = useMemo(() => {
+    const base = metroListExpanded ? metroStations : metroStations.slice(0, 8);
+    if (metroFilter && !base.some(([name]) => name === metroFilter)) {
+      const current = metroStations.find(([name]) => name === metroFilter);
+      if (current) return [current, ...base];
+    }
+    return base;
+  }, [metroStations, metroListExpanded, metroFilter]);
   // Улицы для сайдбара — только те, где реально 2+ БЦ (см. STREET_SLUGS),
   // по убыванию числа БЦ.
   const streets = useMemo(() => {
@@ -814,30 +867,84 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
         </>
       )}
 
-      <div className="my-2 border-t border-border" />
-
       {metroStations.length > 0 && (
         <>
-          <span className="px-2 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">Метро</span>
-          {/* Независимая ось (аудит 2026-09-07): станции с ≥1 БЦ в радиусе
-              1,5 км, по убыванию числа БЦ. Список длинный — свёрнут до
-              первых 8 станций, остальные раскрываются по клику. */}
-          {(metroListExpanded ? metroStations : metroStations.slice(0, 8)).map(([name, count]) => {
+          <div className="my-2 border-t border-border" />
+
+          <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Метро</span>
+            {/* "Сбросить" на роуте одной станции обязан увести с её URL —
+                иначе заголовок/description страницы продолжали бы говорить
+                про станцию X, пока список уже показывал бы все БЦ (metroSelection
+                опустела бы, а H1 остался бы прежним). Вне роута (обычный
+                каталог, только чек-боксы) — просто очистка состояния, без
+                навигации: остальные оси (класс/район/микрорайон) трогать
+                не нужно. */}
+            {metroSelection.size > 0 &&
+              (metroFilter ? (
+                <Link
+                  to="/minsk/bcminsk"
+                  onClick={() => setMobileNavOpen(false)}
+                  className="text-xs font-semibold text-primary-hover hover:underline"
+                >
+                  Сбросить
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setMetroSelection(new Set())}
+                  className="text-xs font-semibold text-primary-hover hover:underline"
+                >
+                  Сбросить
+                </button>
+              ))}
+          </div>
+          {/* Независимая ось (аудит поиска 2026-09-07 + владелец, 2026-09-07:
+              "выбрать одну или несколько станций метро") — станции с ≥1 БЦ в
+              радиусе METRO_HUB_MAX_DISTANCE_M, по убыванию числа БЦ. Список
+              длинный — свёрнут до первых 8, остальные по клику. Название —
+              обычная ссылка на отдельный SEO-хаб этой станции (та же
+              одноосевая навигация, что и у района/класса, `metroFilter ===
+              name` подсвечивает активный роут); чек-бокс слева — отдельный
+              клиентский тумблер в `metroSelection`, не меняет URL — им можно
+              добавить ЕЩЁ станции к уже открытому хабу (или на общем
+              каталоге без роута вовсе), не теряя саму страницу станции. */}
+          {visibleMetroStations.map(([name, count]) => {
             const url = metroHubUrl(name);
-            if (!url) return null;
+            const checked = metroSelection.has(name);
             return (
-              <Link
-                key={name}
-                to={url}
-                onClick={() => setMobileNavOpen(false)}
-                className={cn(
-                  'flex items-center justify-between gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:text-primary',
-                  metroFilter === name ? 'bg-primary/10 font-bold text-primary-hover' : 'font-medium text-ink',
+              <div key={name} className="flex items-center gap-2 rounded-control px-2 py-1 transition-colors hover:bg-surface-muted">
+                <button
+                  type="button"
+                  onClick={() => toggleMetroStation(name)}
+                  aria-pressed={checked}
+                  aria-label={checked ? `Убрать «${name}» из фильтра метро` : `Добавить «${name}» в фильтр метро`}
+                  className={cn(
+                    'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                    checked ? 'border-primary bg-primary text-white' : 'border-border-strong bg-white',
+                  )}
+                >
+                  {checked && <Check className="h-3 w-3 shrink-0" strokeWidth={3} />}
+                </button>
+                {url ? (
+                  <Link
+                    to={url}
+                    onClick={() => setMobileNavOpen(false)}
+                    className={cn(
+                      'flex flex-1 items-center justify-between gap-2 py-0.5 text-left transition-colors hover:text-primary',
+                      metroFilter === name ? 'font-bold text-primary-hover' : 'font-medium text-ink',
+                    )}
+                  >
+                    <span>{name}</span>
+                    <span className="text-xs text-ink-muted">{count}</span>
+                  </Link>
+                ) : (
+                  <span className="flex flex-1 items-center justify-between gap-2 py-0.5 text-ink">
+                    <span>{name}</span>
+                    <span className="text-xs text-ink-muted">{count}</span>
+                  </span>
                 )}
-              >
-                <span>{name}</span>
-                <span className="text-xs text-ink-muted">{count}</span>
-              </Link>
+              </div>
             );
           })}
           {metroStations.length > 8 && (
@@ -849,8 +956,6 @@ export function BusinessCentersMinskPage({ underConstruction = false }: { underC
               {metroListExpanded ? 'Свернуть' : `Ещё ${metroStations.length - 8} станций`}
             </button>
           )}
-
-          <div className="my-2 border-t border-border" />
         </>
       )}
 
