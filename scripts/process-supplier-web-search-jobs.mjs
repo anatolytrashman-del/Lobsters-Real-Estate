@@ -64,6 +64,23 @@ const MODEL = 'claude-haiku-4-5-20251001';
 // больше 20 раз — сейчас такого не наблюдалось).
 const MAX_SEARCHES = 20;
 const MAX_RESULTS = 40;
+// 2026-09-11, по реальным логам ProxyAPI (см. журнал CLAUDE.md): второй
+// раунд запускался ВСЕГДА, если после первого меньше 40 — почти на каждом
+// задании, даже когда первый раунд уже показал, что рынок узкий. Живой
+// пример по "ceresit" (Россия/Москва — широкий рынок по словам владельца):
+// раунд 1 сам нашёл 25 поставщиков, раунд 2 — ещё 26 (часть повторов) —
+// то есть оба раунда реально понадобились, чтобы дотянуть до ~40. Резать
+// бюджет второго раунда в ЭТОМ случае означало бы не добрать до 40 там,
+// где владелец явно просит их гарантированно найти ("Мне по итогу все
+// равно нужно 40 поставщиков в каждой категории по России, они точно
+// найдутся"). Но для узких рынков (Беларусь, нишевые бренды — сам владелец:
+// "в беларуси мы столько не найдем") первый раунд обычно находит намного
+// меньше — если он нашёл совсем мало, вторая полноценная попытка (тот же
+// ~97₽) почти наверняка не окупится, рынок просто исчерпан. Порог ниже —
+// граница "похоже на узкий рынок, второй раунд вряд ли поможет", подобрана
+// с запасом ниже реально наблюдавшихся 25 у широкого рынка, чтобы не резать
+// охват там, где он нужен.
+const MIN_ROUND1_FOR_SECOND_ROUND = 10;
 const COUNTRY_SEARCH_HINTS = {
   Беларусь: 'в Беларуси (если в пожеланиях не указан конкретный город — ищи прежде всего в Минске)',
   Россия: 'в России (если в пожеланиях не указан конкретный город — ищи прежде всего в Москве и других крупных городах)',
@@ -243,12 +260,21 @@ async function runSearchRounds(job) {
 
   const round1Raw = await fetchWebSearchResults(country, job.items_text, job.section_title, job.extra, excludeNames);
   const round1 = sanitizeResults(round1Raw, excludeKeys);
+  console.log(`    раунд 1: найдено ${round1.length} поставщиков`);
 
   let combined = round1;
-  if (round1.length < MAX_RESULTS) {
+  if (round1.length >= MAX_RESULTS) {
+    console.log('    второй раунд не нужен — уже набрали лимит');
+  } else if (round1.length < MIN_ROUND1_FOR_SECOND_ROUND) {
+    console.log(
+      `    второй раунд пропущен — раунд 1 нашёл всего ${round1.length} ` +
+        `(< ${MIN_ROUND1_FOR_SECOND_ROUND}), похоже на узкий рынок, вторая полная попытка вряд ли окупится`
+    );
+  } else {
     const round2ExcludeNames = [...excludeNames, ...round1.map((r) => r.name || r.website).filter(Boolean)];
     const round2Raw = await fetchWebSearchResults(country, job.items_text, job.section_title, job.extra, round2ExcludeNames);
     combined = sanitizeResults([...round1, ...round2Raw], excludeKeys);
+    console.log(`    раунд 2: итого после объединения и дедупа — ${combined.length} поставщиков`);
   }
   return combined;
 }
