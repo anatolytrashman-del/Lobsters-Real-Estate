@@ -110,8 +110,25 @@ const COUNTRY_SEARCH_HINTS = {
 };
 const DEFAULT_COUNTRY = 'Беларусь';
 
-function buildSystemPrompt(country) {
+// Владелец, 2026-09-11: "давай сделаем ещё возможность доп. поиска
+// поставщиков в существующих категориях... я хочу ещё раз нажать поиск и
+// чтобы оно нашло ещё сайты, автоматически убрав из списка уже найденных в
+// этой категории поставщиков" — кнопка "Искать ещё" на клиенте
+// (Suppliers.tsx) передаёт сюда полный список уже известных по этой
+// категории компаний (уже добавленные предложения + уже показанные в этой
+// же сессии поиска результаты), сервер просит модель их не повторять И
+// дополнительно фильтрует ответ по тому же dedupKey — тот же принцип
+// "двойная защита", что и у обычной дедупликации внутри одного поиска
+// (модель просят словами, а не полагаются только на это).
+const MAX_EXCLUDE = 150;
+
+function buildSystemPrompt(country, excludeNames) {
   const hint = COUNTRY_SEARCH_HINTS[country] || COUNTRY_SEARCH_HINTS[DEFAULT_COUNTRY];
+  const excludeBlock = excludeNames.length
+    ? `\n\nЭТИ КОМПАНИИ УЖЕ НАЙДЕНЫ РАНЕЕ ПО ЭТОМУ ЖЕ ЗАПРОСУ — НЕ ВКЛЮЧАЙ ИХ СНОВА,
+ищи ДРУГИХ, ещё не упомянутых поставщиков:
+${excludeNames.map((n) => `- ${n}`).join('\n')}`
+    : '';
   return `Ты помогаешь найти реальных поставщиков строительных материалов ${hint}
 через веб-поиск для девелоперской компании. Если в "Дополнительные пожелания"
 указан другой город, регион или страна — ищи именно там, это имеет приоритет
@@ -127,7 +144,7 @@ function buildSystemPrompt(country) {
    именно Яндексом — Яндекс.Маркет, Яндекс.Карты/2ГИС (организации),
    TIU.ru, Deal.by, Prom.by, Avito и подобные региональные агрегаторы.
 Не возвращай одну и ту же компанию дважды (даже если нашёл её и в
-обычном, и в "яндексовом" запросе) — каждая компания в ответе только один раз.
+обычном, и в "яндексовом" запросе) — каждая компания в ответе только один раз.${excludeBlock}
 
 Для каждой найденной компании собери:
 - сайт (website) — адрес сайта компании;
@@ -215,7 +232,7 @@ function dedupeResults(list) {
   return result;
 }
 
-function sanitizeResults(raw) {
+function sanitizeResults(raw, excludeKeys) {
   const cleaned = raw
     .filter((r) => r && typeof r.name === 'string' && r.name.trim())
     .map((r) => ({
@@ -226,7 +243,31 @@ function sanitizeResults(raw) {
       email: typeof r.email === 'string' ? r.email.trim() : '',
       note: typeof r.note === 'string' ? r.note.trim() : '',
     }));
-  return dedupeResults(cleaned).slice(0, MAX_RESULTS);
+  const deduped = dedupeResults(cleaned);
+  // Второй рубеж защиты от повтора уже известных компаний (первый — прямой
+  // запрет в системном промте) — фильтруем ДО обрезки до MAX_RESULTS, чтобы
+  // лимит всегда отражал реально НОВЫЕ компании, а не съедался повторами.
+  const filtered = excludeKeys && excludeKeys.size
+    ? deduped.filter((r) => !excludeKeys.has(dedupKey(r)))
+    : deduped;
+  return filtered.slice(0, MAX_RESULTS);
+}
+
+// Клиент присылает { name, website } уже известных по этой категории
+// компаний (существующие предложения + результаты, показанные в текущей
+// сессии поиска) — сводим к тому же ключу, что и у сравнения результатов
+// между собой (dedupKey), с ограничением на всякий случай (не доверяем
+// клиенту безоговорочно на размер).
+function normalizeExcludeCompanies(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((r) => r && (typeof r.name === 'string' || typeof r.website === 'string'))
+    .slice(0, MAX_EXCLUDE)
+    .map((r) => ({
+      name: typeof r.name === 'string' ? r.name.trim() : '',
+      website: typeof r.website === 'string' ? r.website.trim() : '',
+    }))
+    .filter((r) => r.name || r.website);
 }
 
 export default async function handler(req, res) {
@@ -269,12 +310,17 @@ async function handleWebSearch(req, res) {
     return;
   }
 
-  const { itemsText, sectionTitle, extra, country } = req.body ?? {};
+  const { itemsText, sectionTitle, extra, country, excludeCompanies } = req.body ?? {};
   if (typeof itemsText !== 'string' || !itemsText.trim()) {
     res.status(400).json({ error: 'Список материалов пуст' });
     return;
   }
   const resolvedCountry = typeof country === 'string' && COUNTRY_SEARCH_HINTS[country] ? country : DEFAULT_COUNTRY;
+  const excludeList = normalizeExcludeCompanies(excludeCompanies);
+  const excludeKeys = new Set(excludeList.map((r) => dedupKey(r)));
+  // В промт — человекочитаемые названия (а не нормализованные ключи), модели
+  // проще следовать списку реальных имён компаний.
+  const excludeNames = excludeList.map((r) => r.name || r.website);
 
   try {
     const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
@@ -292,7 +338,7 @@ async function handleWebSearch(req, res) {
         // сами tool_use-блоки поисков, и на развёрнутый финальный JSON.
         max_tokens: 10000,
         tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES, allowed_callers: ['direct'] }],
-        system: buildSystemPrompt(resolvedCountry),
+        system: buildSystemPrompt(resolvedCountry, excludeNames),
         messages: [
           {
             role: 'user',
@@ -319,7 +365,7 @@ async function handleWebSearch(req, res) {
       throw new Error(`Ошибка веб-поиска (${resp.status}): ${text.slice(0, 300)}`);
     }
     const data = await resp.json();
-    const results = sanitizeResults(extractJsonArray(data.content));
+    const results = sanitizeResults(extractJsonArray(data.content), excludeKeys);
     res.status(200).json({ results });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Не удалось выполнить веб-поиск поставщиков' });

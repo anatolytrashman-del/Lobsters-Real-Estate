@@ -67,6 +67,7 @@ import {
 import {
   searchSuppliersOnline,
   recognizeInvoiceFile,
+  supplierResultKey,
   type SupplierSearchResult,
   type RecognizedInvoiceItem,
 } from '../lib/supplierWebSearchApi';
@@ -770,11 +771,14 @@ function SupplierWebSearchModal({
   addingIndices,
   bulkAdding,
   addError,
+  loadingMore,
+  moreError,
   onClose,
   onToggleSelect,
   onToggleSelectAll,
   onAddOne,
   onAddSelected,
+  onSearchMore,
 }: {
   requestTitle: string;
   results: SupplierSearchResult[];
@@ -784,11 +788,14 @@ function SupplierWebSearchModal({
   addingIndices: Set<number>;
   bulkAdding: boolean;
   addError: string | null;
+  loadingMore: boolean;
+  moreError: string | null;
   onClose: () => void;
   onToggleSelect: (index: number) => void;
   onToggleSelectAll: () => void;
   onAddOne: (index: number) => void;
   onAddSelected: () => void;
+  onSearchMore: () => void;
 }) {
   const selectableCount = results.filter((_, i) => !added.has(i)).length;
   const allSelected = selectableCount > 0 && selected.size === selectableCount;
@@ -899,6 +906,21 @@ function SupplierWebSearchModal({
             </div>
           );
         })}
+
+        {!error && (
+          <div className="flex flex-col items-start gap-2 border-t border-border pt-3">
+            {moreError && <p className="text-sm text-danger">{moreError}</p>}
+            <Button
+              type="button"
+              variant="secondary"
+              icon={loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              disabled={loadingMore}
+              onClick={onSearchMore}
+            >
+              {loadingMore ? 'Ищем ещё...' : 'Искать ещё'}
+            </Button>
+          </div>
+        )}
       </div>
     </Modal>
   );
@@ -1318,6 +1340,14 @@ export function Suppliers() {
   const [webSearchAddingIndices, setWebSearchAddingIndices] = useState<Set<number>>(new Set());
   const [webSearchBulkAdding, setWebSearchBulkAdding] = useState(false);
   const [webSearchAddError, setWebSearchAddError] = useState<string | null>(null);
+  // Владелец, 2026-09-11: "давай сделаем ещё возможность доп. поиска
+  // поставщиков в существующих категориях... я хочу ещё раз нажать поиск и
+  // чтобы оно нашло ещё сайты, автоматически убрав из списка уже найденных" —
+  // кнопка "Искать ещё" в той же модалке результатов, ДОБАВЛЯЕТ новые
+  // строки к уже показанным (не заменяет), поэтому индексы уже существующих
+  // результатов (и завязанные на них Set'ы выбора/добавления) не съезжают.
+  const [webSearchLoadingMore, setWebSearchLoadingMore] = useState(false);
+  const [webSearchMoreError, setWebSearchMoreError] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([fetchSupplierRequests(), fetchSupplierOffers()])
@@ -1810,6 +1840,7 @@ export function Suppliers() {
     setWebSearchAdded(new Set());
     setWebSearchAddingIndices(new Set());
     setWebSearchAddError(null);
+    setWebSearchMoreError(null);
     try {
       const results = await searchSuppliersOnline(
         webQueryForm.itemsText.trim(),
@@ -1822,6 +1853,42 @@ export function Suppliers() {
       setWebSearchModal({ request, results: [], error: errorMessage(err, 'Не удалось выполнить веб-поиск') });
     } finally {
       setWebSearchingId(null);
+    }
+  }
+
+  // "Искать ещё" — та же категория (запрос), тот же список материалов/
+  // пожеланий/страны, что и в исходном поиске (webQueryForm не сбрасывается
+  // после submitWebQuery, см. комментарий там же — держит параметры именно
+  // того запроса, что сейчас открыт в webSearchModal). Исключаем из поиска
+  // и уже добавленных этой категории поставщиков (offers), и всё, что уже
+  // показано в текущем списке результатов (в т.ч. ещё не добавленное) —
+  // иначе повторный клик находил бы те же самые компании заново.
+  async function searchMoreSuppliers() {
+    if (!webSearchModal) return;
+    const { request, results } = webSearchModal;
+    setWebSearchLoadingMore(true);
+    setWebSearchMoreError(null);
+    try {
+      const knownOffers = offers
+        .filter((o) => o.requestId === request.id)
+        .map((o) => ({ name: o.name, website: o.websiteUrl }));
+      const knownShown = results.map((r) => ({ name: r.name, website: r.website }));
+      const found = await searchSuppliersOnline(
+        webQueryForm.itemsText.trim() || formatRequestItemsText(request.items, request.title),
+        request.sectionTitle || request.title,
+        webQueryForm.extra.trim(),
+        webQueryForm.country,
+        [...knownOffers, ...knownShown],
+      );
+      // Подстраховка сверх серверной фильтрации (та же логика dedupKey) — на
+      // случай, если модель всё же повторила уже показанную компанию.
+      const existingKeys = new Set(results.map((r) => supplierResultKey(r)));
+      const genuinelyNew = found.filter((r) => !existingKeys.has(supplierResultKey(r)));
+      setWebSearchModal((prev) => (prev ? { ...prev, results: [...prev.results, ...genuinelyNew] } : prev));
+    } catch (err) {
+      setWebSearchMoreError(errorMessage(err, 'Не удалось найти дополнительных поставщиков'));
+    } finally {
+      setWebSearchLoadingMore(false);
     }
   }
 
@@ -3080,6 +3147,8 @@ export function Suppliers() {
           addingIndices={webSearchAddingIndices}
           bulkAdding={webSearchBulkAdding}
           addError={webSearchAddError}
+          loadingMore={webSearchLoadingMore}
+          moreError={webSearchMoreError}
           onClose={() => setWebSearchModal(null)}
           onToggleSelect={toggleWebSearchSelect}
           onToggleSelectAll={toggleWebSearchSelectAll}
@@ -3090,6 +3159,7 @@ export function Suppliers() {
               [...webSearchSelected].map((i) => ({ index: i, r: webSearchModal.results[i] })),
             )
           }
+          onSearchMore={searchMoreSuppliers}
         />
       )}
 
