@@ -130,23 +130,32 @@ function buildUserQuery(itemsText, sectionTitle, extra, country) {
 }
 
 function extractJsonArray(content) {
-  const text = (Array.isArray(content) ? content : [])
+  // Ответ приходит НЕСКОЛЬКИМИ текстовыми блоками (модель комментирует ход
+  // поиска между вызовами web_search, массив пишет последним) — берём
+  // последний фрагмент, который реально парсится как массив, а не "от первой
+  // [ до последней ]" по склейке всех блоков: в комментариях тоже бывают
+  // скобки, и склейка тогда не парсится вовсе.
+  const texts = (Array.isArray(content) ? content : [])
     .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text)
-    .join('');
-  const stripped = text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-  const start = stripped.indexOf('[');
-  const end = stripped.lastIndexOf(']');
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error('Модель не вернула список поставщиков в ожидаемом формате');
+    .map((block) => block.text);
+  for (const text of [...texts].reverse()) {
+    const stripped = text
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+    for (let start = stripped.indexOf('['); start !== -1; start = stripped.indexOf('[', start + 1)) {
+      const end = stripped.lastIndexOf(']');
+      if (end <= start) break;
+      try {
+        const parsed = JSON.parse(stripped.slice(start, end + 1));
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // не тот фрагмент — пробуем следующую открывающую скобку
+      }
+    }
   }
-  const parsed = JSON.parse(stripped.slice(start, end + 1));
-  if (!Array.isArray(parsed)) throw new Error('Модель вернула не массив');
-  return parsed;
+  throw new Error('Модель не вернула список поставщиков в ожидаемом формате');
 }
 
 function dedupKey(r) {

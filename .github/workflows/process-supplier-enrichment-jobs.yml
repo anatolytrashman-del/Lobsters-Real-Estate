@@ -1,12 +1,10 @@
 name: Process supplier enrichment jobs
 
+# Расписание убрано вместе с расписанием поиска — см. комментарий в
+# process-supplier-web-search-jobs.yml (троттлинг Actions из-за трёх кронов
+# раз в 5 минут). Очередь обогащения разбирает Supabase Edge Function
+# process-supplier-jobs по pg_cron; здесь остаётся ручной запуск.
 on:
-  schedule:
-    # Каждые 5 минут — тот же принцип, что у process-supplier-web-search-
-    # jobs.yml. Подстраховка на случай, если мгновенный workflow_dispatch
-    # (см. api/trigger-rebuild.js, action:'dispatch-supplier-enrichment') не
-    # сработал (нет токена/сетевая ошибка) — очередь всё равно разберётся сама.
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 concurrency:
