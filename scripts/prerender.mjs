@@ -586,6 +586,18 @@ async function fetchPathLive(path) {
 }
 
 async function main() {
+  // PRERENDER_SKIP=1 — полностью пропустить пререндер (2026-09-11, владелец:
+  // «меняю админку, мне не нужна повторная регенерация страниц маркетинга»).
+  // Локальный прогон идёт в ПОЛНОМ режиме (см. shouldForceFullPrerender) —
+  // это ~285 путей по headless-браузеру на каждый, минут двадцать, тогда как
+  // весь остальной билд (tsc + vite + sitemap + preview-html) укладывается в
+  // ~10 секунд. Для проверки правок админки/CRM пререндер не нужен вообще:
+  // `npm run build:app` (см. package.json) просто не доходит до этого шага,
+  // а этот env — тот же выход для тех, кто всё же зовёт `npm run build`.
+  if (process.env.PRERENDER_SKIP === '1') {
+    console.log('[prerender] PRERENDER_SKIP=1 — пропускаю пререндер целиком');
+    return;
+  }
   if (!existsSync(DIST_DIR)) throw new Error('dist/ не найден — запускать после vite build');
 
   const landingPaths = await fetchLandingPaths();
@@ -656,6 +668,13 @@ async function main() {
       ? '[prerender] ПОЛНЫЙ режим — рендерю каждый путь headless-браузером (реальное изменение данных или ручной прогон)'
       : '[prerender] БЫСТРЫЙ режим — копирую уже живые страницы с прода, рендерю только то, чего там ещё нет',
   );
+  if (fullMode && !process.env.VERCEL) {
+    console.warn(
+      `[prerender] это локальный полный прогон: ${paths.length} путей по отдельному headless-браузеру на каждый — ` +
+        'десятки минут. Если правились только админка/CRM/api — прерывайте и используйте `npm run build:app` ' +
+        '(тот же tsc + vite build + sitemap, без пререндера) либо `PRERENDER_SKIP=1 npm run build`.',
+    );
+  }
 
   const serverProc = startPreviewServer();
 
