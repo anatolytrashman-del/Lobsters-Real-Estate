@@ -1,4 +1,10 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "**": false,
+      "claude/redevelopment-platform-prototype-oodobu": true
+    }
+  },
   "functions": {
     "api/transcribe.js": { "maxDuration": 300 },
     "api/meeting-ai.js": { "maxDuration": 300 },
