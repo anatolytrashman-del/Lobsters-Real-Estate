@@ -31,6 +31,7 @@ import {
   SUPPLIER_COMPARISON_MODE_HINTS,
   guessCountryFromWebsite,
   countryFlag,
+  messengerLink,
   offerCommunicationStatus,
   OFFER_COMMUNICATION_STATUS_LABEL,
   SUPPLIER_MESSENGER_TYPES,
@@ -110,6 +111,20 @@ function formatPrice(price: number, currency: Currency): string {
 // колонка не растягивалась длинными урлами. Если строка не парсится как URL
 // (ввели без https://), показываем как есть — свободный ввод, не хотим
 // блокировать сохранение из-за формата.
+// Сколько времени показывать баннер "Готово: добавлено N поставщиков" после
+// завершения поиска (см. latestVisibleJobForRequest).
+const DONE_BANNER_TTL_MS = 30 * 60_000;
+
+// "добавлен 31 поставщик" / "добавлено 2 поставщика" / "добавлено 5
+// поставщиков" — иначе в баннере получалось "добавлено 31 поставщиков".
+function addedSuppliersLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `добавлен ${count} поставщик`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `добавлено ${count} поставщика`;
+  return `добавлено ${count} поставщиков`;
+}
+
 function siteLabel(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, '');
@@ -271,7 +286,7 @@ function VerificationBadge({
   offer,
   enrichmentState,
 }: {
-  offer: { id: string; verified: boolean };
+  offer: { id: string; verified: boolean; email: string; contact: string };
   enrichmentState: Map<string, OfferEnrichmentState>;
 }) {
   const status = supplierVerificationStatus(offer, enrichmentState);
@@ -483,6 +498,10 @@ interface MaterialQuote {
   offerId: string;
   offerName: string;
   verified: boolean;
+  // Нужны только бейджу статуса (см. supplierVerificationStatus): без
+  // собранных контактов поставщик остаётся "Требуется верификация".
+  offerEmail: string;
+  offerContact: string;
   amount: number;
   currency: Currency;
   usd: number | null;
@@ -511,6 +530,8 @@ function buildMaterialQuotes(request: SupplierRequest, confirmedOffers: Supplier
       offerId: offer.id,
       offerName: offer.name,
       verified: offer.verified,
+      offerEmail: offer.email,
+      offerContact: offer.contact,
       amount,
       currency: offer.currency,
       usd: convertToUsd(amount, offer.currency, rate),
@@ -637,7 +658,10 @@ function MaterialPriceComparisonCard({
                     >
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm font-medium text-ink">{q.offerName}</span>
-                        <VerificationBadge offer={{ id: q.offerId, verified: q.verified }} enrichmentState={enrichmentState} />
+                        <VerificationBadge
+                          offer={{ id: q.offerId, verified: q.verified, email: q.offerEmail, contact: q.offerContact }}
+                          enrichmentState={enrichmentState}
+                        />
                         {isCheapest && (
                           <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
                             лучшая цена
@@ -797,7 +821,7 @@ function RequestCard({
             <Check className="h-4 w-4 shrink-0" />
             {searchJob.addedCount === 0
               ? 'Поиск завершён — новых поставщиков не нашлось (всё найденное уже есть в списке)'
-              : `Готово: добавлено ${searchJob.addedCount ?? searchJob.results.length} поставщиков — собираем их контакты`}
+              : `Готово: ${addedSuppliersLabel(searchJob.addedCount ?? searchJob.results.length)} — собираем их контакты`}
           </span>
           <button
             type="button"
@@ -865,22 +889,7 @@ function OfferDetailModal({
     <Modal
       open
       onClose={onClose}
-      title={
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate">{offer.name}</span>
-          {/* Владелец, 2026-09-04: "перенеси кнопку редактирования наверх" —
-              рядом с заголовком карточки, а не в футере среди остальных
-              действий. */}
-          <button
-            type="button"
-            onClick={() => onEdit(offer)}
-            aria-label="Редактировать предложение"
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-        </span>
-      }
+      title={<span className="min-w-0 truncate">{offer.name}</span>}
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-3">
@@ -928,12 +937,32 @@ function OfferDetailModal({
           <div className="flex flex-col gap-1 text-sm">
             <span className="text-ink-faint">Мессенджеры</span>
             <div className="flex flex-wrap gap-1.5">
-              {offer.messengers.map((m, i) => (
-                <span key={i} className="flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-ink">
-                  <MessageCircle className="h-3.5 w-3.5 shrink-0" />
-                  {m.type}: {m.number}
-                </span>
-              ))}
+              {offer.messengers.map((m, i) => {
+                const { href, label } = messengerLink(m);
+                const inner = (
+                  <>
+                    <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0 truncate">
+                      {m.type}: {label}
+                    </span>
+                  </>
+                );
+                return href ? (
+                  <a
+                    key={i}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-primary-hover hover:border-primary hover:underline"
+                  >
+                    {inner}
+                  </a>
+                ) : (
+                  <span key={i} className="flex max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-ink">
+                    {inner}
+                  </span>
+                );
+              })}
             </div>
           </div>
         )}
@@ -1044,9 +1073,23 @@ function OfferDetailModal({
           </div>
         )}
 
+        {/* Владелец, 2026-09-11: "внизу три кнопки — Верифицировать кнопкой с
+            текстом, Редактировать кнопкой с текстом, Удалить иконкой корзины".
+            Карандаш из заголовка карточки при этом убран — он дублировал бы
+            кнопку "Редактировать" один в один. */}
         <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
-          <Button type="button" variant="ghost" icon={<Trash2 className="h-4 w-4" />} disabled={deleting} onClick={() => onDelete(offer)} className="mr-auto">
-            Удалить
+          <button
+            type="button"
+            onClick={() => onDelete(offer)}
+            disabled={deleting}
+            aria-label="Удалить поставщика"
+            title="Удалить поставщика"
+            className="mr-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-danger hover:text-danger disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+          <Button type="button" variant="secondary" icon={<Pencil className="h-4 w-4" />} onClick={() => onEdit(offer)}>
+            Редактировать
           </Button>
           {/* Владелец, 2026-09-11: "добавь галочку «Верифицировать» прямо в
               карточку, чтобы даже редактирование открывать не нужно было" —
@@ -1765,7 +1808,18 @@ export function Suppliers() {
   // поэтому первое совпадение по requestId всегда самое новое.
   function latestVisibleJobForRequest(requestId: string): SupplierWebSearchJob | undefined {
     const job = webSearchJobs.find((j) => j.requestId === requestId);
-    return job && !dismissedJobIds.has(job.id) ? job : undefined;
+    if (!job || dismissedJobIds.has(job.id)) return undefined;
+    // Владелец, 2026-09-11: "это уведомление не пропадает, хотя поставщики
+    // уже давно добавлены в базу" — крестик прятал баннер только в памяти
+    // вкладки, после F5 он возвращался снова. "Готово" — разовая новость о
+    // том, что поиск отработал, а не постоянный статус категории (сами
+    // поставщики уже видны в списке ниже), поэтому баннер живёт ограниченное
+    // время после завершения задания. Ошибку не прячем по таймеру — она
+    // требует действия и снимается только крестиком.
+    if (job.status === 'done' && job.completedAt && Date.now() - new Date(job.completedAt).getTime() > DONE_BANNER_TTL_MS) {
+      return undefined;
+    }
+    return job;
   }
 
   function dismissWebSearchJob(jobId: string) {
