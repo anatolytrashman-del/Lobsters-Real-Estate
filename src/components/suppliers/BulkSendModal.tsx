@@ -67,14 +67,67 @@ const FILTERS = [FILTER_NEW, FILTER_ALL, FILTER_CONTACTED];
 // поставщиков пачками один и тот же поставщик легко попадает в несколько
 // категорий разными карточками, и для человека на том конце это всё равно
 // "мне уже писали".
+// Владелец, 2026-09-11 (продолжение того же захода): "по ООО ГЛАССВЭЙ у нас
+// есть КП в базе, значит мы ему писали вручную и такому поставщику вообще не
+// нужно писать по этой закупке". Реальные данные: у ГЛАССВЭЙ price=1 000 272
+// и 8 позиций, а писем в системе ноль — переписка шла мимо (телефон, личная
+// почта, счёт занесли в карточку руками). Поэтому 'quoted' — отдельный
+// признак "мы с ним уже работаем", не завязанный на supplier_offer_emails.
 type ContactStatus =
   | { kind: 'none' }
   | { kind: 'sent'; at: string }
   | { kind: 'queued' }
-  | { kind: 'sameEmail'; via: string };
+  | { kind: 'quoted' }
+  | { kind: 'sameEmail'; via: string }
+  | { kind: 'sameDomain'; via: string };
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
+}
+
+// Публичные почтовики: адреса на них не связывают карточки между собой —
+// два разных поставщика вполне могут сидеть на @mail.ru.
+const PUBLIC_EMAIL_DOMAINS = new Set([
+  'mail.ru',
+  'inbox.ru',
+  'bk.ru',
+  'list.ru',
+  'internet.ru',
+  'gmail.com',
+  'googlemail.com',
+  'yandex.ru',
+  'yandex.by',
+  'yandex.com',
+  'ya.ru',
+  'rambler.ru',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'icloud.com',
+  'me.com',
+  'tut.by',
+  'mail.by',
+]);
+
+// Владелец, 2026-09-11: в категории "Грильято" оказались ДВЕ карточки одной
+// компании "Авангард" — mm4@avangardrf.ru и mm6@avangardrf.ru (разные
+// менеджеры одного поставщика): одному писали, у второго лежит КП, а дедуп
+// по адресу их не связал, потому что адреса разные. Корпоративный домен —
+// признак той же компании; публичные почтовики (см. выше) сюда не идут.
+function corporateDomain(email: string): string | null {
+  const at = normalizeEmail(email).lastIndexOf('@');
+  if (at < 0) return null;
+  const domain = normalizeEmail(email).slice(at + 1);
+  if (!domain || PUBLIC_EMAIL_DOMAINS.has(domain)) return null;
+  return domain;
+}
+
+// "Мы уже работаем с этим поставщиком" по самой карточке, без писем: есть
+// распознанное/занесённое КП. files сюда сознательно НЕ входят — к карточке
+// могли приложить презентацию или прайс, это ещё не переписка, а вот цена
+// и позиции появляются только из реального КП.
+function hasQuote(offer: SupplierOffer): boolean {
+  return offer.price > 0 || offer.items.length > 0;
 }
 
 function formatDay(iso: string): string {
@@ -213,17 +266,34 @@ export function BulkSendModal({
     return map;
   }, [emails]);
 
+  // Карточка, с которой мы уже как-то контактировали: письмо ушло, стоит в
+  // очереди или лежит КП. От неё считаются "тот же адрес"/"тот же домен" —
+  // адрес и домен ведут на название той карточки, чтобы в списке было видно,
+  // с кем именно уже работаем.
+  const touched = useMemo(
+    () => (o: SupplierOffer) => contactedByOffer.has(o.id) || queuedOfferIds.has(o.id) || hasQuote(o),
+    [contactedByOffer, queuedOfferIds],
+  );
+
   const contactedByEmail = useMemo(() => {
     const map = new Map<string, string>();
     for (const o of offers) {
-      if (!o.email) continue;
-      if (!contactedByOffer.has(o.id) && !queuedOfferIds.has(o.id)) continue;
+      if (!o.email || !touched(o)) continue;
       const key = normalizeEmail(o.email);
-      const title = requests.find((r) => r.id === o.requestId)?.title || o.name;
-      if (!map.has(key)) map.set(key, title);
+      if (!map.has(key)) map.set(key, o.name);
     }
     return map;
-  }, [offers, requests, contactedByOffer, queuedOfferIds]);
+  }, [offers, touched]);
+
+  const contactedByDomain = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const o of offers) {
+      if (!o.email || !touched(o)) continue;
+      const domain = corporateDomain(o.email);
+      if (domain && !map.has(domain)) map.set(domain, o.name);
+    }
+    return map;
+  }, [offers, touched]);
 
   const statusOf = useMemo(() => {
     const cache = new Map<string, ContactStatus>();
@@ -231,17 +301,40 @@ export function BulkSendModal({
       const cached = cache.get(offer.id);
       if (cached) return cached;
       const sentAt = contactedByOffer.get(offer.id);
+      const domain = offer.email ? corporateDomain(offer.email) : null;
+      const viaEmail = offer.email ? contactedByEmail.get(normalizeEmail(offer.email)) : undefined;
+      const viaDomain = domain ? contactedByDomain.get(domain) : undefined;
       let status: ContactStatus;
       if (sentAt) status = { kind: 'sent', at: sentAt };
       else if (queuedOfferIds.has(offer.id)) status = { kind: 'queued' };
-      else {
-        const via = offer.email ? contactedByEmail.get(normalizeEmail(offer.email)) : undefined;
-        status = via ? { kind: 'sameEmail', via } : { kind: 'none' };
-      }
+      else if (hasQuote(offer)) status = { kind: 'quoted' };
+      else if (viaEmail) status = { kind: 'sameEmail', via: viaEmail };
+      else if (viaDomain) status = { kind: 'sameDomain', via: viaDomain };
+      else status = { kind: 'none' };
       cache.set(offer.id, status);
       return status;
     };
-  }, [contactedByOffer, contactedByEmail, queuedOfferIds]);
+  }, [contactedByOffer, contactedByEmail, contactedByDomain, queuedOfferIds]);
+
+  // Владелец, 2026-09-11: "у нас дохера поставщиков новых по Грильято, а оно
+  // видит только два" — в той категории 56 поставщиков, но 40 из них не
+  // верифицированы, а рассылка работает только по верифицированным (правило
+  // 2026-09-04: закупщик сперва проверяет поля карточки). Владелец правило
+  // оставил ("тогда сначала верифицируем"), но молча прятать сорок карточек
+  // нельзя — иначе каждый раз гадать, куда делось пополнение.
+  const unverifiedCount = useMemo(
+    () =>
+      countryChosen
+        ? offers.filter(
+            (o) =>
+              o.requestId === selectedRequestId &&
+              o.email &&
+              !o.verified &&
+              (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
+          ).length
+        : 0,
+    [offers, countryChosen, selectedRequestId, selectedCountry],
+  );
 
   const [filter, setFilter] = useState(FILTER_NEW);
   const newCount = useMemo(() => candidates.filter((o) => statusOf(o).kind === 'none').length, [candidates, statusOf]);
@@ -410,6 +503,13 @@ export function BulkSendModal({
                   onChange={setFilter}
                 />
 
+                {unverifiedCount > 0 && (
+                  <p className="-mt-1 text-xs text-ink-faint">
+                    Ещё {unverifiedCount} с email в этой категории не прошли верификацию — в рассылку они не попадают.
+                    Откройте карточку, проверьте поля и сохраните, тогда появятся здесь.
+                  </p>
+                )}
+
                 {visible.length === 0 ? (
                   <p className="text-sm text-ink-faint">
                     {filter === FILTER_NEW
@@ -435,9 +535,13 @@ export function BulkSendModal({
                         ? `Писали ${formatDay(status.at)}`
                         : status.kind === 'queued'
                           ? 'Письмо этому поставщику уже стоит в очереди рассылки'
-                          : status.kind === 'sameEmail'
-                            ? `На адрес ${o.email} уже писали — категория «${status.via}»`
-                            : 'Ещё не писали';
+                          : status.kind === 'quoted'
+                            ? 'В карточке уже есть КП — с этим поставщиком мы работаем, писать по закупке заново не нужно'
+                            : status.kind === 'sameEmail'
+                              ? `На адрес ${o.email} уже писали — карточка «${status.via}»`
+                              : status.kind === 'sameDomain'
+                                ? `Та же компания, что и «${status.via}» (общий почтовый домен ${corporateDomain(o.email)}) — ей уже писали`
+                                : 'Ещё не писали';
                     return (
                       <label
                         key={o.id}
@@ -454,8 +558,12 @@ export function BulkSendModal({
                           <span title={o.country || SUPPLIER_COUNTRIES[0]}>{countryFlag(o.country || SUPPLIER_COUNTRIES[0])}</span> {o.name}
                           {status.kind === 'sent' && <span className="text-ink-faint"> · писали {formatDay(status.at)}</span>}
                           {status.kind === 'queued' && <span className="text-warning"> · письмо уже в очереди</span>}
+                          {status.kind === 'quoted' && <span className="text-ink-faint"> · есть КП, уже работаем</span>}
                           {status.kind === 'sameEmail' && (
-                            <span className="text-ink-faint"> · на этот адрес писали в «{status.via}»</span>
+                            <span className="text-ink-faint"> · на этот адрес уже писали</span>
+                          )}
+                          {status.kind === 'sameDomain' && (
+                            <span className="text-ink-faint"> · та же компания, что «{status.via}»</span>
                           )}
                         </span>
                       </label>
