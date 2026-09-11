@@ -77,6 +77,12 @@ web_fetch (до ${MAX_FETCHES} вызовов). Найди:
 (заблокирован бот-защитой и т.п.) — тогда остальные поля пустые.
 Если поле не нашёл — пустая строка/пустой массив, НЕ выдумывай контакты.`;
 
+// 2026-09-11, живой прогон на категории "Краска интерьерная": 2 сайта из 31
+// упали с "Unexpected non-whitespace character after JSON" — модель иногда
+// возвращает ДВА JSON-блока подряд (например, черновик и финальную версию),
+// не один. Наивный "от первой { до последней }" склеивал оба в невалидный
+// JSON. Вместо этого ищем именно ПЕРВЫЙ полный JSON-объект по глубине
+// скобок — то, что модель написала первым, игнорируя любой хвост после.
 function extractJson(content) {
   const text = (Array.isArray(content) ? content : [])
     .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
@@ -88,11 +94,18 @@ function extractJson(content) {
     .replace(/```\s*$/i, '')
     .trim();
   const start = stripped.indexOf('{');
-  const end = stripped.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) {
+  if (start === -1) {
     throw new Error('Модель не вернула JSON в ожидаемом формате');
   }
-  return JSON.parse(stripped.slice(start, end + 1));
+  let depth = 0;
+  for (let i = start; i < stripped.length; i++) {
+    if (stripped[i] === '{') depth++;
+    else if (stripped[i] === '}') {
+      depth--;
+      if (depth === 0) return JSON.parse(stripped.slice(start, i + 1));
+    }
+  }
+  throw new Error('Модель не вернула JSON в ожидаемом формате (не нашли закрывающую скобку)');
 }
 
 function sanitizeResult(raw) {
