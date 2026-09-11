@@ -19,6 +19,29 @@ export interface LedgerAttachment {
   fileName: string;
   contentType: string;
   contentBase64: string;
+  // Ключ СОДЕРЖИМОГО ведомости (sha256 от названия + строк таблицы) — по нему
+  // сервер понимает, что эта ведомость уже уходила, и не шлёт владельцу копию
+  // второй раз (владелец, 2026-09-11: копия на КАЖДУЮ УНИКАЛЬНУЮ ведомость,
+  // а не на каждое письмо — в массовой рассылке одна ведомость уходит
+  // десяткам поставщиков). Хэшируются именно данные, а не байты .xlsx:
+  // SheetJS пишет в docProps момент создания файла, поэтому у двух генераций
+  // одной и той же ведомости байты (и их хэш) разные.
+  //
+  // Необязательное поле: этим же типом описаны обычные файлы, прикреплённые
+  // руками (lib/legalEntityAttachment.ts) — у них ключа нет и копия по ним
+  // не шлётся, копия — только про ведомости материалов.
+  contentKey?: string;
+}
+
+async function ledgerContentKey(ledgerName: string, items: PurchaseItem[]): Promise<string> {
+  const canonical = JSON.stringify({
+    name: ledgerName.trim(),
+    items: items.map((i) => [i.name ?? '', i.quantity ?? '', i.unit ?? '', i.note ?? '']),
+  });
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 // Владелец, 2026-09-04: "в ведомости оставляй только Позиция, Количество и
@@ -51,5 +74,6 @@ export async function buildMaterialLedgerXlsx(ledgerName: string, items: Purchas
     fileName: `${safeName}.xlsx`,
     contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     contentBase64,
+    contentKey: await ledgerContentKey(safeName, items),
   };
 }
