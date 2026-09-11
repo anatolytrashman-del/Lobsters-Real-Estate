@@ -54,11 +54,11 @@
 // scripts/process-supplier-web-search-jobs.mjs) переведён с синхронного
 // HTTP-запроса на ту же очередь, что и массовая рассылка.
 //
-// 2026-09-11: и снова тот же принцип — action 'dispatch-supplier-
-// enrichment', дёргает process-supplier-enrichment-jobs.yml (обогащение
-// контактов уже добавленного поставщика: email для заказов/телефон/
-// мессенджеры, реальный просмотр его сайта — см. scripts/process-supplier-
-// enrichment-jobs.mjs).
+// 2026-09-11: обогащение контактов поставщиков (email для заказов/телефон/
+// мессенджеры с сайта) своего action здесь НЕ имеет специально — задания
+// создаёт сам поисковый скрипт, и тот же прогон воркфлоу их сразу
+// обрабатывает (см. .github/workflows/process-supplier-web-search-jobs.yml),
+// поэтому дёргать отдельный воркфлоу из админки незачем.
 import { requireStaffAuth } from './_auth.js';
 
 const DEBOUNCE_MS = 5 * 60_000;
@@ -146,10 +146,6 @@ export default async function handler(req, res) {
   }
   if (action === 'dispatch-supplier-search') {
     await dispatchWorkflow(res, 'process-supplier-web-search-jobs.yml');
-    return;
-  }
-  if (action === 'dispatch-supplier-enrichment') {
-    await dispatchWorkflow(res, 'process-supplier-enrichment-jobs.yml');
     return;
   }
 

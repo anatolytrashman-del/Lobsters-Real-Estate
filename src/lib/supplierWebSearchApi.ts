@@ -93,6 +93,13 @@ export interface SupplierWebSearchJob {
   excludeCompanies: SupplierExcludeEntry[];
   status: SupplierWebSearchJobStatus;
   results: SupplierSearchResult[];
+  // Сколько из найденного реально добавлено предложениями (владелец,
+  // 2026-09-11: результаты поиска теперь создаёт сам скрипт, без ручного
+  // добавления из модалки, см. createOffersAndQueueEnrichment в
+  // scripts/process-supplier-web-search-jobs.mjs). Меньше results.length,
+  // если часть найденного уже была в этой категории. null — задание из
+  // времён ручного добавления (колонки тогда не было).
+  addedCount: number | null;
   error: string;
   createdAt: string;
   completedAt: string | null;
@@ -108,6 +115,7 @@ interface SupplierWebSearchJobRow {
   exclude_companies: SupplierExcludeEntry[] | null;
   status: string;
   results: SupplierSearchResult[] | null;
+  added_count: number | null;
   error: string | null;
   created_at: string;
   completed_at: string | null;
@@ -124,6 +132,7 @@ function fromRow(row: SupplierWebSearchJobRow): SupplierWebSearchJob {
     excludeCompanies: Array.isArray(row.exclude_companies) ? row.exclude_companies : [],
     status: (row.status as SupplierWebSearchJobStatus) || 'pending',
     results: Array.isArray(row.results) ? row.results : [],
+    addedCount: row.added_count,
     error: row.error ?? '',
     createdAt: row.created_at,
     completedAt: row.completed_at,
