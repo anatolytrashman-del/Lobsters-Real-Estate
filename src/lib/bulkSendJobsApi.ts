@@ -9,7 +9,7 @@ import type { BulkSendJob, BulkSendJobRow } from '../data/bulkSendJobs';
 // сразу после постановки задания в очередь дёргаем api/trigger-rebuild.js
 // (action:'dispatch-bulk-send'), тот вызывает workflow_dispatch на
 // process-bulk-send-jobs.yml напрямую — не дожидаясь ни сломанного планового
-// крона (см. журнал CLAUDE.md), ни ручного вмешательства. Fire-and-forget —
+// крона (см. журнал docs/session-journal.md), ни ручного вмешательства. Fire-and-forget —
 // неудача не должна мешать самой постановке в очередь (плановый крон
 // остаётся подстраховкой).
 function dispatchBulkSendWorkflow() {

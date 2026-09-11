@@ -2,7 +2,7 @@
 // объединённые в одну функцию по параметру action ('summarize' |
 // 'suggest-tasks') — тот же приём, что и у purchase-send-email.js
 // (purchaseId ИЛИ offerId). Слияние 2026-08-31: на Hobby-плане Vercel
-// лимит 12 serverless-функций на деплой (см. запись в CLAUDE.md от
+// лимит 12 serverless-функций на деплой (см. запись в docs/session-journal.md от
 // 2026-08-29), а понадобился новый файл api/supplier-web-search.js —
 // вместо тринадцатого файла объединены эти два (раньше были отдельными
 // api/summarize-meeting.js и api/suggest-tasks.js, логика ниже перенесена

@@ -184,7 +184,7 @@ function buildTenantOrganizations(form: FormState): TenantOrganization[] {
 // Разбор вставки списком — по одной организации на строку, категория и
 // название через "—"/"-"/":" (то, что реально получается копипастом из
 // разобранного веб-архива, где категория идёт из aria-label ссылки, см.
-// scripts/... в CLAUDE.md журнале). Без разделителя — вся строка это
+// scripts/... в docs/session-journal.md журнале). Без разделителя — вся строка это
 // название, категория пустая (можно дозаполнить руками).
 function parseTenantOrganizationsBulk(text: string): TenantOrganization[] {
   return text

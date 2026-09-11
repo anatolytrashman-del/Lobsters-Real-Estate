@@ -2,7 +2,7 @@
 // — асинхронный API (submit → poll → result), не синхронный Whisper.
 // Объединяет то, что раньше было двумя отдельными файлами (transcribe-start.js
 // + transcribe-poll.js) — Vercel Hobby-план ограничен 12 serverless-функциями
-// на деплой (см. журнал CLAUDE.md, 2026-08-29), а под новую функцию
+// на деплой (см. журнал docs/session-journal.md, 2026-08-29), а под новую функцию
 // сжатия картинок (tinypng-compress.js) понадобился свободный слот.
 // Дифференцируются по HTTP-методу — POST start (см. START ниже), GET poll.
 //
@@ -144,7 +144,7 @@ async function handlePoll(req, res) {
   const taskId = typeof req.query?.taskId === 'string' ? req.query.taskId : '';
   // Реальные id speech2text.ru содержат и подчёркивание, не только дефис
   // (пример: "RfZogu6P6sN2UfoeP-6sSIy_dfnE-335") — более узкая проверка без
-  // "_" отбрасывала каждый такой id как "некорректный" (см. журнал CLAUDE.md).
+  // "_" отбрасывала каждый такой id как "некорректный" (см. журнал docs/session-journal.md).
   if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) {
     res.status(400).json({ error: 'Некорректный id задачи' });
     return;

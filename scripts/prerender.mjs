@@ -84,7 +84,7 @@ const SITE_ORIGIN = 'https://redevelopment.pro';
 // рованные html/sitemap), которые все идут ДО prerender.mjs.
 const FORCE_FULL_RECENT_MS = 15 * 60_000;
 
-// Все публичные страницы теперь под /minsk/... (см. CLAUDE.md, урл-
+// Все публичные страницы теперь под /minsk/... (см. docs/session-journal.md, урл-
 // структура) — переменная переименована из STATIC_SLUGS в STATIC_PATHS:
 // это уже полные пути от корня, не голые слаги (у хабов их и не может
 // быть, они не привязаны к одному сегменту). Добавлять сюда каждую новую

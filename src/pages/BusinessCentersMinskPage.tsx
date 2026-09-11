@@ -92,13 +92,13 @@ const HERO_IMAGE_HEIGHT = 387;
 // карты объекта в ObjectMapWidget.tsx: ссылка не из JS API/координат, а
 // готовая embed-ссылка из Яндекс.Карт Конструктора (constructor.yandex.ru),
 // куда владелец загрузил CSV/XLSX с координатами всех БЦ (см. журнал
-// CLAUDE.md — там же про формат этого файла). Владелец прислал два варианта
+// docs/session-journal.md — там же про формат этого файла). Владелец прислал два варианта
 // встраивания — <script src="api-maps.yandex.ru/services/constructor/...">
 // и страницу yandex.ru/maps/?um=constructor:<id> — ни один не подходит как
 // src iframe (тот же нюанс, что уже задокументирован в ObjectMapWidget.tsx
-// и в CLAUDE.md про карту объекта): нужен именно map-widget/v1 с тем же id.
+// и в docs/session-journal.md про карту объекта): нужен именно map-widget/v1 с тем же id.
 // Обновлено 2026-09-06 — владелец перезалил карту с координатами ВСЕХ 143 БЦ
-// (см. журнал CLAUDE.md, запись про CSV для Конструктора) — новый id карты.
+// (см. журнал docs/session-journal.md, запись про CSV для Конструктора) — новый id карты.
 const MAP_EMBED_URL =
   'https://yandex.ru/map-widget/v1/?um=constructor:2faf8b114a74f188414091fd2e5e0f17d2fcde9f125ebbee51c25197b78c7736&source=constructorLink';
 
