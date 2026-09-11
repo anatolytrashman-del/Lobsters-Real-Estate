@@ -24,6 +24,23 @@ import { uploadAttachment } from './_attachments.js';
 
 const RESEND_FROM_NAME = 'Redevelopment Закупки';
 
+// Копия письма с ведомостью материалов владельцу (владелец, 2026-09-11:
+// "при каждой отправке уникальной ведомости копия письма с ведомостью
+// уходила на ящик"). Ключевое слово — УНИКАЛЬНОЙ: одна копия на содержимое
+// ведомости, а не на каждое письмо (массовая рассылка шлёт одну и ту же
+// ведомость десяткам поставщиков — копий должно быть ноль-или-одна).
+// Дедупликация общая для всех трёх путей отправки (этот эндпоинт,
+// supabase/functions/process-bulk-send-jobs, scripts/process-bulk-send-jobs.mjs)
+// и живёт в таблице material_ledger_copies: content_key — первичный ключ,
+// вставка с resolution=ignore-duplicates работает как атомарный захват,
+// поэтому одновременные отправки не дадут двух копий.
+//
+// Копия уходит с "нейтрального" zakupki@ (без +short_code): адрес-плюс
+// матчится вебхуком на конкретную переписку, и ответ владельца на копию
+// упал бы в ленту к поставщику чужим письмом.
+const LEDGER_COPY_TO = process.env.LEDGER_COPY_TO || 'anatoly.trashman@gmail.com';
+const LEDGER_COPY_FROM = process.env.LEDGER_COPY_FROM || `${RESEND_FROM_NAME} <zakupki@redevelopment.pro>`;
+
 // Технический адрес переписки строится из короткого кода (short_code,
 // 5 hex-символов, генерируется в БД), не из полного UUID — владелец,
 // 2026-09-03: адрес с UUID был "очень длинный". short_code читается той же
@@ -66,6 +83,79 @@ async function insertEmailRow(table, payload) {
   }
   const rows = await resp.json();
   return rows[0];
+}
+
+// Атомарный захват права отправить копию: true — ведомость с таким
+// содержимым уходит впервые, false — копия уже была. Ошибки сюда не
+// поднимаются как фатальные (см. вызов) — копия не должна ронять отправку
+// письма поставщику.
+async function claimLedgerCopy(contentKey, ledgerName, context) {
+  const resp = await fetch(`${process.env.SUPABASE_URL}/rest/v1/material_ledger_copies`, {
+    method: 'POST',
+    headers: {
+      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation,resolution=ignore-duplicates',
+    },
+    body: JSON.stringify({ content_key: contentKey, ledger_name: ledgerName, context }),
+  });
+  if (!resp.ok) throw new Error(`Не удалось отметить копию ведомости: ${await resp.text()}`);
+  const rows = await resp.json();
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+// Захват снимается, если копию так и не удалось отправить — иначе ведомость
+// считалась бы отправленной и копия не ушла бы уже никогда.
+async function releaseLedgerCopy(contentKey) {
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/material_ledger_copies?content_key=eq.${encodeURIComponent(contentKey)}`, {
+    method: 'DELETE',
+    headers: {
+      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+  });
+}
+
+function ledgerCopyBody({ ledgerFileName, context, subject, body }) {
+  const sentAt = new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Minsk',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
+  return [
+    'Копия исходящего письма с ведомостью материалов.',
+    '',
+    `Ведомость: ${ledgerFileName}`,
+    `Кому: ${context}`,
+    `Отправлено: ${sentAt}`,
+    `Тема: ${subject}`,
+    '',
+    '— — — текст письма — — —',
+    '',
+    body,
+  ].join('\n');
+}
+
+async function sendLedgerCopy({ attachment, context, subject, body }) {
+  const resp = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: LEDGER_COPY_FROM,
+      to: [LEDGER_COPY_TO],
+      subject: `[Копия] ${subject}`,
+      html: emailHtml(ledgerCopyBody({ ledgerFileName: attachment.fileName, context, subject, body })),
+      attachments: [{ filename: attachment.fileName, content: attachment.contentBase64 }],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Не удалось отправить копию ведомости: ${(await resp.text()).slice(0, 300)}`);
 }
 
 function emailHtml(body) {
@@ -172,6 +262,28 @@ export default async function handler(req, res) {
       files: storedFiles,
       resend_message_id: resendJson?.id ?? null,
     });
+
+    // Копия владельцу — строго после успешной отправки самого письма и
+    // только по вложениям-ведомостям (contentKey есть только у них, см.
+    // lib/materialLedgerXlsx.ts). Best-effort: письмо поставщику уже ушло и
+    // записано, сбой копии не должен показывать пользователю ошибку.
+    for (const a of Array.isArray(attachments) ? attachments : []) {
+      if (!a?.contentKey || !a?.contentBase64) continue;
+      let claimed = false;
+      try {
+        claimed = await claimLedgerCopy(a.contentKey, a.fileName ?? '', `письмо на ${toAddress}`);
+        if (!claimed) continue;
+        await sendLedgerCopy({
+          attachment: a,
+          context: `письмо на ${toAddress}`,
+          subject: subject || defaultSubject,
+          body,
+        });
+      } catch (err) {
+        console.error('Копия ведомости владельцу не ушла:', err);
+        if (claimed) await releaseLedgerCopy(a.contentKey).catch(() => {});
+      }
+    }
 
     res.status(200).json({ email: row });
   } catch (err) {
