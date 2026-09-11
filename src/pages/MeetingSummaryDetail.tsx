@@ -171,7 +171,7 @@ export function MeetingSummaryDetail() {
       setSummary(updated);
       // Реальное уведомление (браузерное + в колокольчике) — весь смысл
       // оценки времени на кнопке выше в том, чтобы можно было уйти в другую
-      // вкладку и не проверять эту руками (см. журнал CLAUDE.md).
+      // вкладку и не проверять эту руками (см. журнал docs/session-journal.md).
       addNotification({ title: 'Расшифровка готова', body: summary.title });
     } catch (err) {
       const message = errorMessage(err, 'Не удалось расшифровать запись');

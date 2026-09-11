@@ -40,7 +40,7 @@ export const MIN_RELIABLE_N = 15;
 
 // Внешние источники (ANALYTICSPLAN.md §2) — public.external_metrics, ручной
 // ввод (сейчас — через ProxyAPI/web_fetch, каждое число дважды перепроверено
-// перед записью, см. журнал CLAUDE.md за 2026-09-07). Не связаны с нашими
+// перед записью, см. журнал docs/session-journal.md за 2026-09-07). Не связаны с нашими
 // собственными данными, показываются рядом для сравнения.
 export interface ExternalMetric {
   id: number;

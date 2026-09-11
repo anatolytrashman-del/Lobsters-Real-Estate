@@ -90,7 +90,7 @@ const DistrictMap = lazy(() =>
   lazyRetry(() => import('../components/district/DistrictMap')).then((m) => ({ default: m.DistrictMap })),
 );
 
-// Переехала с /rayon-minsk-mir на /minsk/minsk-mir (см. CLAUDE.md, урл-
+// Переехала с /rayon-minsk-mir на /minsk/minsk-mir (см. docs/session-journal.md, урл-
 // структура /minsk/...) — старый адрес редиректит сюда (App.tsx).
 const PAGE_URL = 'https://redevelopment.pro/minsk/minsk-mir';
 // TITLE — для <title>/og/canonical, не трогаем: уже подобран под целевые
@@ -231,7 +231,7 @@ const DEVELOPER_CONTACTS = {
 // (логотип прислан готовым PNG с уже прозрачным фоном, ibb.co — не
 // понадобилось вырезать фон вручную, как у остальных двух). Описание —
 // текст от владельца, написанный через Gemini по переданному промту
-// (см. журнал CLAUDE.md) — так же, как и остальные Gemini-тексты на
+// (см. журнал docs/session-journal.md) — так же, как и остальные Gemini-тексты на
 // этой странице, менять только по просьбе владельца. Второй телефон
 // (115) — короткий номер, работает только с мобильных трёх операторов
 // (владелец: "115 (A1, MTC, Life)"), это отражено в подписи, не в самом

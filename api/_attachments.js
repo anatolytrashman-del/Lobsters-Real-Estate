@@ -36,7 +36,7 @@ const ATTACHMENTS_BUCKET = 'object-documents';
 const RESEND_API_BASE = 'https://api.resend.com';
 
 // 2026-09-03, живой прогон: реальное письмо сохранилось с ПУСТЫМ телом и
-// без вложений, несмотря на этот фикс (см. журнал CLAUDE.md) — то ли
+// без вложений, несмотря на этот фикс (см. журнал docs/session-journal.md) — то ли
 // data.email_id не то поле, что реально приходит в вебхуке, то ли у
 // RESEND_API_KEY нет прав на Receiving API (если ключ создавался как
 // "Sending access", а не "Full access" — Resend различает эти уровни).

@@ -1,5 +1,5 @@
 // Сайт — SPA с одним index.html на все роуты, а его <title>/description/og
-// заточены под Red One статически (см. CLAUDE.md про SEO). Для остальных
+// заточены под Red One статически (см. docs/session-journal.md про SEO). Для остальных
 // публичных лендингов объектов (сейчас — Red Storage, в будущем — новые)
 // это выдавало бы чужой заголовок в поиске и соцсетях. setObjectPageMeta
 // подменяет теги на актуальные при монтировании ObjectLandingPage — статика
@@ -11,7 +11,7 @@ export interface PageMeta {
 }
 
 // Вручную подобранные title/description под целевые поисковые запросы —
-// заполняются по мере проработки SEO для конкретных объектов (см. CLAUDE.md).
+// заполняются по мере проработки SEO для конкретных объектов (см. docs/session-journal.md).
 // У остальных — сгенерированные из данных объекта (см. fallbackObjectMeta),
 // корректные, но без ручной подгонки под ключевые слова.
 const SEO_OVERRIDES: Record<string, PageMeta> = {

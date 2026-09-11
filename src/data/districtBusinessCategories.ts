@@ -1,6 +1,6 @@
 // Лёгкий снепшот исчерпывающих поквартирных сборов организаций
 // (district_business_points в Supabase, см. DistrictBusinessesTab.tsx и
-// журнал CLAUDE.md — сбор идёт весь август 2026, квартал за кварталом) —
+// журнал docs/session-journal.md — сбор идёт весь август 2026, квартал за кварталом) —
 // то, что нужно для location quotient (lib/locationQuotient.ts) И для
 // полного списка организаций квартала по клику на DistrictQuarterMap.tsx
 // (владелец: "мне бы при клике полный список: номер, название, адрес").
