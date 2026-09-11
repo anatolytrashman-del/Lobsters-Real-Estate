@@ -31,6 +31,18 @@ const MIN_DELAY_MS = 25000;
 const MAX_DELAY_MS = 35000;
 const MAX_EMAILS_PER_RUN = 2;
 
+// Копия письма с ведомостью владельцу — владелец, 2026-09-11: "при каждой
+// отправке уникальной ведомости копия письма с ведомостью уходила на ящик".
+// Для массовой рассылки уникальная ведомость ровно одна на задание, поэтому
+// копия уходит один раз — после ПЕРВОГО реально отправленного письма задания
+// (если не ушло ни одного, копия не нужна). Дедупликация общая с одиночной
+// отправкой (api/purchase-send-email.js) — таблица material_ledger_copies,
+// content_key = sha256 содержимого ведомости (src/lib/materialLedgerXlsx.ts);
+// вставка с ignoreDuplicates работает атомарным захватом, поэтому пересечение
+// тиков крона и ручного прогона скрипта копию не задвоит.
+const LEDGER_COPY_TO = Deno.env.get('LEDGER_COPY_TO') ?? 'anatoly.trashman@gmail.com';
+const LEDGER_COPY_FROM = Deno.env.get('LEDGER_COPY_FROM') ?? `${RESEND_FROM_NAME} <zakupki@redevelopment.pro>`;
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const randomDelay = () => MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
 const emailAddress = (shortCode: string) => `zakupki+${shortCode}@redevelopment.pro`;
@@ -110,7 +122,7 @@ async function uploadAttachmentToStorage(bytes: Uint8Array, contentType: string,
 
 async function fetchDocumentFileAsBase64(file: { url: string; fileName: string }) {
   const res = await fetch(file.url);
-  if (!res.ok) throw new Error('Не удалось загрузить карточку организации');
+  if (!res.ok) throw new Error(`Не удалось загрузить файл юрлица (${file.fileName})`);
   const bytes = new Uint8Array(await res.arrayBuffer());
   const ext = fileExtension(file.fileName);
   const contentType =
@@ -122,6 +134,75 @@ async function fetchDocumentFileAsBase64(file: { url: string; fileName: string }
           ? 'application/pdf'
           : 'application/octet-stream';
   return { fileName: file.fileName, contentType, contentBase64: bytesToBase64(bytes) };
+}
+
+async function claimLedgerCopy(contentKey: string, ledgerName: string, context: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('material_ledger_copies')
+    .upsert({ content_key: contentKey, ledger_name: ledgerName, context }, { onConflict: 'content_key', ignoreDuplicates: true })
+    .select('content_key');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+function ledgerCopyBody(ledgerFileName: string, context: string, subject: string, body: string): string {
+  const sentAt = new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Minsk',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
+  return [
+    'Копия исходящего письма с ведомостью материалов.',
+    '',
+    `Ведомость: ${ledgerFileName}`,
+    `Кому: ${context}`,
+    `Отправлено: ${sentAt}`,
+    `Тема: ${subject}`,
+    '',
+    '— — — текст письма — — —',
+    '',
+    body,
+  ].join('\n');
+}
+
+// Копия — best-effort: сбой не должен помечать письмо поставщику как
+// неотправленное (оно уже ушло). Захват снимается, чтобы копия ушла со
+// следующей отправкой этой же ведомости.
+//
+// Текст берётся УЖЕ отрендеренный, тем же renderTemplate и по тому же
+// поставщику, которому ушло первое письмо задания — копия должна показывать
+// реальное письмо, а не шаблон с {компания}/{материалы}.
+async function sendLedgerCopy(job: any, request: any, offer: any, recipientsCount: number) {
+  const attachment = job.attachment;
+  if (!attachment?.contentKey || !attachment?.contentBase64) return;
+  const context = `массовая рассылка по запросу «${request.title}», получателей: ${recipientsCount} (текст — как ушёл «${offer.name}»)`;
+  let claimed = false;
+  try {
+    claimed = await claimLedgerCopy(attachment.contentKey, attachment.fileName ?? '', context);
+    if (!claimed) return;
+    const subject = renderTemplate(job.subject, offer, request).trim() || 'Запрос цены';
+    const body = renderTemplate(job.body, offer, request);
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: LEDGER_COPY_FROM,
+        to: [LEDGER_COPY_TO],
+        subject: `[Копия] ${subject}`,
+        html: emailHtml(ledgerCopyBody(attachment.fileName, context, subject, body)),
+        attachments: [{ filename: attachment.fileName, content: attachment.contentBase64 }],
+      }),
+    });
+    if (!resp.ok) throw new Error(`Resend: ${(await resp.text()).slice(0, 300)}`);
+  } catch (err) {
+    console.error('  копия ведомости владельцу не ушла:', err instanceof Error ? err.message : err);
+    if (claimed) {
+      await supabase.from('material_ledger_copies').delete().eq('content_key', attachment.contentKey);
+    }
+  }
 }
 
 async function sendOneEmail(offer: any, request: any, legalEntity: any, job: any) {
@@ -147,13 +228,25 @@ async function sendOneEmail(offer: any, request: any, legalEntity: any, job: any
     console.error('  не удалось сохранить ведомость в Storage:', err instanceof Error ? err.message : err);
   }
 
-  if (isFirstOutgoing && legalEntity?.card_file) {
+  // Файлы юрлица только для ПЕРВОГО письма поставщику: карточка организации
+  // и — владелец, 2026-09-11 — "Информация по доставке" (delivery_file,
+  // src/lib/deliveryInfoDocx.ts). Второй файл добавлен в scripts/process-bulk-
+  // send-jobs.mjs тем же днём, но в ЭТУ функцию не долетел, а живой путь
+  // рассылки — именно она (скрипт остался ручным запасным) — то есть в проде
+  // рассылка уходила без информации по доставке. Держать оба списка
+  // одинаковыми: правка в одном файле без второго = молчаливая регрессия.
+  const firstEmailFiles = isFirstOutgoing
+    ? [legalEntity?.card_file, legalEntity?.delivery_file].filter(Boolean)
+    : [];
+  for (const file of firstEmailFiles) {
     try {
-      const card = await fetchDocumentFileAsBase64(legalEntity.card_file);
-      resendAttachments.push({ filename: card.fileName, content: card.contentBase64 });
-      storedFiles.push(await uploadAttachmentToStorage(base64ToBytes(card.contentBase64), card.contentType, card.fileName));
+      const attachment = await fetchDocumentFileAsBase64(file);
+      resendAttachments.push({ filename: attachment.fileName, content: attachment.contentBase64 });
+      storedFiles.push(
+        await uploadAttachmentToStorage(base64ToBytes(attachment.contentBase64), attachment.contentType, attachment.fileName),
+      );
     } catch (err) {
-      console.error('  не удалось приложить карточку организации:', err instanceof Error ? err.message : err);
+      console.error(`  не удалось приложить файл юрлица (${file.fileName}):`, err instanceof Error ? err.message : err);
     }
   }
 
@@ -237,6 +330,13 @@ Deno.serve(async () => {
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
 
+    // Всего получателей в задании (не только оставшихся на этот тик) — для
+    // текста копии владельцу.
+    const { count: recipientsCount } = await supabase
+      .from('bulk_send_job_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('job_id', job.id);
+
     for (const item of items ?? []) {
       if (summary.sent + summary.failed >= MAX_EMAILS_PER_RUN) break outer;
 
@@ -265,6 +365,7 @@ Deno.serve(async () => {
           .update({ status: 'sent', sent_at: new Date().toISOString() })
           .eq('id', item.id);
         summary.sent++;
+        await sendLedgerCopy(job, request, offer, recipientsCount ?? 0);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await supabase.from('bulk_send_job_items').update({ status: 'error', error_message: message.slice(0, 400) }).eq('id', item.id);
