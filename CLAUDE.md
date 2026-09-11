@@ -44,6 +44,19 @@
 всплывает упоминание GH Pages зеркала — это исторический контекст, не действующая
 конфигурация.
 
+**Очереди поставщиков живут в Supabase, не в GitHub Actions (с 2026-09-11).**
+Edge Function `process-supplier-jobs` (`supabase/functions/`) разбирает обе
+очереди — веб-поиск (`supplier_web_search_jobs`) и обогащение контактов
+(`supplier_enrichment_jobs`), — а дёргает её `pg_cron` раз в минуту через
+`pg_net` (ключ для вызова лежит в Vault под именем `edge_service_role_key`).
+Секрет функции — `PROXYAPI_KEY` (в секретах проекта Supabase, не в репозитории).
+Деплой функции: `POST /v1/projects/<ref>/functions/deploy?slug=process-supplier-jobs`
+с тем же `SUPABASE_ACCESS_TOKEN`, что и SQL-миграции. Одноимённые скрипты в
+`scripts/` и воркфлоу остались как ручной запасной путь (`workflow_dispatch`,
+без крона) — задание захватывается атомарно, поэтому два пути не конфликтуют.
+Почему так: GitHub затроттлил Actions аккаунта за три крона раз в 5 минут на
+бесплатном публичном репозитории (см. docs/session-journal.md, 2026-09-11).
+
 Нужные env-переменные на Vercel (секреты, не в репозитории):
 
 ```
