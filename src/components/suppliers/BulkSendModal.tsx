@@ -5,12 +5,13 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Textarea } from '../ui/Textarea';
 import { Select } from '../ui/Select';
+import { ToggleGroup } from '../ui/ToggleGroup';
 import { countryFlag, SUPPLIER_COUNTRIES, type SupplierRequest, type SupplierOffer } from '../../data/supplierResearch';
 import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import type { LegalEntity } from '../../data/legalEntities';
 import type { EmailTemplate } from '../../data/emailTemplates';
-import { insertBulkSendJob } from '../../lib/bulkSendJobsApi';
+import { insertBulkSendJob, fetchQueuedBulkSendOfferIds } from '../../lib/bulkSendJobsApi';
 import { emailSignature } from './SupplierCorrespondenceTab';
 import { TemplateFormModal } from './EmailTemplates';
 
@@ -43,6 +44,43 @@ const WARN_THRESHOLD = 8;
 // строка), который блокирует отправку и список получателей.
 const NO_LEGAL_ENTITY = 'Без карточки организации';
 const ALL_COUNTRIES = 'Все страны';
+
+// Владелец, 2026-09-11: "я собрал 20 поставщиков и разослал ТЗ всем, потом
+// собрал ещё 20 — теперь хочу написать массово по категории, но только тем,
+// кому не писал ранее". Раньше история переписки влияла только на
+// галочки по умолчанию (уже писавшие приходили снятыми) — в списке из
+// сорока строк это нечитаемо и легко испортить одним "Выбрать всех".
+// Теперь это полноценный фильтр самого списка, "Новые" — режим по
+// умолчанию, то есть повторная рассылка по категории по умолчанию уходит
+// ровно новому пополнению.
+const FILTER_NEW = 'Кому ещё не писали';
+const FILTER_ALL = 'Все';
+const FILTER_CONTACTED = 'Кому уже писали';
+const FILTERS = [FILTER_NEW, FILTER_ALL, FILTER_CONTACTED];
+
+// Что мы знаем про предыдущие контакты с конкретным поставщиком.
+// 'sent' — реально ушедшее письмо (любое исходящее, хоть массовое, хоть
+// из одиночного треда). 'queued' — письмо этому поставщику уже стоит в
+// очереди рассылки, строки supplier_offer_emails ещё нет (см.
+// fetchQueuedBulkSendOfferIds). 'sameEmail' — этому поставщику не писали,
+// но на ТОТ ЖЕ адрес уже уходило письмо с другой карточки: при сборе
+// поставщиков пачками один и тот же поставщик легко попадает в несколько
+// категорий разными карточками, и для человека на том конце это всё равно
+// "мне уже писали".
+type ContactStatus =
+  | { kind: 'none' }
+  | { kind: 'sent'; at: string }
+  | { kind: 'queued' }
+  | { kind: 'sameEmail'; via: string };
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function formatDay(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+}
 
 function defaultBulkBody(): string {
   return `Добрый день.
@@ -129,25 +167,100 @@ export function BulkSendModal({
   // вкладке "Письма" целиком. Владелец, 2026-09-09: страна теперь ФИЛЬТРУЕТ
   // список — пока страна не выбрана, получателей не показываем вовсе
   // (не смысла демонстрировать список, который может тут же перефильтроваться).
-  const candidates = countryChosen
-    ? offers.filter(
-        (o) =>
-          o.requestId === selectedRequestId &&
-          o.email &&
-          o.verified &&
-          (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
-      )
-    : [];
+  const candidates = useMemo(
+    () =>
+      countryChosen
+        ? offers.filter(
+            (o) =>
+              o.requestId === selectedRequestId &&
+              o.email &&
+              o.verified &&
+              (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
+            )
+        : [],
+    [offers, countryChosen, selectedRequestId, selectedCountry],
+  );
+
+  // Письма, уже стоящие в очереди рассылки (ещё не отправленные воркером) —
+  // без них вторая рассылка по той же категории, поставленная пока идёт
+  // первая, ушла бы части поставщиков дублем. Грузим один раз на открытии
+  // модалки; ошибка не блокирует рассылку — просто считаем, что очередь
+  // пуста (худший случай — то же поведение, что было до этой правки).
+  const [queuedOfferIds, setQueuedOfferIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    fetchQueuedBulkSendOfferIds()
+      .then((ids) => {
+        if (!cancelled) setQueuedOfferIds(new Set(ids));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // История контактов по всем поставщикам разом: последнее ИСХОДЯЩЕЕ письмо
+  // на карточку (входящие не в счёт — "кому я писал" это про исходящие) и
+  // отдельно — по адресу почты, чтобы поймать одного и того же поставщика,
+  // заведённого разными карточками в разных категориях.
+  const contactedByOffer = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of emails) {
+      if (e.direction !== 'out') continue;
+      const prev = map.get(e.offerId);
+      if (!prev || e.createdAt > prev) map.set(e.offerId, e.createdAt);
+    }
+    return map;
+  }, [emails]);
+
+  const contactedByEmail = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const o of offers) {
+      if (!o.email) continue;
+      if (!contactedByOffer.has(o.id) && !queuedOfferIds.has(o.id)) continue;
+      const key = normalizeEmail(o.email);
+      const title = requests.find((r) => r.id === o.requestId)?.title || o.name;
+      if (!map.has(key)) map.set(key, title);
+    }
+    return map;
+  }, [offers, requests, contactedByOffer, queuedOfferIds]);
+
+  const statusOf = useMemo(() => {
+    const cache = new Map<string, ContactStatus>();
+    return (offer: SupplierOffer): ContactStatus => {
+      const cached = cache.get(offer.id);
+      if (cached) return cached;
+      const sentAt = contactedByOffer.get(offer.id);
+      let status: ContactStatus;
+      if (sentAt) status = { kind: 'sent', at: sentAt };
+      else if (queuedOfferIds.has(offer.id)) status = { kind: 'queued' };
+      else {
+        const via = offer.email ? contactedByEmail.get(normalizeEmail(offer.email)) : undefined;
+        status = via ? { kind: 'sameEmail', via } : { kind: 'none' };
+      }
+      cache.set(offer.id, status);
+      return status;
+    };
+  }, [contactedByOffer, contactedByEmail, queuedOfferIds]);
+
+  const [filter, setFilter] = useState(FILTER_NEW);
+  const newCount = useMemo(() => candidates.filter((o) => statusOf(o).kind === 'none').length, [candidates, statusOf]);
+  const visible = useMemo(() => {
+    if (filter === FILTER_ALL) return candidates;
+    const wantNew = filter === FILTER_NEW;
+    return candidates.filter((o) => (statusOf(o).kind === 'none') === wantNew);
+  }, [candidates, filter, statusOf]);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Пересобираем список отмеченных получателей при смене категории/страны —
-  // прежний набор id мог относиться к другому фильтру. По умолчанию отмечены
-  // те, с кем ещё не переписывались.
+  // Пересобираем список отмеченных получателей при смене категории/страны/
+  // фильтра — прежний набор id мог относиться к другому срезу. По умолчанию
+  // отмечены только те, кому ещё не писали: в режиме "Кому уже писали" это
+  // значит пустой выбор, повторное письмо нужно отметить руками, случайным
+  // "Выбрать всех" дубль не уедет.
   useEffect(() => {
-    const contactedIds = new Set(emails.map((e) => e.offerId));
-    setSelected(new Set(candidates.filter((o) => !contactedIds.has(o.id)).map((o) => o.id)));
+    setSelected(new Set(visible.filter((o) => statusOf(o).kind === 'none').map((o) => o.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRequestId, selectedCountry]);
+  }, [selectedRequestId, selectedCountry, filter, queuedOfferIds]);
 
   const [subject, setSubject] = useState(() => request.title || 'Поставка материалов');
   const [body, setBody] = useState(() => defaultBulkBody());
@@ -187,12 +300,23 @@ export function BulkSendModal({
     });
   }
 
+  // "Выбрать всех" — всегда про видимый сейчас срез, не про всю категорию:
+  // в режиме "Кому уже писали" он не должен вытягивать обратно тех, кого
+  // фильтр только что скрыл.
   function toggleAll() {
-    setSelected((prev) => (prev.size === candidates.length ? new Set() : new Set(candidates.map((o) => o.id))));
+    setSelected((prev) => {
+      const allVisibleSelected = visible.length > 0 && visible.every((o) => prev.has(o.id));
+      return allVisibleSelected ? new Set() : new Set(visible.map((o) => o.id));
+    });
   }
 
+  // Отмеченные и при этом видимые — страховка от отправки тому, кто отпал
+  // после смены фильтра/категории (селект сбрасывается эффектом, но порядок
+  // рендера на это закладывать не стоит).
+  const recipients = visible.filter((o) => selected.has(o.id));
+
   async function handleQueue() {
-    if (queuing || selected.size === 0 || !subject.trim() || !body.trim() || !legalEntityChosen || !countryChosen) return;
+    if (queuing || recipients.length === 0 || !subject.trim() || !body.trim() || !legalEntityChosen || !countryChosen) return;
     setQueuing(true);
     setQueueError(null);
     try {
@@ -202,9 +326,9 @@ export function BulkSendModal({
         subject,
         body,
         attachment,
-        offerIds: [...selected],
+        offerIds: recipients.map((o) => o.id),
       });
-      setQueuedCount(selected.size);
+      setQueuedCount(recipients.length);
     } catch (err) {
       setQueueError(errorMessage(err, 'Не удалось поставить рассылку в очередь'));
     } finally {
@@ -275,17 +399,51 @@ export function BulkSendModal({
               </p>
             ) : (
               <>
+                {/* Владелец, 2026-09-11: "хочу написать массово по категории,
+                    но только тем, кому не писал ранее" — счётчик в подписи
+                    показывает размер пополнения категории, чтобы не считать
+                    строки глазами. */}
+                <ToggleGroup
+                  label={`Кому пишем — новых в категории: ${newCount} из ${candidates.length}`}
+                  options={FILTERS}
+                  value={filter}
+                  onChange={setFilter}
+                />
+
+                {visible.length === 0 ? (
+                  <p className="text-sm text-ink-faint">
+                    {filter === FILTER_NEW
+                      ? 'В этой категории всем подходящим поставщикам уже писали — новых нет. Переключите на «Все», если нужно написать повторно.'
+                      : 'Здесь пусто: этой категории ещё не писали ни одному поставщику.'}
+                  </p>
+                ) : (
+                  <>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-ink-muted">Получатели ({selected.size} из {candidates.length})</span>
+                  <span className="text-sm text-ink-muted">Получатели ({recipients.length} из {visible.length})</span>
                   <button type="button" onClick={toggleAll} className="text-sm font-medium text-primary-hover hover:underline">
-                    {selected.size === candidates.length ? 'Снять выбор' : 'Выбрать всех'}
+                    {recipients.length === visible.length ? 'Снять выбор' : 'Выбрать всех'}
                   </button>
                 </div>
                 <div className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-control bg-surface-muted p-2">
-                  {candidates.map((o) => {
-                    const hadEmails = emails.some((e) => e.offerId === o.id);
+                  {visible.map((o) => {
+                    const status = statusOf(o);
+                    // Строка обрезается по ширине модалки, поэтому подпись
+                    // про предыдущий контакт дублируется в title — на узком
+                    // экране её иначе не прочитать.
+                    const statusHint =
+                      status.kind === 'sent'
+                        ? `Писали ${formatDay(status.at)}`
+                        : status.kind === 'queued'
+                          ? 'Письмо этому поставщику уже стоит в очереди рассылки'
+                          : status.kind === 'sameEmail'
+                            ? `На адрес ${o.email} уже писали — категория «${status.via}»`
+                            : 'Ещё не писали';
                     return (
-                      <label key={o.id} className="flex items-center gap-2.5 rounded-control px-1.5 py-1.5 text-sm hover:bg-surface">
+                      <label
+                        key={o.id}
+                        title={`${o.name} — ${statusHint}`}
+                        className="flex items-center gap-2.5 rounded-control px-1.5 py-1.5 text-sm hover:bg-surface"
+                      >
                         <input
                           type="checkbox"
                           checked={selected.has(o.id)}
@@ -294,12 +452,18 @@ export function BulkSendModal({
                         />
                         <span className="min-w-0 flex-1 truncate text-ink">
                           <span title={o.country || SUPPLIER_COUNTRIES[0]}>{countryFlag(o.country || SUPPLIER_COUNTRIES[0])}</span> {o.name}
-                          {hadEmails && <span className="text-ink-faint"> · уже переписывались</span>}
+                          {status.kind === 'sent' && <span className="text-ink-faint"> · писали {formatDay(status.at)}</span>}
+                          {status.kind === 'queued' && <span className="text-warning"> · письмо уже в очереди</span>}
+                          {status.kind === 'sameEmail' && (
+                            <span className="text-ink-faint"> · на этот адрес писали в «{status.via}»</span>
+                          )}
                         </span>
                       </label>
                     );
                   })}
                 </div>
+                  </>
+                )}
 
                 {/* Владелец, 2026-09-09: "нельзя добавить новый шаблон из этого
                     интерфейса" — кнопка "+" рядом с селектом открывает ту же
@@ -362,11 +526,11 @@ export function BulkSendModal({
                   </p>
                 )}
 
-                {selected.size > WARN_THRESHOLD && (
+                {recipients.length > WARN_THRESHOLD && (
                   <div className="flex items-start gap-2 rounded-control border border-warning/30 bg-warning-bg p-3 text-xs text-warning">
                     <TriangleAlert className="h-4 w-4 shrink-0 translate-y-0.5" />
                     <span>
-                      {selected.size} получателей — рассылка пойдёт фоном с паузами между письмами, чтобы не выглядеть
+                      {recipients.length} получателей — рассылка пойдёт фоном с паузами между письмами, чтобы не выглядеть
                       массовой. Вкладку можно закрыть сразу после постановки в очередь.
                     </span>
                   </div>
@@ -386,10 +550,10 @@ export function BulkSendModal({
             <Button
               type="button"
               icon={queuing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              disabled={queuing || selected.size === 0 || !subject.trim() || !body.trim()}
+              disabled={queuing || recipients.length === 0 || !subject.trim() || !body.trim()}
               onClick={handleQueue}
             >
-              {queuing ? 'Ставим в очередь...' : `Поставить в очередь (${selected.size})`}
+              {queuing ? 'Ставим в очередь...' : `Поставить в очередь (${recipients.length})`}
             </Button>
           )}
         </div>
