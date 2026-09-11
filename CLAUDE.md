@@ -205,7 +205,15 @@ curl -sS -X POST "https://api.supabase.com/v1/projects/iohcdylttyuhwovztrbk/data
   `cp` в сессии бывает не срабатывает с первого раза, дублировать команду), скриншотить
   через Playwright (`/opt/pw-browsers/chromium`), смотреть через Read, восстанавливать
   оригиналы после.
-- Перед коммитом: `npx tsc -b && npm run build`.
+- Перед коммитом: `npm run build:app` (~10 сек — tsc + vite build + sitemap +
+  preview-html, без пререндера). **Не `npm run build`** — он доходит до
+  `scripts/prerender.mjs`, а локально тот всегда в полном режиме: ~285 путей,
+  по отдельному headless-браузеру на каждый, двадцать минут (именно из-за
+  этого сессии подвисали на «Typecheck and build», 2026-09-11). Полный
+  `npm run build` локально нужен только если правился сам пререндер/публичные
+  страницы и хочется посмотреть итоговый HTML; его же можно укоротить через
+  `PRERENDER_SKIP=1`. На Vercel ничего не изменилось — там прод-сборка по-
+  прежнему зовёт `npm run build` целиком.
 - `git status --porcelain` → добавлять только реально изменённые файлы поимённо
   (никогда `git add -A`/`.`).
 - Ветка: `claude/redevelopment-platform-prototype-oodobu`. Пуш:
