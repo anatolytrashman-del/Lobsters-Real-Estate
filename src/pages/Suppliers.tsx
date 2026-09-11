@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText, ExternalLink, MessageCircle } from 'lucide-react';
+import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText, ExternalLink, MessageCircle, ChevronDown } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -123,6 +123,16 @@ function addedSuppliersLabel(count: number): string {
   if (mod10 === 1 && mod100 !== 11) return `добавлен ${count} поставщик`;
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `добавлено ${count} поставщика`;
   return `добавлено ${count} поставщиков`;
+}
+
+// Подпись на спойлере со списком поставщиков в карточке категории
+// (владелец, 2026-09-11: "у меня стало очень много поставщиков").
+function suppliersCountLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${count} поставщик`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${count} поставщика`;
+  return `${count} поставщиков`;
 }
 
 function siteLabel(url: string): string {
@@ -312,6 +322,7 @@ function PriceComparisonBlock({
   emptyHint,
   country: controlledCountry,
   onCountryChange,
+  showCountryToggle = true,
   enrichmentState,
 }: {
   offers: SupplierOffer[];
@@ -333,6 +344,12 @@ function PriceComparisonBlock({
   // карточку категории.
   country?: string;
   onCountryChange?: (country: string) => void;
+  // Владелец, 2026-09-11: "у меня стало очень много поставщиков" — в
+  // RequestCard список спрятан под спойлер, а переключатель страны вынесен
+  // во всегда видимую шапку карточки (он общий с кнопкой "Найти в сети",
+  // прятать его вместе со списком нельзя — поиск ушёл бы в невидимую
+  // пользователю страну). Здесь он в этом случае просто не рисуется второй раз.
+  showCountryToggle?: boolean;
 }) {
   const [internalCountry, setInternalCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
   const country = controlledCountry ?? internalCountry;
@@ -341,7 +358,7 @@ function PriceComparisonBlock({
 
   return (
     <>
-      <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
+      {showCountryToggle && <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />}
 
       {offersInCountry.length === 0 ? (
         <p className="text-sm text-ink-faint">{offers.length === 0 ? 'Пока нет предложений.' : `Нет предложений из «${country}» — ${emptyHint}`}</p>
@@ -743,6 +760,13 @@ function RequestCard({
   // PriceComparisonBlock ниже — здесь он controlled, значение общее и для
   // фильтра сравнения, и для кнопки "Найти в сети").
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  // Владелец, 2026-09-11: "у меня стало очень много поставщиков — давай
+  // сделаем название категории и основные кнопки видимыми, а список
+  // поставщиков будем прятать под спойлер". По умолчанию свёрнуто: страница
+  // становится компактным перечнем категорий, список раскрывается по клику
+  // и живёт только в стейте карточки (не персистится).
+  const [listOpen, setListOpen] = useState(false);
+  const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
 
   return (
     <Card className="flex flex-col gap-4 p-5">
@@ -847,16 +871,39 @@ function RequestCard({
         </div>
       )}
 
-      <PriceComparisonBlock
-        offers={offers}
-        emails={emails}
-        rate={rate}
-        onOpenDetail={onOpenDetail}
-        emptyHint="переключите страну выше или добавьте предложение."
-        country={country}
-        onCountryChange={setCountry}
-        enrichmentState={enrichmentState}
-      />
+      {/* Переключатель страны остаётся видимым и в свёрнутом виде: он общий
+          с кнопкой "Найти в сети" выше, и если спрятать его вместе со
+          списком, поиск уходил бы в невыбранную на глазах страну. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
+        <button
+          type="button"
+          onClick={() => setListOpen((open) => !open)}
+          aria-expanded={listOpen}
+          className="flex items-center gap-1.5 text-sm font-medium text-ink-muted hover:text-primary"
+        >
+          <ChevronDown className={cn('h-4 w-4 transition-transform', listOpen ? '' : '-rotate-90')} />
+          {listOpen
+            ? 'Скрыть список'
+            : offersInCountry.length === 0
+              ? 'Показать список'
+              : `Показать ${suppliersCountLabel(offersInCountry.length)}`}
+        </button>
+      </div>
+
+      {listOpen && (
+        <PriceComparisonBlock
+          offers={offers}
+          emails={emails}
+          rate={rate}
+          onOpenDetail={onOpenDetail}
+          emptyHint="переключите страну выше или добавьте предложение."
+          country={country}
+          onCountryChange={setCountry}
+          showCountryToggle={false}
+          enrichmentState={enrichmentState}
+        />
+      )}
     </Card>
   );
 }
