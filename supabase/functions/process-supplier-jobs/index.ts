@@ -302,10 +302,43 @@ async function processEnrichmentJob(job: any): Promise<void> {
 }
 
 // ——— Поиск поставщиков ————————————————————————————————————————————
-const COUNTRY_HINTS: Record<string, string> = {
+// Регион поиска (колонка country в supplier_web_search_jobs — историческое
+// имя, см. комментарий в src/lib/supplierWebSearchApi.ts). Владелец,
+// 2026-09-11: "по грильято подтянулось много поставщиков из других городов...
+// ставь регион не Россия, а именно Москва" — объекты компании в Москве и
+// Подмосковье, поставщик из Новосибирска бесполезен, поэтому у Москвы
+// отдельный жёсткий хинт, а не мягкое "прежде всего в Москве".
+const REGION_HINTS: Record<string, string> = {
   Беларусь: 'в Беларуси (если город не указан — прежде всего в Минске)',
   Россия: 'в России (если город не указан — прежде всего в Москве и других крупных городах)',
+  Москва:
+    'в Москве и Московской области. Бери ТОЛЬКО компании, у которых есть офис, склад или шоурум в Москве или Подмосковье. Компании из других городов (Санкт-Петербург, Новосибирск, Екатеринбург, Казань, Пермь, Самара, Нижний Новгород и любые другие) НЕ ПОДХОДЯТ, даже если они возят по всей России. Региональные сайты федеральных сетей (поддомены spb., ekb., perm., nsk., kazan., samara. и подобные) тоже не бери — нужен московский сайт сети',
 };
+
+// Города, чьи поставщики не подходят московскому поиску. Модель хинт выше
+// местами игнорирует (первая же выдача по грильято принесла полтора десятка
+// региональных филиалов), поэтому к промту добавлена ещё и детерминированная
+// отсечка по названию и домену — дешевле, чем потом чистить базу руками.
+const OTHER_CITY_WORDS = [
+  'санкт-петербург', 'петербург', 'спб', 'новосибирск', 'екатеринбург', 'казань', 'пермь',
+  'самара', 'нижний новгород', 'челябинск', 'ростов', 'краснодар', 'уфа', 'воронеж',
+  'волгоград', 'красноярск', 'омск', 'тюмень', 'саратов', 'барнаул', 'иркутск',
+  'владивосток', 'хабаровск', 'ярославль', 'тольятти', 'ижевск', 'ульяновск', 'кемерово',
+  'сочи', 'калининград', 'оренбург', 'томск', 'астрахань', 'минск',
+];
+const OTHER_CITY_SUBDOMAIN =
+  /^(spb|piter|nsk|novosib|novosibirsk|ekb|ekaterinburg|perm|kazan|kaz|samara|nn|nnv|nnov|nizhniy-novgorod|ufa|rostov|rnd|krd|krasnodar|chel|chelyabinsk|omsk|tmn|tyumen|vrn|voronezh|krsk|krasnoyarsk|saratov|irk|vlg|volgograd|kld|sochi|tula|tver)\./i;
+
+function looksLikeOtherCity(r: { name?: string; website?: string }): boolean {
+  const name = (r.name ?? '').toLowerCase();
+  if (OTHER_CITY_WORDS.some((c) => name.includes(c))) return true;
+  const host = (r.website ?? '')
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .split(/[/?#]/)[0]
+    .toLowerCase();
+  return OTHER_CITY_SUBDOMAIN.test(host);
+}
 
 function dedupKey(r: { name?: string; website?: string }): string {
   const site = (r.website ?? '').trim().toLowerCase();
@@ -321,8 +354,8 @@ function guessCountry(website: string): string {
 }
 
 async function processSearchJob(job: any): Promise<void> {
-  const country = COUNTRY_HINTS[job.country] ? job.country : 'Россия';
-  const hint = COUNTRY_HINTS[country];
+  const region = REGION_HINTS[job.country] ? job.country : 'Россия';
+  const hint = REGION_HINTS[region];
 
   const { data: existingOffers } = await supabase
     .from('supplier_research_offers')
@@ -378,6 +411,10 @@ email, note (одна фраза, что продают). Не выдумыва�
       email: (r.email ?? '').trim(),
       note: (r.note ?? '').trim(),
     }))
+    // Для московского поиска — отсечка по городу в названии/домене (см.
+    // looksLikeOtherCity выше): модель регулярно приносит региональные
+    // филиалы вопреки хинту.
+    .filter((r) => region !== 'Москва' || !looksLikeOtherCity(r))
     .filter((r) => {
       const key = dedupKey(r);
       if (seen.has(key) || excludeKeys.has(key)) return false;
