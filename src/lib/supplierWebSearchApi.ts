@@ -62,18 +62,50 @@ export async function recognizeInvoiceFile(fileUrl: string, fileName: string): P
   return data.extraction;
 }
 
+// Владелец, 2026-09-11: "поиск ещё" в существующей категории — уже
+// найденных (добавленных как предложения ИЛИ просто показанных в этом же
+// поиске) поставщиков нужно узнавать по тому же принципу, что и сервер
+// (api/supplier-web-search.js, dedupKey) — нормализованный домен сайта, а
+// при его отсутствии нормализованное имя компании. Не выносил в общий
+// модуль с сервером (там plain JS без сборки, здесь TS) — логика в 4
+// строки, синхронизировать вручную при правке одной стороны не сложнее,
+// чем тянуть общий импорт через границу клиент/сервер.
+export function supplierResultKey(r: { name: string; website: string }): string {
+  const site = r.website.trim().toLowerCase();
+  if (site) {
+    return site
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/\/+$/, '')
+      .split(/[/?#]/)[0];
+  }
+  return r.name.trim().toLowerCase();
+}
+
+export interface SupplierExcludeEntry {
+  name: string;
+  website: string;
+}
+
 export async function searchSuppliersOnline(
   itemsText: string,
   sectionTitle: string,
   extra: string,
   country: string,
+  exclude?: SupplierExcludeEntry[],
 ): Promise<SupplierSearchResult[]> {
   return withRetry(
     async () => {
       const resp = await authFetch('/api/supplier-web-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ itemsText, sectionTitle, extra, country }),
+        body: JSON.stringify({
+          itemsText,
+          sectionTitle,
+          extra,
+          country,
+          excludeCompanies: exclude && exclude.length ? exclude : undefined,
+        }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.error || `Ошибка веб-поиска (${resp.status})`);
