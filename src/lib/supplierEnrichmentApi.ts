@@ -109,12 +109,18 @@ export const SUPPLIER_VERIFICATION_LABEL: Record<SupplierVerificationStatus, str
 };
 
 export function supplierVerificationStatus(
-  offer: { id: string; verified: boolean },
+  offer: { id: string; verified: boolean; email: string; contact: string },
   enrichmentState: Map<string, OfferEnrichmentState>,
 ): SupplierVerificationStatus {
   if (offer.verified) return 'verified';
   const state = enrichmentState.get(offer.id);
   if (state === 'active') return 'enriching';
-  if (state === 'done') return 'ready';
+  // Владелец, 2026-09-11: "если ИИ не смог собрать данные по поставщику
+  // (email и телефон), делай статус «Требуется верификация»" — сбор
+  // закончился, но контактов нет вообще (сайт не открылся, контакты только
+  // картинкой/в форме обратной связи и т.п.), значит дальше не "проверь
+  // собранное", а "заполни руками". Хватает любого из двух: по email идёт
+  // переписка, телефон — запасной канал; отсутствовать должны оба.
+  if (state === 'done') return offer.email || offer.contact ? 'ready' : 'needs_verification';
   return 'needs_verification';
 }
