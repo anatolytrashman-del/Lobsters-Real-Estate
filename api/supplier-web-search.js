@@ -38,6 +38,7 @@
 // убранной, как и была).
 import { requireStaffAuth } from './_auth.js';
 import { recognizeInvoice } from './_invoiceRecognition.js';
+import { checkReliability, checkoKeyProblem, invalidInnReason } from './_checko.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -47,11 +48,43 @@ export default async function handler(req, res) {
   const user = await requireStaffAuth(req, res);
   if (!user) return;
 
-  if ((req.body ?? {}).action !== 'recognize-invoice') {
-    res.status(400).json({ error: 'Неизвестное действие' });
+  const action = (req.body ?? {}).action;
+  if (action === 'recognize-invoice') {
+    await handleRecognizeInvoice(req, res);
     return;
   }
-  await handleRecognizeInvoice(req, res);
+  if (action === 'check-reliability') {
+    await handleCheckReliability(req, res);
+    return;
+  }
+  res.status(400).json({ error: 'Неизвестное действие' });
+}
+
+// Проверка благонадёжности поставщика по ИНН (Checko). Живёт здесь
+// action'ом, а не отдельным api/check-reliability.js, не по вкусовым
+// соображениям: в api/ ровно 12 serverless-функций, что РОВНО лимит
+// Vercel Hobby — тринадцатый файл сломал бы деплой целиком.
+//
+// Ключ Checko — только на сервере (CHECKO_API_KEY в env Vercel): на фронт
+// его отдавать нельзя, там он утёк бы в любой браузер и его бы сожгли
+// чужими запросами (тариф считает запросы в сутки).
+async function handleCheckReliability(req, res) {
+  const keyProblem = checkoKeyProblem();
+  if (keyProblem) {
+    res.status(500).json({ error: keyProblem });
+    return;
+  }
+  const inn = String((req.body ?? {}).inn ?? '').replace(/\D/g, '');
+  const innProblem = invalidInnReason(inn);
+  if (!inn || innProblem) {
+    res.status(400).json({ error: innProblem ?? 'Не передан ИНН' });
+    return;
+  }
+  try {
+    res.status(200).json({ result: await checkReliability(inn) });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Не удалось проверить поставщика' });
+  }
 }
 
 // fileUrl — публичная ссылка на уже загруженный в Storage файл (клиент

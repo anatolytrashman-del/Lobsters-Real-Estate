@@ -48,6 +48,7 @@ function offerFromRow(row: SupplierOfferRow): SupplierOffer {
     files: row.files ?? [],
     shortCode: row.short_code,
     verified: row.verified,
+    inn: row.inn ?? null,
     createdAt: row.created_at,
   };
 }
@@ -151,6 +152,7 @@ export function insertSupplierOffer(input: Omit<SupplierOffer, 'id' | 'createdAt
         items: input.items,
         files: input.files,
         verified: input.verified,
+        inn: input.inn,
       })
       .select()
       .single();
@@ -181,6 +183,7 @@ export function updateSupplierOffer(id: string, input: Omit<SupplierOffer, 'id' 
         items: input.items,
         files: input.files,
         verified: input.verified,
+        inn: input.inn,
       })
       .eq('id', id)
       .select()

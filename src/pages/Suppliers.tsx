@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText, ExternalLink, MessageCircle, ChevronDown } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ExternalLink, FileText, Globe, ImageOff, Loader2, Mail, MessageCircle, Paperclip, Pencil, Phone, Plus, Search, Send, Trash2, Upload, X } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -44,6 +44,9 @@ import {
   type SupplierMessengerType,
   type SupplierMessengerContact,
 } from '../data/supplierResearch';
+import type { SupplierReliability } from '../data/supplierReliability';
+import { fetchSupplierReliability, checkSupplierReliability } from '../lib/supplierReliabilityApi';
+import { RiskBadge } from '../components/suppliers/RiskBadge';
 import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 import { fetchAllSupplierOfferEmails, markSupplierOfferEmailsRead } from '../lib/supplierOfferEmailsApi';
 import { EmailThread, SupplierCorrespondenceTab, countUnreadSupplierEmails } from '../components/suppliers/SupplierCorrespondenceTab';
@@ -342,10 +345,12 @@ function SupplierListBlock({
   onCountryChange,
   showCountryToggle = true,
   enrichmentState,
+  reliabilityByInn,
 }: {
   offers: SupplierOffer[];
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
   // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
   // Беларуси и для России... в идеале переключение списков прямо внутри
   // самого блока" — подсказка для пустого списка отличается в зависимости
@@ -401,6 +406,7 @@ function SupplierListBlock({
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-medium text-ink">{o.name}</span>
                 <VerificationBadge offer={o} enrichmentState={enrichmentState} />
+                <RiskBadge inn={o.inn} reliabilityByInn={reliabilityByInn} />
               </div>
               <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
                 Подробнее
@@ -433,6 +439,7 @@ function OfferTotalComparison({
   rate,
   onOpenDetail,
   enrichmentState,
+  reliabilityByInn,
 }: {
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
@@ -440,6 +447,7 @@ function OfferTotalComparison({
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
 }) {
   const quotesByOffer = useMemo(() => {
     const map = new Map<string, SupplierQuote[]>();
@@ -479,6 +487,7 @@ function OfferTotalComparison({
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-medium text-ink">{o.name}</span>
                 <VerificationBadge offer={o} enrichmentState={enrichmentState} />
+                <RiskBadge inn={o.inn} reliabilityByInn={reliabilityByInn} />
                 {isCheapest && (
                   <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
                     лучшая цена
@@ -611,6 +620,10 @@ interface MaterialQuote {
   // собранных контактов поставщик остаётся "Требуется верификация".
   offerEmail: string;
   offerContact: string;
+  // ИНН из счёта — для восклицательного знака благонадёжности. Владелец,
+  // 2026-09-11: знак нужен в том числе "в сравнении цен", а разбивка по
+  // материалам — это оно и есть, поэтому ИНН нужен и на уровне строки КП.
+  offerInn: string | null;
   amount: number;
   currency: Currency;
   usd: number | null;
@@ -641,6 +654,7 @@ function buildMaterialQuotes(request: SupplierRequest, confirmedOffers: Supplier
       verified: offer.verified,
       offerEmail: offer.email,
       offerContact: offer.contact,
+      offerInn: offer.inn,
       amount,
       currency: offer.currency,
       usd: convertToUsd(amount, offer.currency, rate),
@@ -697,6 +711,7 @@ function MaterialPriceComparisonCard({
   rate,
   onOpenDetail,
   enrichmentState,
+  reliabilityByInn,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
@@ -705,6 +720,7 @@ function MaterialPriceComparisonCard({
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
 }) {
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
@@ -745,6 +761,7 @@ function MaterialPriceComparisonCard({
             rate={rate}
             onOpenDetail={onOpenDetail}
             enrichmentState={enrichmentState}
+            reliabilityByInn={reliabilityByInn}
           />
         )
       ) : materialGroups.length === 0 ? (
@@ -774,6 +791,7 @@ function MaterialPriceComparisonCard({
                           offer={{ id: q.offerId, verified: q.verified, email: q.offerEmail, contact: q.offerContact }}
                           enrichmentState={enrichmentState}
                         />
+                        <RiskBadge inn={q.offerInn} reliabilityByInn={reliabilityByInn} />
                         {isCheapest && (
                           <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
                             лучшая цена
@@ -827,6 +845,7 @@ function RequestCard({
   searchQueueError,
   onDismissSearchJob,
   enrichmentState,
+  reliabilityByInn,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
@@ -846,6 +865,7 @@ function RequestCard({
   searchQueueError: string | null;
   onDismissSearchJob: (jobId: string) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
 }) {
   // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
   // SupplierListBlock выше — здесь он controlled, значение общее и для
@@ -991,6 +1011,7 @@ function RequestCard({
           onCountryChange={setCountry}
           showCountryToggle={false}
           enrichmentState={enrichmentState}
+          reliabilityByInn={reliabilityByInn}
         />
       )}
     </Card>
@@ -1008,6 +1029,9 @@ function OfferDetailModal({
   onDeleteFile,
   deletingFileIndex,
   enrichmentState,
+  reliabilityByInn,
+  onCheckReliability,
+  checkingReliability,
   onVerify,
   verifying,
   offerQuotes,
@@ -1031,6 +1055,9 @@ function OfferDetailModal({
   savingQuoteId: string | null;
   deletingQuoteId: string | null;
   enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
+  onCheckReliability: (inn: string) => void;
+  checkingReliability: boolean;
   onVerify: (o: SupplierOffer) => void;
   verifying: boolean;
 }) {
@@ -1047,6 +1074,7 @@ function OfferDetailModal({
             {offer.price > 0 ? formatPrice(offer.price, offer.currency) : 'Цена не указана'}
           </span>
           <VerificationBadge offer={offer} enrichmentState={enrichmentState} />
+          <RiskBadge inn={offer.inn} reliabilityByInn={reliabilityByInn} />
           {offer.country && (
             <span className="text-base" title={offer.country}>
               {countryFlag(offer.country)}
@@ -1058,6 +1086,13 @@ function OfferDetailModal({
           <span className="text-ink-faint">Статус</span>
           <span className="text-ink">{OFFER_COMMUNICATION_STATUS_LABEL[status]}</span>
         </div>
+
+        <ReliabilityBlock
+          offer={offer}
+          reliability={offer.inn ? reliabilityByInn.get(offer.inn) ?? null : null}
+          onCheck={onCheckReliability}
+          checking={checkingReliability}
+        />
 
         <div className="flex flex-col gap-1 text-sm">
           <span className="text-ink-faint">Контакт</span>
@@ -1339,6 +1374,118 @@ function OfferDetailModal({
   );
 }
 
+// Благонадёжность поставщика в детальной карточке. Владелец, 2026-09-11:
+// "Будем смотреть вообще все, что есть, прям дорабатываем подробную карточку
+// поставщика теми данными, которыми получим" — поэтому здесь, в отличие от
+// восклицательного знака в списках, показываем не только риски, но и
+// обычные реквизиты: закупщице полезно видеть, что за юрлицо выставило счёт.
+function ReliabilityBlock({
+  offer,
+  reliability,
+  onCheck,
+  checking,
+}: {
+  offer: SupplierOffer;
+  reliability: SupplierReliability | null;
+  onCheck: (inn: string) => void;
+  checking: boolean;
+}) {
+  // Нет ИНН — счёта ещё не было. Это нормальное состояние в начале работы с
+  // поставщиком (владелец: проверяем именно того, на кого выставлен счёт),
+  // поэтому объясняем словами, а не показываем пустой блок или ошибку.
+  if (!offer.inn) {
+    return (
+      <div className="flex flex-col gap-1 text-sm">
+        <span className="text-ink-faint">Благонадёжность</span>
+        <span className="text-ink-faint">Проверим автоматически, когда поставщик пришлёт счёт — ИНН берётся из него.</span>
+      </div>
+    );
+  }
+
+  const company = (reliability?.company ?? {}) as Record<string, any>;
+  const cases = (reliability?.legalCases ?? {}) as Record<string, any>;
+  const enforcements = (reliability?.enforcements ?? {}) as Record<string, any>;
+  const facts: Array<[string, string]> = [];
+  if (reliability?.found) {
+    if (company['НаимПолн'] || company['НаимСокр']) facts.push(['Юрлицо', String(company['НаимСокр'] || company['НаимПолн'])]);
+    if (company['Статус']?.['Наим']) facts.push(['Статус в ЕГРЮЛ', String(company['Статус']['Наим'])]);
+    if (company['ДатаРег']) facts.push(['Зарегистрировано', String(company['ДатаРег'])]);
+    if (company['ЮрАдрес']?.['АдресРФ']) facts.push(['Юр. адрес', String(company['ЮрАдрес']['АдресРФ'])]);
+    if (company['Руковод']?.[0]?.['ФИО']) facts.push(['Руководитель', String(company['Руковод'][0]['ФИО'])]);
+    if (typeof company['СЧР'] === 'number') facts.push(['Сотрудников (ФНС)', String(company['СЧР'])]);
+    if (typeof cases['ЗапВсего'] === 'number') {
+      const sum = typeof cases['ОбщСуммИск'] === 'number' && cases['ОбщСуммИск'] > 0
+        ? ` на ${Math.round(cases['ОбщСуммИск']).toLocaleString('ru-RU')} ₽`
+        : '';
+      facts.push(['Арбитраж (ответчик)', `${cases['ЗапВсего']} дел${sum}`]);
+    }
+    if (typeof enforcements['ОбщКолич'] === 'number') {
+      facts.push(['Исполнительные производства', String(enforcements['ОбщКолич'])]);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-ink-faint">Благонадёжность · ИНН {offer.inn}</span>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={checking}
+          icon={checking ? <Loader2 className="h-4 w-4 animate-spin" /> : undefined}
+          onClick={() => onCheck(offer.inn!)}
+        >
+          {checking ? 'Проверяем...' : reliability ? 'Перепроверить' : 'Проверить'}
+        </Button>
+      </div>
+
+      {!reliability && <span className="text-ink-faint">Ещё не проверяли.</span>}
+
+      {/* Сбой проверки и "юрлица нет в ЕГРЮЛ" — принципиально разные вещи,
+          и путать их нельзя: первое означает "мы не знаем", второе — само
+          по себе серьёзный повод не платить. */}
+      {reliability?.error && <span className="text-warning">Не удалось проверить: {reliability.error}</span>}
+      {reliability && !reliability.error && !reliability.found && (
+        <span className="font-medium text-danger">Организация с таким ИНН не найдена в ЕГРЮЛ/ЕГРИП</span>
+      )}
+
+      {reliability && !reliability.error && reliability.found && (
+        <>
+          {reliability.risks.length === 0 ? (
+            <span className="text-success">Рисков не найдено</span>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {reliability.risks.map((r, i) => (
+                <li key={i} className={`flex gap-2 ${r.level === 'danger' ? 'text-danger' : 'text-warning'}`}>
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    {r.title}
+                    {r.detail && <span className="text-ink-faint"> — {r.detail}</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {facts.length > 0 && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              {facts.map(([k, v]) => (
+                <Fragment key={k}>
+                  <dt className="text-ink-faint">{k}</dt>
+                  <dd className="text-ink">{v}</dd>
+                </Fragment>
+              ))}
+            </dl>
+          )}
+          <span className="text-xs text-ink-faint">
+            Проверено {new Date(reliability.checkedAt).toLocaleDateString('ru-RU')} по данным Checko (ЕГРЮЛ, картотека
+            арбитражных судов, ФССП). Арбитраж отдаётся с задержкой 1–2 недели.
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Владелец, 2026-08-29: "это страница Закупки в стройке" — Каталог
 // поставщиков/Ресерч/Закупки вместе на одной странице (компонент и файл
 // по историческим причинам называется Suppliers — не переименовывал,
@@ -1549,6 +1696,32 @@ export function Suppliers() {
   // появится НОВОЕ задание — оно не в этом Set, бейдж покажется снова).
   const [dismissedJobIds, setDismissedJobIds] = useState<Set<string>>(new Set());
 
+  // Проверки благонадёжности — отдельным необязательным запросом, а не в
+  // общем Promise.all с поставщиками: если таблицы ещё нет (миграция не
+  // применена) или запрос сорвался, страница обязана открыться как прежде,
+  // просто без восклицательных знаков. Раскладка по ИНН, потому что запись
+  // одна на юрлицо, а предложений с этим ИНН может быть несколько.
+  const [reliability, setReliability] = useState<SupplierReliability[]>([]);
+  const reliabilityByInn = useMemo(() => new Map(reliability.map((r) => [r.inn, r])), [reliability]);
+  const [checkingInn, setCheckingInn] = useState<string | null>(null);
+
+  // Перепроверка вручную из карточки. Автоматическая проверка живёт не
+  // здесь, а в момент подтверждения распознанного счёта — см.
+  // SupplierCorrespondenceTab; сюда закупщица приходит, когда хочет
+  // обновить данные по уже проверенному юрлицу.
+  async function handleCheckReliability(inn: string) {
+    if (checkingInn) return;
+    setCheckingInn(inn);
+    try {
+      const updated = await checkSupplierReliability(inn);
+      setReliability((prev) => [...prev.filter((r) => r.inn !== inn), updated]);
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось проверить поставщика'));
+    } finally {
+      setCheckingInn(null);
+    }
+  }
+
   useEffect(() => {
     Promise.all([fetchSupplierRequests(), fetchSupplierOffers()])
       .then(([r, o]) => {
@@ -1557,6 +1730,7 @@ export function Suppliers() {
       })
       .catch((err) => setLoadError(errorMessage(err, 'Не удалось загрузить поставщиков')))
       .finally(() => setLoading(false));
+    fetchSupplierReliability().then(setReliability).catch(() => setReliability([]));
     fetchEstimates().then(setEstimates).catch(() => setEstimates([]));
     fetchObjects().then(setObjects).catch(() => setObjects([]));
     fetchLegalEntities().then(setLegalEntities).catch(() => setLegalEntities([]));
@@ -2280,6 +2454,10 @@ export function Suppliers() {
         // а не откладываются до сабмита — тут уже готовый список.
         files: offerForm.existingFiles,
         verified: true,
+        // ИНН формой не правится (он приходит из распознанного счёта —
+        // см. data/supplierResearch.ts), поэтому при сохранении карточки
+        // сохраняем уже имеющееся значение, а не затираем его в null.
+        inn: editingOffer?.inn ?? null,
       };
       // Владелец, 2026-09-05: лог действий Альмиры для страницы "Метрики" —
       // те же два события, что различает комментарий выше ("верификация" vs
@@ -2405,6 +2583,7 @@ export function Suppliers() {
     setDeletingOfferFileIndex(index);
     try {
       const updated = await updateSupplierOffer(o.id, {
+        inn: o.inn,
         requestId: o.requestId,
         name: o.name,
         contact: o.contact,
@@ -2504,6 +2683,7 @@ export function Suppliers() {
                       searchQueueError={webSearchQueueError?.requestId === r.id ? webSearchQueueError.message : null}
                       onDismissSearchJob={dismissWebSearchJob}
                       enrichmentState={enrichmentState}
+                      reliabilityByInn={reliabilityByInn}
                     />
                   ))}
 
@@ -2578,6 +2758,7 @@ export function Suppliers() {
                       rate={rate}
                       onOpenDetail={(o) => setDetailOfferId(o.id)}
                       enrichmentState={enrichmentState}
+                      reliabilityByInn={reliabilityByInn}
                     />
                   ))}
                 </div>
@@ -2788,6 +2969,8 @@ export function Suppliers() {
             onTemplatesChange={setEmailTemplates}
             onLedgersChange={setMaterialLedgers}
             onOfferUpdated={handleSupplierOfferUpdated}
+            onReliabilityChecked={(r) => setReliability((prev) => [...prev.filter((x) => x.inn !== r.inn), r])}
+            reliabilityByInn={reliabilityByInn}
             onOrdersChange={setSupplierOrders}
             onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
             onEmailUpdated={handleSupplierEmailUpdated}
@@ -3257,6 +3440,8 @@ export function Suppliers() {
           return (
             <OfferEmailModal
               offer={offer}
+              onReliabilityChecked={(r) => setReliability((prev) => [...prev.filter((x) => x.inn !== r.inn), r])}
+              reliabilityByInn={reliabilityByInn}
               request={request}
               requests={requests}
               emails={supplierEmails.filter((e) => e.offerId === offer.id)}
@@ -3300,8 +3485,11 @@ export function Suppliers() {
               savingQuoteId={savingQuoteId}
               deletingQuoteId={deletingQuoteId}
               enrichmentState={enrichmentState}
+              reliabilityByInn={reliabilityByInn}
               onVerify={handleVerifyOffer}
               verifying={verifyingOfferId === offer.id}
+              onCheckReliability={handleCheckReliability}
+              checkingReliability={checkingInn !== null && checkingInn === offer.inn}
             />
           );
         })()}
@@ -3451,6 +3639,8 @@ function OfferEmailModal({
   onTemplateSaved,
   onLedgersChange,
   onOfferUpdated,
+  onReliabilityChecked,
+  reliabilityByInn,
   onEmailUpdated,
   onQuoteAdded,
   onClose,
@@ -3468,6 +3658,8 @@ function OfferEmailModal({
   onTemplateSaved: (template: EmailTemplate) => void;
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
   onOfferUpdated: (offer: SupplierOffer) => void;
+  onReliabilityChecked: (r: SupplierReliability) => void;
+  reliabilityByInn: Map<string, SupplierReliability>;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
   onQuoteAdded: (quote: SupplierQuote) => void;
   onClose: () => void;
@@ -3501,6 +3693,8 @@ function OfferEmailModal({
         onTemplateSaved={onTemplateSaved}
         onLedgersChange={onLedgersChange}
         onOfferUpdated={onOfferUpdated}
+        onReliabilityChecked={onReliabilityChecked}
+        reliabilityByInn={reliabilityByInn}
         onOrderUpdated={() => {}}
         onEmailUpdated={onEmailUpdated}
         onQuoteAdded={onQuoteAdded}
