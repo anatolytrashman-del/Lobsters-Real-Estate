@@ -626,6 +626,17 @@ export function BulkSendModal({
                       </span>
                     </div>
                   )}
+                  {/* Владелец, 2026-09-11: вместе с карточкой первому письму
+                      уходит и "Информация по доставке" юрлица (адрес объекта,
+                      условия разгрузки) — тем же правилом и тем же воркером. */}
+                  {legalEntity?.deliveryFile && (
+                    <div className="flex items-center gap-2">
+                      <Paperclip className="h-4 w-4 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {legalEntity.deliveryFile.fileName} — условия доставки, уйдёт только тем, кому пишем впервые
+                      </span>
+                    </div>
+                  )}
                 </div>
                 {legalEntity && !legalEntity.cardFile && (
                   <p className="text-xs text-ink-faint">

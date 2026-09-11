@@ -30,6 +30,19 @@ export interface LegalEntity {
   // тогда автоматическое вложение просто не добавляется, ничего не
   // выдумываем.
   cardFile: { url: string; fileName: string } | null;
+  // Владелец, 2026-09-11: "хочу прикреплять к поставкам вместе с ведомостью
+  // материала и карточкой организации ещё инфу по доставке. Для всех
+  // поставок ООО Матрёшка нужен документ, где указано: адрес объекта...
+  // возможна доставка машинами до 20 тонн с боковой разгрузкой, разгрузка
+  // осуществляется нами самостоятельно". Условия у каждого юрлица свои
+  // (свой объект, своя разгрузка), поэтому текст живёт здесь, а не в коде:
+  // deliveryInfo — то, что владелец печатает на странице юрлица,
+  // deliveryFile — сгенерированный из него .docx (lib/deliveryInfoDocx.ts),
+  // который и уходит вложением. Файл пересобирается при каждом сохранении
+  // текста; пустой deliveryInfo — вложения просто нет (как и с карточкой,
+  // ничего не выдумываем).
+  deliveryInfo: string;
+  deliveryFile: { url: string; fileName: string } | null;
   // Юрлицо по умолчанию — используется для категорий, где закупщица явно
   // не выбрала юрлицо (SupplierRequest.legalEntityId=null), чтобы не ломать
   // уже существующие категории задним числом. Ровно одно юрлицо должно
@@ -51,6 +64,8 @@ export interface LegalEntityRow {
   name: string;
   short_name: string | null;
   card_file: { url: string; fileName: string } | null;
+  delivery_info: string | null;
+  delivery_file: { url: string; fileName: string } | null;
   is_default: boolean;
   country: string | null;
   created_at: string;

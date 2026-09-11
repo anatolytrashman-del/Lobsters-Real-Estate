@@ -5,13 +5,15 @@ import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import { Textarea } from '../components/ui/Textarea';
 import { Select } from '../components/ui/Select';
 import { Modal } from '../components/ui/Modal';
 import { DocumentPreviewModal, isPreviewable, type PreviewFile } from '../components/documents/DocumentPreviewModal';
 import type { LegalEntity } from '../data/legalEntities';
 import { SUPPLIER_COUNTRIES } from '../data/supplierResearch';
 import { QUARTERS, taxDeclarationTitle, type TaxDeclaration, type Quarter } from '../data/taxDeclarations';
-import { fetchLegalEntities, updateLegalEntity, setLegalEntityDefault, uploadLegalEntityCardFile } from '../lib/legalEntitiesApi';
+import { fetchLegalEntities, updateLegalEntity, setLegalEntityDefault, uploadLegalEntityFile } from '../lib/legalEntitiesApi';
+import { buildDeliveryInfoDocx } from '../lib/deliveryInfoDocx';
 import { fetchTaxDeclarations, insertTaxDeclaration, deleteTaxDeclaration } from '../lib/taxDeclarationsApi';
 import { uploadObjectDocument } from '../lib/objectsApi';
 
@@ -58,6 +60,11 @@ export function LegalEntityDetail() {
   // (BulkSendModal читает entity.country по выбранному юрлицу).
   const [countryDraft, setCountryDraft] = useState('');
   const [savingShortName, setSavingShortName] = useState(false);
+  // Владелец, 2026-09-11: инфо по доставке (адрес объекта + условия
+  // разгрузки) — свой текст у каждого юрлица, из него на сохранении
+  // собирается .docx-вложение, см. lib/deliveryInfoDocx.ts.
+  const [deliveryInfoDraft, setDeliveryInfoDraft] = useState('');
+  const [savingDeliveryInfo, setSavingDeliveryInfo] = useState(false);
   const [cardUploading, setCardUploading] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
   const [entityActionError, setEntityActionError] = useState<string | null>(null);
@@ -91,6 +98,7 @@ export function LegalEntityDetail() {
   useEffect(() => {
     setShortNameDraft(entity?.shortName ?? '');
     setCountryDraft(entity?.country ?? '');
+    setDeliveryInfoDraft(entity?.deliveryInfo ?? '');
   }, [entity?.id]);
 
   async function handleSaveShortName() {
@@ -126,12 +134,43 @@ export function LegalEntityDetail() {
     }
   }
 
+  // Сохранение текста доставки = пересборка .docx + заливка в Storage.
+  // Файл собирается ЗДЕСЬ, один раз, а не в момент отправки письма —
+  // потому что второе место отправки (массовая рассылка) живёт в
+  // .mjs-воркере на GitHub Actions и умеет цеплять вложение только по url,
+  // как карточку организации (см. scripts/process-bulk-send-jobs.mjs).
+  async function handleSaveDeliveryInfo() {
+    if (!entity || savingDeliveryInfo) return;
+    setSavingDeliveryInfo(true);
+    setEntityActionError(null);
+    try {
+      const text = deliveryInfoDraft.trim();
+      // Текст стёрли — убираем и файл: иначе поставщики продолжали бы
+      // получать справку, которую владелец только что отменил.
+      const deliveryFile = text
+        ? await uploadLegalEntityFile(await buildDeliveryInfoDocx(entity.shortName || entity.name, text))
+        : null;
+      const updated = await updateLegalEntity(entity.id, {
+        name: entity.name,
+        shortName: entity.shortName,
+        cardFile: entity.cardFile,
+        deliveryInfo: text,
+        deliveryFile,
+      });
+      setEntities((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+    } catch (err) {
+      setEntityActionError(errorMessage(err, 'Не удалось сохранить информацию по доставке'));
+    } finally {
+      setSavingDeliveryInfo(false);
+    }
+  }
+
   async function handleCardFileChange(file: File | null) {
     if (!entity || !file || cardUploading) return;
     setCardUploading(true);
     setEntityActionError(null);
     try {
-      const cardFile = await uploadLegalEntityCardFile(file);
+      const cardFile = await uploadLegalEntityFile(file);
       const updated = await updateLegalEntity(entity.id, { name: entity.name, shortName: entity.shortName, cardFile });
       setEntities((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     } catch (err) {
@@ -298,6 +337,43 @@ export function LegalEntityDetail() {
                 }}
               />
             </label>
+          </div>
+
+          {/* Владелец, 2026-09-11: "хочу прикреплять к поставкам вместе с
+              ведомостью материала и карточкой организации ещё инфу по
+              доставке" — адрес объекта и условия разгрузки. Текст правится
+              здесь, а .docx для писем пересобирается на "Сохранить" сам. */}
+          <div className="flex flex-col gap-1.5">
+            <Textarea
+              label="Адрес доставки (уйдёт отдельным файлом вместе с карточкой организации)"
+              rows={5}
+              placeholder={'Адрес объекта: ...\n\nВозможна доставка машинами до 20 тонн...'}
+              value={deliveryInfoDraft}
+              onChange={(e) => setDeliveryInfoDraft(e.target.value)}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="secondary" onClick={handleSaveDeliveryInfo} disabled={savingDeliveryInfo}>
+                {savingDeliveryInfo ? 'Сохраняем...' : 'Сохранить'}
+              </Button>
+              {entity.deliveryFile && (
+                <div className="flex min-w-0 items-center gap-2 rounded-control bg-surface-muted px-3 py-2">
+                  <FileText className="h-4 w-4 shrink-0 text-ink-faint" />
+                  <span className="min-w-0 truncate text-sm text-ink">{entity.deliveryFile.fileName}</span>
+                  <a
+                    href={entity.deliveryFile.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Скачать"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-muted hover:text-primary"
+                  >
+                    <Download className="h-4 w-4" />
+                  </a>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-ink-faint">
+              Пусто — к письмам ничего не прикладывается. Файл пересобирается при каждом сохранении текста.
+            </p>
           </div>
 
           {entityActionError && <p className="text-sm text-danger">{entityActionError}</p>}

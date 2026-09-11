@@ -474,6 +474,16 @@ export function EmailThread({
   const legalEntity = resolveRequestLegalEntity(request.legalEntityId, legalEntities);
   const [skipOrgCard, setSkipOrgCard] = useState(false);
   const attachOrgCard = isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard && !!legalEntity?.cardFile;
+  // Владелец, 2026-09-11: "хочу прикреплять к поставкам вместе с ведомостью
+  // материала и карточкой организации ещё инфу по доставке" (адрес объекта,
+  // машины до 20 тонн с боковой разгрузкой и т.п.) — тот же файл юрлица и
+  // ровно то же правило, что у карточки: первому письму поставщику, со
+  // своим крестиком, если в конкретном письме не нужно. Текст/файл
+  // заводится на странице юрлица (Документы → Юрлица), нет файла — чипа
+  // нет и вложения нет.
+  const [skipDeliveryInfo, setSkipDeliveryInfo] = useState(false);
+  const attachDeliveryInfo =
+    isFirstOutgoingToOffer(emails, offer.id) && !skipDeliveryInfo && !!legalEntity?.deliveryFile;
   // Какие письма развёрнуты (показана свёрнутая цитата целиком) — по id,
   // сбрасывается сам собой при смене offer (новый emails-список).
   const [expandedQuoteIds, setExpandedQuoteIds] = useState<Set<string>>(new Set());
@@ -534,6 +544,7 @@ export function EmailThread({
     setPendingLedger(null);
     setManualAttachments([]);
     setSkipOrgCard(false);
+    setSkipDeliveryInfo(false);
     setQuotedReplyText(null);
     setQuotedReplyExpanded(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -695,10 +706,15 @@ export function EmailThread({
     try {
       const orgCardAttachment =
         attachOrgCard && legalEntity?.cardFile ? await fetchDocumentFileAsAttachment(legalEntity.cardFile) : null;
+      const deliveryInfoAttachment =
+        attachDeliveryInfo && legalEntity?.deliveryFile
+          ? await fetchDocumentFileAsAttachment(legalEntity.deliveryFile)
+          : null;
       const attachments = [
         ...(pendingLedger ? [pendingLedger] : []),
         ...manualAttachments,
         ...(orgCardAttachment ? [orgCardAttachment] : []),
+        ...(deliveryInfoAttachment ? [deliveryInfoAttachment] : []),
       ];
       // Цитата (quotedReplyText) живёт отдельно от того, что печатает
       // пользователь, весь черновик — только теперь, на отправку, склеиваем
@@ -1094,6 +1110,21 @@ export function EmailThread({
                 type="button"
                 onClick={() => setSkipOrgCard(true)}
                 aria-label="Не прикреплять карточку организации к этому письму"
+                className="flex h-5 w-5 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+          {attachDeliveryInfo && legalEntity?.deliveryFile && (
+            <div className="flex w-fit items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-1.5 text-sm text-ink">
+              <Paperclip className="h-4 w-4 shrink-0 text-ink-faint" />
+              {legalEntity.deliveryFile.fileName}
+              <span className="text-xs text-ink-faint">(условия доставки, прикрепится автоматически)</span>
+              <button
+                type="button"
+                onClick={() => setSkipDeliveryInfo(true)}
+                aria-label="Не прикреплять адрес доставки к этому письму"
                 className="flex h-5 w-5 items-center justify-center rounded-full text-ink-faint hover:text-danger"
               >
                 <X className="h-3.5 w-3.5" />
