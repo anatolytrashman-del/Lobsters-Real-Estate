@@ -1,0 +1,33 @@
+name: Process supplier web search jobs
+
+on:
+  schedule:
+    # Каждые 5 минут — минимально возможный интервал для scheduled workflow
+    # в GitHub Actions, тот же принцип, что у process-bulk-send-jobs.yml.
+    # Подстраховка на случай, если мгновенный workflow_dispatch (см.
+    # api/trigger-rebuild.js, action:'dispatch-supplier-search') не сработал
+    # (нет токена/сетевая ошибка) — очередь всё равно разберётся сама.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Один поиск — 2 раунда по 40-115с каждый (см. process-supplier-web-search-
+  # jobs.mjs), на несколько заданий в очереди прогон может идти минуты — не
+  # даём следующему тику стартовать поверх ещё не завершившегося.
+  group: process-supplier-web-search-jobs
+  cancel-in-progress: false
+
+jobs:
+  process-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/process-supplier-web-search-jobs.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PROXYAPI_KEY: ${{ secrets.PROXYAPI_KEY }}

@@ -1,22 +1,5 @@
-import { withRetry } from './withRetry';
+import { supabase } from './supabase';
 import { authFetch } from './authFetch';
-
-// Веб-поиск поставщиков (вкладка "Ресерч" на странице Suppliers.tsx) —
-// api/supplier-web-search.js, claude-haiku-4-5 через ProxyAPI (переведено
-// с claude-sonnet-5 2026-08-31 — реальная причина дороговизны была не в
-// модели, а в "программном вызове инструмента", см. подробный комментарий
-// в самой функции; gpt-4o-mini-search-preview как альтернатива не
-// сработала вовсе — ProxyAPI отдаёт "Model not supported" на все
-// search-модели OpenAI). Живой прогон после фикса — 8с и 13 943 входных
-// токена (было 20-115с и 41-45 тыс.) — таймаут ниже оставлен прежним
-// щедрым запасом (280с), не сокращал специально: один быстрый прогон не
-// гарантирует, что медленный запрос с 3 поисками не встретится позже.
-// Результат не сохраняется в базу — это одноразовая подсказка, которую
-// владелец либо добавляет как предложение (кнопка в модалке результатов),
-// либо закрывает. БЕЗ повторной попытки при неудаче (withRetry с
-// retries=0): при потенциально долгом вызове молчаливый повтор на всю его
-// длительность ещё раз — плохой компромисс, лучше сразу показать ошибку.
-const WEB_SEARCH_TIMEOUT_MS = 280000;
 
 export interface SupplierSearchResult {
   name: string;
@@ -33,10 +16,7 @@ export interface SupplierSearchResult {
 // Владелец, 2026-09-09: распознавание КП, загруженного вручную в форму
 // предложения (не из переписки) — тот же серверный хелпер, что и у
 // автоматики на входящих письмах (api/_invoiceRecognition.js), только
-// вызванный напрямую по URL уже загруженного в Storage файла. Без
-// withRetry (как и у поиска выше) — распознавание одного документа не
-// такое долгое, но повторный вызов при сетевой икоте всё равно не то, что
-// хочется молча ждать второй раз подряд.
+// вызванный напрямую по URL уже загруженного в Storage файла.
 export interface RecognizedInvoiceItem {
   name: string;
   quantity: number | null;
@@ -62,14 +42,12 @@ export async function recognizeInvoiceFile(fileUrl: string, fileName: string): P
   return data.extraction;
 }
 
-// Владелец, 2026-09-11: "поиск ещё" в существующей категории — уже
-// найденных (добавленных как предложения ИЛИ просто показанных в этом же
-// поиске) поставщиков нужно узнавать по тому же принципу, что и сервер
-// (api/supplier-web-search.js, dedupKey) — нормализованный домен сайта, а
-// при его отсутствии нормализованное имя компании. Не выносил в общий
-// модуль с сервером (там plain JS без сборки, здесь TS) — логика в 4
-// строки, синхронизировать вручную при правке одной стороны не сложнее,
-// чем тянуть общий импорт через границу клиент/сервер.
+// Ключ дедупликации результатов веб-поиска — нормализованный домен сайта, а
+// при его отсутствии нормализованное имя компании. Тот же принцип, что и в
+// scripts/process-supplier-web-search-jobs.mjs (dedupKey) — не выносил в
+// общий модуль между клиентом и голым .mjs-скриптом (логика в 4 строки,
+// синхронизировать вручную при правке одной стороны не сложнее, чем тянуть
+// общий импорт через границу браузер/Node-скрипт).
 export function supplierResultKey(r: { name: string; website: string }): string {
   const site = r.website.trim().toLowerCase();
   if (site) {
@@ -87,32 +65,111 @@ export interface SupplierExcludeEntry {
   website: string;
 }
 
-export async function searchSuppliersOnline(
-  itemsText: string,
-  sectionTitle: string,
-  extra: string,
-  country: string,
-  exclude?: SupplierExcludeEntry[],
-): Promise<SupplierSearchResult[]> {
-  return withRetry(
-    async () => {
-      const resp = await authFetch('/api/supplier-web-search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          itemsText,
-          sectionTitle,
-          extra,
-          country,
-          excludeCompanies: exclude && exclude.length ? exclude : undefined,
-        }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(data.error || `Ошибка веб-поиска (${resp.status})`);
-      return Array.isArray(data.results) ? data.results : [];
-    },
-    1000,
-    WEB_SEARCH_TIMEOUT_MS,
-    0,
-  );
+// Веб-поиск поставщиков (вкладка "Ресерч" на странице Suppliers.tsx).
+//
+// 2026-09-11: переведён с синхронного HTTP-запроса (клиент ждал ответ
+// прямо во время открытого модального окна — до 2×40-115с на живой
+// диагностике, см. комментарий в scripts/process-supplier-web-search-jobs.mjs)
+// на асинхронную очередь. Владелец: "минуту ждать перед открытой вкладкой
+// не захочется... я формирую поиск, система ищет в фоне, я закрываю
+// вкладку, когда найдёт — уведомление, по аналогии с письмами". Тот же
+// принцип, что и у массовой рассылки писем поставщикам (bulk_send_jobs) —
+// клиент только СТАВИТ задание в очередь (обычная authenticated-запись,
+// RLS уже разрешает — отдельный serverless endpoint под это не заводили,
+// Hobby-план и так на пределе 12 функций), реальную обработку делает
+// scripts/process-supplier-web-search-jobs.mjs по расписанию + мгновенно
+// через workflow_dispatch (см. queueSupplierWebSearch ниже). Результат и
+// прогресс — supplierWebSearchJobWatcher.ts (уведомление в колокольчик) и
+// повторный fetchSupplierWebSearchJobs() на самой странице.
+export type SupplierWebSearchJobStatus = 'pending' | 'processing' | 'done' | 'error';
+
+export interface SupplierWebSearchJob {
+  id: string;
+  requestId: string;
+  itemsText: string;
+  sectionTitle: string;
+  extra: string;
+  country: string;
+  excludeCompanies: SupplierExcludeEntry[];
+  status: SupplierWebSearchJobStatus;
+  results: SupplierSearchResult[];
+  error: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+interface SupplierWebSearchJobRow {
+  id: string;
+  request_id: string;
+  items_text: string;
+  section_title: string;
+  extra: string;
+  country: string;
+  exclude_companies: SupplierExcludeEntry[] | null;
+  status: string;
+  results: SupplierSearchResult[] | null;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+function fromRow(row: SupplierWebSearchJobRow): SupplierWebSearchJob {
+  return {
+    id: row.id,
+    requestId: row.request_id,
+    itemsText: row.items_text,
+    sectionTitle: row.section_title,
+    extra: row.extra,
+    country: row.country,
+    excludeCompanies: Array.isArray(row.exclude_companies) ? row.exclude_companies : [],
+    status: (row.status as SupplierWebSearchJobStatus) || 'pending',
+    results: Array.isArray(row.results) ? row.results : [],
+    error: row.error ?? '',
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+  };
+}
+
+// Небольшая таблица (одна CRM-фича, не десятки тысяч строк) — читаем целиком,
+// как и большинство остальных *Api.ts в проекте, без пагинации.
+export async function fetchSupplierWebSearchJobs(): Promise<SupplierWebSearchJob[]> {
+  const { data, error } = await supabase
+    .from('supplier_web_search_jobs')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data as SupplierWebSearchJobRow[]).map(fromRow);
+}
+
+// Ставит задание в очередь и best-effort дёргает мгновенный
+// workflow_dispatch (api/trigger-rebuild.js, action:'dispatch-supplier-search'),
+// чтобы не ждать планового крона (раз в 5 минут). Неудача дёргания —
+// не критична и не пробрасывается наружу, крон всё равно разберёт очередь.
+export async function queueSupplierWebSearch(params: {
+  requestId: string;
+  itemsText: string;
+  sectionTitle: string;
+  extra: string;
+  country: string;
+  excludeCompanies?: SupplierExcludeEntry[];
+}): Promise<SupplierWebSearchJob> {
+  const { data, error } = await supabase
+    .from('supplier_web_search_jobs')
+    .insert({
+      request_id: params.requestId,
+      items_text: params.itemsText,
+      section_title: params.sectionTitle,
+      extra: params.extra,
+      country: params.country,
+      exclude_companies: params.excludeCompanies ?? [],
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  authFetch('/api/trigger-rebuild', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'dispatch-supplier-search' }),
+  }).catch(() => {});
+  return fromRow(data as SupplierWebSearchJobRow);
 }

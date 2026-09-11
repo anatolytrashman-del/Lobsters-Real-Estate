@@ -65,10 +65,12 @@ import {
   type SupplierRequestInput,
 } from '../lib/supplierResearchApi';
 import {
-  searchSuppliersOnline,
+  queueSupplierWebSearch,
+  fetchSupplierWebSearchJobs,
   recognizeInvoiceFile,
   supplierResultKey,
   type SupplierSearchResult,
+  type SupplierWebSearchJob,
   type RecognizedInvoiceItem,
 } from '../lib/supplierWebSearchApi';
 import { logActivity } from '../lib/activityLogApi';
@@ -648,6 +650,10 @@ function RequestCard({
   onWebSearch,
   onToggleComparisonMode,
   searching,
+  searchJob,
+  searchQueueError,
+  onOpenSearchResults,
+  onDismissSearchJob,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
@@ -660,6 +666,16 @@ function RequestCard({
   onWebSearch: (r: SupplierRequest, country: string) => void;
   onToggleComparisonMode: (r: SupplierRequest) => void;
   searching: boolean;
+  // Владелец, 2026-09-11: веб-поиск переехал на фоновую очередь (см.
+  // supplierWebSearchApi.ts) — searchJob здесь ТОЛЬКО отображает последнее
+  // ещё не отклонённое ("не открытое") задание этой категории:
+  // pending/processing — идёт поиск (можно закрыть вкладку, уведомление
+  // придёт само), done — есть неоткрытые результаты, error — поиск не
+  // удался. undefined — заданий нет или последнее уже открыто/отклонено.
+  searchJob: SupplierWebSearchJob | undefined;
+  searchQueueError: string | null;
+  onOpenSearchResults: (r: SupplierRequest, job: SupplierWebSearchJob) => void;
+  onDismissSearchJob: (jobId: string) => void;
 }) {
   // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
   // PriceComparisonBlock ниже — здесь он controlled, значение общее и для
@@ -704,11 +720,11 @@ function RequestCard({
           <Button
             type="button"
             variant="secondary"
-            disabled={searching}
+            disabled={searching || searchJob?.status === 'pending' || searchJob?.status === 'processing'}
             icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
             onClick={() => onWebSearch(request, country)}
           >
-            {searching ? 'Ищем в сети...' : 'Найти в сети'}
+            {searching ? 'Ставим в очередь...' : 'Найти в сети'}
           </Button>
           <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
             Добавить предложение
@@ -732,6 +748,47 @@ function RequestCard({
         </div>
       </div>
 
+      {searchQueueError && <p className="text-sm text-danger">{searchQueueError}</p>}
+
+      {/* Владелец, 2026-09-11: "я формирую поиск, система ищет в фоне, я
+          закрываю вкладку, когда найдёт — уведомление" — статус фонового
+          задания веб-поиска этой категории, отдельно от кнопки "Найти в
+          сети" выше (та просто ставит в очередь и сразу освобождается). */}
+      {searchJob && (searchJob.status === 'pending' || searchJob.status === 'processing') && (
+        <div className="flex items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-2 text-sm text-ink-muted">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+          Ищем поставщиков в сети — можно закрыть вкладку, о готовности придёт уведомление.
+        </div>
+      )}
+      {searchJob && searchJob.status === 'done' && (
+        <button
+          type="button"
+          onClick={() => onOpenSearchResults(request, searchJob)}
+          className="flex items-center justify-between gap-2 rounded-control border border-success/30 bg-success-bg px-3 py-2 text-left text-sm font-medium text-success hover:border-success"
+        >
+          <span className="flex items-center gap-2">
+            <Check className="h-4 w-4 shrink-0" />
+            {searchJob.results.length > 0
+              ? `Готово: найдено ${searchJob.results.length} поставщиков`
+              : 'Поиск завершён — ничего подходящего не нашлось'}
+          </span>
+          <span aria-hidden>→</span>
+        </button>
+      )}
+      {searchJob && searchJob.status === 'error' && (
+        <div className="flex items-center justify-between gap-2 rounded-control border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+          <span>Поиск не удался: {searchJob.error || 'см. журнал ошибок'}</span>
+          <button
+            type="button"
+            onClick={() => onDismissSearchJob(searchJob.id)}
+            aria-label="Скрыть сообщение об ошибке"
+            className="shrink-0 rounded-full p-1 hover:bg-danger/10"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       <PriceComparisonBlock
         offers={offers}
         emails={emails}
@@ -746,12 +803,12 @@ function RequestCard({
 }
 
 // Модалка результатов "Найти в сети" — владелец, 2026-08-31: "веб-поиск
-// поставщиков делай через клод, модель sonnet5". Результат ни во что не
-// сохраняется сам по себе (нет отдельной таблицы под "предложенных
-// веб-поиском") — каждый найденный вариант сразу добавляется предложением
-// (тот же insertSupplierOffer, что и у обычной формы, просто с дефолтной
-// ценой/валютой — владелец правит/уточняет цену уже в самом предложении
-// через обычный карандаш редактирования, отдельного пути правки здесь нет).
+// поставщиков делай через клод, модель sonnet5". Результат сам по себе не
+// сохраняется в сущность "предложение" — каждый найденный вариант сразу
+// добавляется предложением (тот же insertSupplierOffer, что и у обычной
+// формы, просто с дефолтной ценой/валютой — владелец правит/уточняет цену
+// уже в самом предложении через обычный карандаш редактирования,
+// отдельного пути правки здесь нет).
 //
 // Владелец, 2026-09-03: "оно нашло штук 5, я выбрал 1, открылась карточка
 // первого магазина, а когда я сохранил, все остальные пропали. Мне нужна
@@ -762,6 +819,12 @@ function RequestCard({
 // массово через чекбоксы) сразу создаёт предложение и помечает строку
 // добавленной (галочка), модалка результатов при этом никогда не
 // закрывается сама — только явным "Закрыть"/крестиком.
+//
+// 2026-09-11: сам поиск переехал на фоновую очередь (supplier_web_search_jobs,
+// см. supplierWebSearchApi.ts) — эта модалка открывается только когда
+// задание УЖЕ завершено (клик по бейджу "Готово" на RequestCard, см.
+// openWebSearchResults в Suppliers.tsx), показывает готовый список
+// job.results, а не запускает поиск сама.
 function SupplierWebSearchModal({
   requestTitle,
   results,
@@ -917,8 +980,11 @@ function SupplierWebSearchModal({
               disabled={loadingMore}
               onClick={onSearchMore}
             >
-              {loadingMore ? 'Ищем ещё...' : 'Искать ещё'}
+              {loadingMore ? 'Ставим в очередь...' : 'Искать ещё'}
             </Button>
+            <p className="text-xs text-ink-faint">
+              Поиск пойдёт в фоне — окно закроется, о результате придёт уведомление.
+            </p>
           </div>
         )}
       </div>
@@ -1303,18 +1369,15 @@ export function Suppliers() {
   const [savingLedgerSection, setSavingLedgerSection] = useState(false);
 
   // "Найти в сети" (владелец, 2026-08-31) — веб-поиск поставщиков через
-  // claude-haiku-4-5 (api/supplier-web-search.js; изначально был
-  // claude-sonnet-5, переведено тем же днём из-за цены — см. подробный
-  // комментарий в самой функции). Владелец сразу же пожаловался, что клик
-  // сразу запускает поиск без возможности что-то уточнить — поэтому
-  // кнопка открывает не сам поиск, а сначала
-  // webQueryModal: список материалов (редактируемый, вдруг что-то не то
-  // подтянулось из раздела сметы) + свободное поле "Дополнительные
+  // claude-haiku-4-5 (scripts/process-supplier-web-search-jobs.mjs).
+  // Владелец сразу же пожаловался, что клик сразу запускает поиск без
+  // возможности что-то уточнить — поэтому кнопка открывает не сам поиск, а
+  // сначала webQueryModal: список материалов (редактируемый, вдруг что-то
+  // не то подтянулось из раздела сметы) + свободное поле "Дополнительные
   // пожелания" (бренд/бюджет/регион и т.п.), и только по кнопке "Искать"
   // уходит запрос. webSearchingId — id запроса, для которого сейчас идёт
-  // поиск (дизейблит кнопку именно этой карточки, не все разом);
-  // webSearchModal — какой запрос показывать в модалке результатов и сами
-  // результаты/ошибка.
+  // ПОСТАНОВКА в очередь (дизейблит кнопку именно этой карточки на время
+  // самого INSERT — доли секунды, не сам поиск).
   const [webQueryModal, setWebQueryModal] = useState<SupplierRequest | null>(null);
   // country — страна поиска (карточка запроса передаёт свою текущую
   // вкладку страны, см. RequestCard/ToggleGroup выше), но реальный баг
@@ -1325,29 +1388,46 @@ export function Suppliers() {
   // переключить перед конкретным поиском) и уходит на сервер как есть.
   const [webQueryForm, setWebQueryForm] = useState({ itemsText: '', extra: '', country: SUPPLIER_COUNTRIES[0] as string });
   const [webSearchingId, setWebSearchingId] = useState<string | null>(null);
+  // Владелец, 2026-09-11: "минуту ждать перед открытой вкладкой не
+  // захочется... я формирую поиск, система ищет в фоне, я закрываю вкладку,
+  // когда найдёт — уведомление". Веб-поиск переведён с синхронного HTTP-
+  // запроса на асинхронную очередь (supplier_web_search_jobs, см.
+  // supplierWebSearchApi.ts) — все задания страницы разом, чтобы у каждой
+  // категории посчитать своё последнее незавершённое/неоткрытое.
+  const [webSearchJobs, setWebSearchJobs] = useState<SupplierWebSearchJob[]>([]);
+  // Ошибка ПОСТАНОВКИ в очередь (сам INSERT не прошёл — сетевая икота и
+  // т.п.), не ошибка самого поиска (та приходит как status:'error' у уже
+  // поставленного задания и показывается через searchJob на карточке).
+  const [webSearchQueueError, setWebSearchQueueError] = useState<{ requestId: string; message: string } | null>(null);
+  // Задания, чью карточку "Готово"/"Ошибка" уже открыли или явно скрыли —
+  // не показываем их бейдж повторно (если позже для той же категории
+  // появится НОВОЕ задание — оно не в этом Set, бейдж покажется снова).
+  const [dismissedJobIds, setDismissedJobIds] = useState<Set<string>>(new Set());
   const [webSearchModal, setWebSearchModal] = useState<{
     request: SupplierRequest;
-    results: SupplierSearchResult[];
-    error: string | null;
+    job: SupplierWebSearchJob;
   } | null>(null);
-  // Выбор/статус строк модалки результатов — индексы в webSearchModal.results.
-  // Сбрасываются при каждом новом поиске (см. submitWebQuery). added — уже
-  // созданные предложения (не снимается кликом, чтобы случайно не добавить
-  // дубль), addingIndices — идёт создание конкретной строки (свой спиннер,
-  // не блокирует остальные), bulkAdding — идёт массовое добавление.
+  // Выбор/статус строк модалки результатов — индексы в webSearchModal.job.results.
+  // Сбрасываются при каждом открытии результатов (см. openWebSearchResults).
+  // "Добавлено" больше не отдельный Set — считается из уже существующих
+  // offers той же категории (webSearchAddedKeys ниже), это переживает
+  // повторное открытие результатов уже завершённого задания (после
+  // перезагрузки страницы в т.ч.) без риска задвоить предложение.
+  // addingIndices — идёт создание конкретной строки (свой спиннер, не
+  // блокирует остальные), bulkAdding — идёт массовое добавление.
   const [webSearchSelected, setWebSearchSelected] = useState<Set<number>>(new Set());
-  const [webSearchAdded, setWebSearchAdded] = useState<Set<number>>(new Set());
   const [webSearchAddingIndices, setWebSearchAddingIndices] = useState<Set<number>>(new Set());
   const [webSearchBulkAdding, setWebSearchBulkAdding] = useState(false);
   const [webSearchAddError, setWebSearchAddError] = useState<string | null>(null);
   // Владелец, 2026-09-11: "давай сделаем ещё возможность доп. поиска
   // поставщиков в существующих категориях... я хочу ещё раз нажать поиск и
   // чтобы оно нашло ещё сайты, автоматически убрав из списка уже найденных" —
-  // кнопка "Искать ещё" в той же модалке результатов, ДОБАВЛЯЕТ новые
-  // строки к уже показанным (не заменяет), поэтому индексы уже существующих
-  // результатов (и завязанные на них Set'ы выбора/добавления) не съезжают.
-  const [webSearchLoadingMore, setWebSearchLoadingMore] = useState(false);
-  const [webSearchMoreError, setWebSearchMoreError] = useState<string | null>(null);
+  // кнопка "Искать ещё" в модалке результатов теперь СТАВИТ ЕЩЁ ОДНО
+  // задание в очередь (с доисключением уже найденного), не ждёт результат
+  // синхронно — сама модалка при этом закрывается, за новым результатом
+  // тем же путём, что и за первым (бейдж на карточке/уведомление).
+  const [webSearchQueuingMore, setWebSearchQueuingMore] = useState(false);
+  const [webSearchQueueMoreError, setWebSearchQueueMoreError] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([fetchSupplierRequests(), fetchSupplierOffers()])
@@ -1365,6 +1445,7 @@ export function Suppliers() {
     fetchMaterialLedgers().then(setMaterialLedgers).catch(() => setMaterialLedgers([]));
     fetchSupplierOrders().then(setSupplierOrders).catch(() => setSupplierOrders([]));
     fetchTodayRate().then(setRate).catch(() => setRate(undefined));
+    fetchSupplierWebSearchJobs().then(setWebSearchJobs).catch(() => setWebSearchJobs([]));
   }, []);
 
   // Владелец, 2026-09-03: "в ведомости по умолчанию всегда выбран Red One" —
@@ -1397,6 +1478,20 @@ export function Suppliers() {
     const interval = setInterval(() => {
       fetchAllSupplierOfferEmails()
         .then(setSupplierEmails)
+        .catch(() => {});
+    }, 20000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Тот же принцип — задания веб-поиска обрабатываются фоновым GitHub
+  // Actions скриптом, не этой вкладкой (см. supplierWebSearchApi.ts).
+  // Глобальный вотчер (supplierWebSearchJobWatcher.ts) шлёт уведомление в
+  // колокольчик, но не обновляет эту страницу — лёгкий поллинг здесь
+  // держит бейджи "Ищем..."/"Готово" на карточках свежими без перезагрузки.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchSupplierWebSearchJobs()
+        .then(setWebSearchJobs)
         .catch(() => {});
     }, 20000);
     return () => clearInterval(interval);
@@ -1828,67 +1923,86 @@ export function Suppliers() {
     setWebQueryModal(request);
   }
 
+  // Последнее ещё не скрытое задание категории — источник правды для
+  // бейджа на RequestCard (см. searchJob-проп там же). webSearchJobs уже
+  // отсортирован по created_at desc сервером, а свежепоставленные задания
+  // добавляются в НАЧАЛО массива (см. submitWebQuery/searchMoreSuppliers),
+  // поэтому первое совпадение по requestId всегда самое новое.
+  function latestVisibleJobForRequest(requestId: string): SupplierWebSearchJob | undefined {
+    const job = webSearchJobs.find((j) => j.requestId === requestId);
+    return job && !dismissedJobIds.has(job.id) ? job : undefined;
+  }
+
+  function dismissWebSearchJob(jobId: string) {
+    setDismissedJobIds((prev) => new Set(prev).add(jobId));
+  }
+
   async function submitWebQuery(e: React.FormEvent) {
     e.preventDefault();
     const request = webQueryModal;
     if (!request || !webQueryForm.itemsText.trim()) return;
     setWebQueryModal(null);
     setWebSearchingId(request.id);
-    // Новый поиск — новые результаты, сбрасываем статус выбора/добавления
-    // от предыдущего (если это повторный поиск по тому же запросу).
-    setWebSearchSelected(new Set());
-    setWebSearchAdded(new Set());
-    setWebSearchAddingIndices(new Set());
-    setWebSearchAddError(null);
-    setWebSearchMoreError(null);
+    setWebSearchQueueError(null);
     try {
-      const results = await searchSuppliersOnline(
-        webQueryForm.itemsText.trim(),
-        request.sectionTitle || request.title,
-        webQueryForm.extra.trim(),
-        webQueryForm.country,
-      );
-      setWebSearchModal({ request, results, error: null });
+      const job = await queueSupplierWebSearch({
+        requestId: request.id,
+        itemsText: webQueryForm.itemsText.trim(),
+        sectionTitle: request.sectionTitle || request.title,
+        extra: webQueryForm.extra.trim(),
+        country: webQueryForm.country,
+      });
+      setWebSearchJobs((prev) => [job, ...prev]);
     } catch (err) {
-      setWebSearchModal({ request, results: [], error: errorMessage(err, 'Не удалось выполнить веб-поиск') });
+      setWebSearchQueueError({ requestId: request.id, message: errorMessage(err, 'Не удалось поставить поиск в очередь') });
     } finally {
       setWebSearchingId(null);
     }
   }
 
+  // Открывает результаты уже завершённого задания (клик по бейджу "Готово"
+  // на карточке) — сразу же скрывает бейдж (см. dismissWebSearchJob), чтобы
+  // не показывать его повторно, пока не появится НОВОЕ задание.
+  function openWebSearchResults(request: SupplierRequest, job: SupplierWebSearchJob) {
+    setWebSearchSelected(new Set());
+    setWebSearchAddingIndices(new Set());
+    setWebSearchAddError(null);
+    setWebSearchQueueMoreError(null);
+    setWebSearchModal({ request, job });
+    dismissWebSearchJob(job.id);
+  }
+
   // "Искать ещё" — та же категория (запрос), тот же список материалов/
-  // пожеланий/страны, что и в исходном поиске (webQueryForm не сбрасывается
-  // после submitWebQuery, см. комментарий там же — держит параметры именно
-  // того запроса, что сейчас открыт в webSearchModal). Исключаем из поиска
-  // и уже добавленных этой категории поставщиков (offers), и всё, что уже
-  // показано в текущем списке результатов (в т.ч. ещё не добавленное) —
-  // иначе повторный клик находил бы те же самые компании заново.
+  // пожеланий/страны, что и в исходном поиске. Владелец, 2026-09-11: "минуту
+  // ждать не захочется" — вместо синхронного ожидания просто СТАВИТ ЕЩЁ ОДНО
+  // задание в очередь (с доисключением уже добавленных этой категории
+  // поставщиков (offers) И всего, что уже было показано в этом задании) и
+  // закрывает модалку — за результатом тем же путём (бейдж/уведомление),
+  // что и за первым поиском.
   async function searchMoreSuppliers() {
     if (!webSearchModal) return;
-    const { request, results } = webSearchModal;
-    setWebSearchLoadingMore(true);
-    setWebSearchMoreError(null);
+    const { request, job } = webSearchModal;
+    setWebSearchQueuingMore(true);
+    setWebSearchQueueMoreError(null);
     try {
       const knownOffers = offers
         .filter((o) => o.requestId === request.id)
         .map((o) => ({ name: o.name, website: o.websiteUrl }));
-      const knownShown = results.map((r) => ({ name: r.name, website: r.website }));
-      const found = await searchSuppliersOnline(
-        webQueryForm.itemsText.trim() || formatRequestItemsText(request.items, request.title),
-        request.sectionTitle || request.title,
-        webQueryForm.extra.trim(),
-        webQueryForm.country,
-        [...knownOffers, ...knownShown],
-      );
-      // Подстраховка сверх серверной фильтрации (та же логика dedupKey) — на
-      // случай, если модель всё же повторила уже показанную компанию.
-      const existingKeys = new Set(results.map((r) => supplierResultKey(r)));
-      const genuinelyNew = found.filter((r) => !existingKeys.has(supplierResultKey(r)));
-      setWebSearchModal((prev) => (prev ? { ...prev, results: [...prev.results, ...genuinelyNew] } : prev));
+      const knownShown = job.results.map((r) => ({ name: r.name, website: r.website }));
+      const newJob = await queueSupplierWebSearch({
+        requestId: request.id,
+        itemsText: job.itemsText,
+        sectionTitle: job.sectionTitle,
+        extra: job.extra,
+        country: job.country,
+        excludeCompanies: [...knownOffers, ...knownShown],
+      });
+      setWebSearchJobs((prev) => [newJob, ...prev]);
+      setWebSearchModal(null);
     } catch (err) {
-      setWebSearchMoreError(errorMessage(err, 'Не удалось найти дополнительных поставщиков'));
+      setWebSearchQueueMoreError(errorMessage(err, 'Не удалось поставить дополнительный поиск в очередь'));
     } finally {
-      setWebSearchLoadingMore(false);
+      setWebSearchQueuingMore(false);
     }
   }
 
@@ -1901,9 +2015,25 @@ export function Suppliers() {
     });
   }
 
+  // "Добавлено" считается из уже существующих offers этой категории (см.
+  // webSearchAddedKeys ниже), не из отдельного Set — при повторном открытии
+  // результатов давно завершённого задания это надёжно защищает от дубля,
+  // даже если страница была перезагружена между поисками.
+  const webSearchAddedKeys = useMemo(() => {
+    if (!webSearchModal) return new Set<string>();
+    return new Set(
+      offers
+        .filter((o) => o.requestId === webSearchModal.request.id)
+        .map((o) => supplierResultKey({ name: o.name, website: o.websiteUrl })),
+    );
+  }, [offers, webSearchModal]);
+
   function toggleWebSearchSelectAll() {
     if (!webSearchModal) return;
-    const selectable = webSearchModal.results.map((_, i) => i).filter((i) => !webSearchAdded.has(i));
+    const selectable = webSearchModal.job.results
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => !webSearchAddedKeys.has(supplierResultKey(r)))
+      .map(({ i }) => i);
     setWebSearchSelected((prev) => (prev.size === selectable.length ? new Set() : new Set(selectable)));
   }
 
@@ -1950,11 +2080,6 @@ export function Suppliers() {
         ),
       );
       setOffers((prev) => [...prev, ...created]);
-      setWebSearchAdded((prev) => {
-        const next = new Set(prev);
-        indices.forEach((i) => next.add(i));
-        return next;
-      });
       setWebSearchSelected((prev) => {
         const next = new Set(prev);
         indices.forEach((i) => next.delete(i));
@@ -2278,6 +2403,10 @@ export function Suppliers() {
                       onWebSearch={openWebQueryModal}
                       onToggleComparisonMode={toggleComparisonMode}
                       searching={webSearchingId === r.id}
+                      searchJob={latestVisibleJobForRequest(r.id)}
+                      searchQueueError={webSearchQueueError?.requestId === r.id ? webSearchQueueError.message : null}
+                      onOpenSearchResults={openWebSearchResults}
+                      onDismissSearchJob={dismissWebSearchJob}
                     />
                   ))}
 
@@ -3126,6 +3255,9 @@ export function Suppliers() {
             value={webQueryForm.extra}
             onChange={(e) => setWebQueryForm((f) => ({ ...f, extra: e.target.value }))}
           />
+          <p className="text-xs text-ink-faint">
+            Поиск идёт в фоне — вкладку можно сразу закрыть, о готовности придёт уведомление.
+          </p>
           <div className="flex items-center justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setWebQueryModal(null)}>
               Отмена
@@ -3140,23 +3272,29 @@ export function Suppliers() {
       {webSearchModal && (
         <SupplierWebSearchModal
           requestTitle={webSearchModal.request.title}
-          results={webSearchModal.results}
-          error={webSearchModal.error}
+          results={webSearchModal.job.results}
+          error={webSearchModal.job.status === 'error' ? webSearchModal.job.error || 'Не удалось выполнить веб-поиск' : null}
           selected={webSearchSelected}
-          added={webSearchAdded}
+          added={
+            new Set(
+              webSearchModal.job.results
+                .map((r, i) => (webSearchAddedKeys.has(supplierResultKey(r)) ? i : -1))
+                .filter((i) => i >= 0),
+            )
+          }
           addingIndices={webSearchAddingIndices}
           bulkAdding={webSearchBulkAdding}
           addError={webSearchAddError}
-          loadingMore={webSearchLoadingMore}
-          moreError={webSearchMoreError}
+          loadingMore={webSearchQueuingMore}
+          moreError={webSearchQueueMoreError}
           onClose={() => setWebSearchModal(null)}
           onToggleSelect={toggleWebSearchSelect}
           onToggleSelectAll={toggleWebSearchSelectAll}
-          onAddOne={(i) => addWebSearchResults(webSearchModal.request.id, [{ index: i, r: webSearchModal.results[i] }])}
+          onAddOne={(i) => addWebSearchResults(webSearchModal.request.id, [{ index: i, r: webSearchModal.job.results[i] }])}
           onAddSelected={() =>
             addWebSearchResults(
               webSearchModal.request.id,
-              [...webSearchSelected].map((i) => ({ index: i, r: webSearchModal.results[i] })),
+              [...webSearchSelected].map((i) => ({ index: i, r: webSearchModal.job.results[i] })),
             )
           }
           onSearchMore={searchMoreSuppliers}
