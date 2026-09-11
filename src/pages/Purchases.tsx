@@ -10,6 +10,7 @@ import { Select } from '../components/ui/Select';
 import { ToggleGroup } from '../components/ui/ToggleGroup';
 import { Modal } from '../components/ui/Modal';
 import { cn } from '../lib/cn';
+import { estimateOptionLabel } from '../lib/estimateDisplay';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { currencySymbols } from '../data/transactions';
 import type { Currency } from '../data/transactions';
@@ -170,7 +171,7 @@ export function Purchases({
     () =>
       estimates.map((e) => ({
         id: e.id,
-        label: `Смета — ${e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'}`,
+        label: estimateOptionLabel(e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'),
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimates, objects],
