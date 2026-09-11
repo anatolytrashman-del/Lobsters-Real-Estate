@@ -55,7 +55,14 @@ if (!DRY_RUN) {
 const supabase = DRY_RUN ? null : createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 const MODEL = 'claude-haiku-4-5-20251001';
-const MAX_SEARCHES = 30;
+// 2026-09-11: было 30 — по данным CLAUDE.md модель и так сама останавливается
+// на 15-22 поисках независимо от разрешённого лимита (см. запись про диагностику
+// MAX_SEARCHES 20→30 не помогавшую), 30 никогда реально не использовалось —
+// снижено до 20 (верхняя граница уже наблюдавшегося саморегулирования модели),
+// поведение не меняется, просто убран неиспользуемый запас на теоретический
+// худший случай (влияет на цену только если модель когда-нибудь решит искать
+// больше 20 раз — сейчас такого не наблюдалось).
+const MAX_SEARCHES = 20;
 const MAX_RESULTS = 40;
 const COUNTRY_SEARCH_HINTS = {
   Беларусь: 'в Беларуси (если в пожеланиях не указан конкретный город — ищи прежде всего в Минске)',
@@ -204,6 +211,27 @@ async function fetchWebSearchResults(country, itemsText, sectionTitle, extra, ex
     throw new Error(`Ошибка веб-поиска (${resp.status}): ${text.slice(0, 300)}`);
   }
   const data = await resp.json();
+  // 2026-09-11: владелец пожаловался на дороговизну одного запроса (340 ₽
+  // за задание с 39 результатами) — раньше это никак не логировалось, любая
+  // диагностика стоимости была бы гаданием. web_search берёт $10 за 1000
+  // поисков ПЛЮС обычную цену токенов за контент результатов, а этот контент
+  // (по документации Anthropic) пересылается и тарифицируется заново на
+  // каждом внутреннем раунде поиска в пределах одного вызова — раздел
+  // "Server tools"/"Web search tool" явно говорит, что весь server-side
+  // agentic loop идёт ВНУТРИ одного HTTP-запроса, без доступа разработчика
+  // к промежуточным ходам, поэтому явный cache_control тут не расставить —
+  // кэшировать нечего, кроме статичной части system-промпта между раундом 1
+  // и раундом 2 (эффект небольшой на фоне растущего контекста самого поиска).
+  // Теперь usage/число поисков логируется в консоль (виден в логах GitHub
+  // Actions через get_job_logs) — при следующей жалобе на цену будут точные
+  // цифры, а не оценка по документации.
+  const usage = data.usage || {};
+  const searchCount = usage.server_tool_use?.web_search_requests ?? '?';
+  console.log(
+    `    usage: input=${usage.input_tokens ?? '?'} output=${usage.output_tokens ?? '?'} ` +
+      `cache_read=${usage.cache_read_input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0} ` +
+      `web_search_requests=${searchCount}`
+  );
   return extractJsonArray(data.content);
 }
 
