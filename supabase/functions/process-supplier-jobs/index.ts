@@ -90,15 +90,28 @@ function extractJson(content: unknown): Record<string, unknown> {
 
 function extractJsonArray(content: unknown): Record<string, string>[] {
   const blocks = Array.isArray(content) ? content : [];
-  const text = blocks
+  // Ответ приходит НЕСКОЛЬКИМИ текстовыми блоками: модель комментирует ход
+  // поиска между вызовами web_search, а сам массив пишет последним блоком.
+  // Поэтому ищем не "от первой [ до последней ]" по склейке (в комментариях
+  // тоже бывают скобки), а последний фрагмент, который реально парсится как
+  // массив объектов.
+  const texts = blocks
     .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
-    .map((b: any) => b.text)
-    .join('');
-  const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const start = stripped.indexOf('[');
-  const end = stripped.lastIndexOf(']');
-  if (start === -1 || end === -1 || end < start) throw new Error('модель не вернула массив');
-  return JSON.parse(stripped.slice(start, end + 1));
+    .map((b: any) => b.text as string);
+  for (const text of [...texts].reverse()) {
+    const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    for (let start = stripped.indexOf('['); start !== -1; start = stripped.indexOf('[', start + 1)) {
+      const end = stripped.lastIndexOf(']');
+      if (end <= start) break;
+      try {
+        const parsed = JSON.parse(stripped.slice(start, end + 1));
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // не тот фрагмент — пробуем следующую открывающую скобку
+      }
+    }
+  }
+  throw new Error('модель не вернула массив');
 }
 
 function sanitizeEnrichment(raw: Record<string, any>): EnrichmentResult {
