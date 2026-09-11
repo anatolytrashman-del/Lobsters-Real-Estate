@@ -25,6 +25,8 @@ import {
   RESEARCH_CONTACT_METHODS,
   RESEARCH_CURRENCIES,
   SUPPLIER_COUNTRIES,
+  SUPPLIER_SEARCH_REGIONS,
+  defaultSearchRegion,
   SUPPLIER_REQUEST_GROUPS,
   SUPPLIER_REQUEST_GROUP_LABELS,
   SUPPLIER_COMPARISON_MODES,
@@ -1523,7 +1525,11 @@ export function Suppliers() {
   // написано в "Дополнительные пожелания" (например, город "Москва").
   // Теперь страна редактируема прямо в этой форме (вдруг нужно
   // переключить перед конкретным поиском) и уходит на сервер как есть.
-  const [webQueryForm, setWebQueryForm] = useState({ itemsText: '', extra: '', country: SUPPLIER_COUNTRIES[0] as string });
+  const [webQueryForm, setWebQueryForm] = useState({
+    itemsText: '',
+    extra: '',
+    region: defaultSearchRegion(SUPPLIER_COUNTRIES[0]) as string,
+  });
   const [webSearchingId, setWebSearchingId] = useState<string | null>(null);
   // Владелец, 2026-09-11: "минуту ждать перед открытой вкладкой не
   // захочется... я формирую поиск, система ищет в фоне, я закрываю вкладку,
@@ -2020,7 +2026,10 @@ export function Suppliers() {
   }
 
   function openWebQueryModal(request: SupplierRequest, country: string) {
-    setWebQueryForm({ itemsText: request.title, extra: '', country });
+    // Страна из карточки — это фильтр СПИСКА поставщиков; регион поиска из
+    // неё только подставляется по умолчанию (Россия → Москва, см.
+    // defaultSearchRegion), дальше его можно переключить в самой модалке.
+    setWebQueryForm({ itemsText: request.title, extra: '', region: defaultSearchRegion(country) });
     setWebQueryModal(request);
   }
 
@@ -2062,7 +2071,7 @@ export function Suppliers() {
         itemsText: webQueryForm.itemsText.trim(),
         sectionTitle: request.sectionTitle || request.title,
         extra: webQueryForm.extra.trim(),
-        country: webQueryForm.country,
+        region: webQueryForm.region,
         // Уже добавленные поставщики этой категории — чтобы повторный поиск
         // искал НОВЫХ, а не приносил те же компании (раньше это работало
         // только у отдельной кнопки "Искать ещё" в модалке результатов;
@@ -3312,12 +3321,16 @@ export function Suppliers() {
       <Modal open={!!webQueryModal} onClose={() => setWebQueryModal(null)} title={`Найти в сети: ${webQueryModal?.title ?? ''}`}>
         <form onSubmit={submitWebQuery} className="flex flex-col gap-4">
           <div>
-            <div className="mb-1.5 text-sm font-medium text-ink">Страна поиска</div>
+            <div className="mb-1.5 text-sm font-medium text-ink">Регион поиска</div>
             <ToggleGroup
-              options={[...SUPPLIER_COUNTRIES]}
-              value={webQueryForm.country}
-              onChange={(country) => setWebQueryForm((f) => ({ ...f, country }))}
+              options={[...SUPPLIER_SEARCH_REGIONS]}
+              value={webQueryForm.region}
+              onChange={(region) => setWebQueryForm((f) => ({ ...f, region }))}
             />
+            <p className="mt-1.5 text-xs text-ink-faint">
+              «Москва» — только компании с офисом или складом в Москве и Московской области;
+              «Россия» — вся страна, включая региональные филиалы.
+            </p>
           </div>
           <Textarea
             label="Что ищем"
