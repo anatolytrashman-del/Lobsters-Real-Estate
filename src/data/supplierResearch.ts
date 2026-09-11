@@ -105,15 +105,13 @@ export function guessCountryFromWebsite(websiteUrl: string): string {
 // в каталоге (название+фото), статус переговоров (свободный текст,
 // владелец вводит вручную) и место для файлов (счета, спецификации и т.п.).
 //
-// Владелец, 2026-08-29: "получим от строителя список материалов... ещё не
-// знаем, у кого закупать, поэтому сначала ресерч, потом рассылка писем,
-// после ответов — сравнение цен". items — то, что мы просим поставщиков
-// оценить (не у каждого предложения свой список — один и тот же список
-// материалов уходит всем в письме одного запроса). Переиспользован тип
-// PurchaseItem из data/purchases.ts — тот же смысл (снимок материала на
-// момент добавления, с опциональной ссылкой sourceMaterialId на
-// EstimateMaterial), просто здесь price/note не обязательны к заполнению —
-// на этапе ресерча цену как раз узнаём у поставщиков, а не фиксируем сами.
+// Владелец, 2026-09-11: поле items ("Что просим оценить у поставщиков") —
+// удалено, оно никак не участвовало ни в логике смет, ни где-либо ещё в
+// приложении (кроме плейсхолдера {материалы} в письмах, который теперь
+// просто подставляет title запроса). Уже накопленные позиции перенесены
+// вручную в ведомость материалов "Зелёный" (см. docs/session-journal.md) —
+// колонка items в supplier_research_requests в БД не удалялась, просто
+// больше не используется приложением.
 export interface SupplierRequest {
   id: string;
   title: string;
@@ -124,7 +122,6 @@ export interface SupplierRequest {
   estimateId: string | null;
   sectionId: string | null;
   sectionTitle: string;
-  items: PurchaseItem[];
   // Владелец, 2026-09-09: "чтобы Альмира могла выбрать, что это закупки ООО
   // «Матрешка», и нужная карточка была прикреплена автоматически" — от
   // какого юрлица (data/legalEntities.ts) идёт закупка по этой категории.
@@ -147,7 +144,6 @@ export interface SupplierRequestRow {
   estimate_id: string | null;
   section_id: string | null;
   section_title: string | null;
-  items: PurchaseItem[] | null;
   legal_entity_id: string | null;
   comparison_mode: string | null;
   created_at: string;
@@ -252,27 +248,6 @@ export interface SupplierOfferRow {
 // уже отправленным вживую письмом), просто новые больше не строятся так.
 export function supplierOfferEmailAddress(shortCode: string): string {
   return `zakupki+${shortCode}@redevelopment.pro`;
-}
-
-// Список материалов запроса одной строкой ("Керамогранит (50 м²), Клей
-// (10 кг)") — общий хелпер для веб-поиска (openWebQueryModal в
-// Suppliers.tsx) и для плейсхолдера {материалы} в шаблонах писем
-// (lib/emailTemplates.ts), раньше формировался только на месте в первом
-// случае, теперь один источник вместо двух копий.
-// Владелец, 2026-09-09: "важно не только объём, но и ряд параметров...
-// нет поля комментария, которое бы и в таблицу попадало, и в письмо"
-// (пример — Grigliato) — item.note (уже существовавшее поле, раньше нигде
-// не показывалось закупщику) теперь всегда попадает в текст письма, не
-// только объём/ед.
-export function formatRequestItemsText(items: PurchaseItem[], fallback: string): string {
-  if (items.length === 0) return fallback;
-  return items
-    .map((i) => {
-      const qty = i.quantity ? ` (${i.quantity}${i.unit ? ` ${i.unit}` : ''})` : '';
-      const note = i.note.trim() ? ` — ${i.note.trim()}` : '';
-      return `${i.name}${qty}${note}`;
-    })
-    .join(', ');
 }
 
 // Владелец, 2026-09-04: "Статус коммуникации — вполне можем определять

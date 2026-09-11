@@ -1,4 +1,4 @@
-import { formatRequestItemsText, type SupplierOffer, type SupplierRequest } from '../data/supplierResearch';
+import type { SupplierOffer, SupplierRequest } from '../data/supplierResearch';
 
 // Подстановка плейсхолдеров в шаблон письма — EMAIL_CORRESPONDENCE_PLAN.md,
 // этап 3. Чистая функция без React — подставляет и отдаёт готовый текст,
@@ -11,7 +11,7 @@ export interface EmailTemplateContext {
 const PLACEHOLDER_RESOLVERS: Record<string, (ctx: EmailTemplateContext) => string> = {
   компания: (ctx) => ctx.offer.name,
   запрос: (ctx) => ctx.request.title,
-  материалы: (ctx) => formatRequestItemsText(ctx.request.items, ctx.request.title),
+  материалы: (ctx) => ctx.request.title,
   контакт: (ctx) => ctx.offer.contact,
 };
 

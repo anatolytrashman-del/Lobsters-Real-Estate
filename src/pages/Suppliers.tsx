@@ -38,7 +38,6 @@ import {
   type SupplierRequestGroup,
   type SupplierComparisonMode,
   type SupplierOffer,
-  formatRequestItemsText,
 } from '../data/supplierResearch';
 import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 import { fetchAllSupplierOfferEmails, markSupplierOfferEmailsRead } from '../lib/supplierOfferEmailsApi';
@@ -172,7 +171,6 @@ const emptyRequestForm = {
   estimateId: '' as string,
   sectionId: '' as string,
   sectionTitle: '',
-  items: [] as PurchaseItem[],
   legalEntityId: '' as string,
   comparisonMode: 'material' as SupplierComparisonMode,
 };
@@ -184,7 +182,6 @@ function requestToForm(r: SupplierRequest) {
     estimateId: r.estimateId ?? '',
     sectionId: r.sectionId ?? '',
     sectionTitle: r.sectionTitle,
-    items: r.items,
     legalEntityId: r.legalEntityId ?? '',
     comparisonMode: r.comparisonMode,
   };
@@ -438,7 +435,7 @@ function OfferTotalComparison({
 // не сравнение готовых цен). Здесь: (1) только offerCommunicationStatus ===
 // 'confirmed' — offer.items или offer.price уже зафиксированы, счёт реально
 // получен, не просто отправлено письмо; (2) единица сравнения — не
-// поставщик, а МАТЕРИАЛ: позиция самого запроса (request.items[0]) плюс
+// поставщик, а МАТЕРИАЛ: заголовок самого запроса (request.title) плюс
 // любые доп. компоненты, обнаруженные в разбивке присланных счетов (см.
 // точку 3 из истории про Грильято — сложное КП это не 1 цена, а много
 // строк). Под каждым материалом — список полученных КП по убыванию (не по
@@ -483,10 +480,11 @@ function buildMaterialQuotes(request: SupplierRequest, confirmedOffers: Supplier
     });
   }
 
-  // Если у запроса нет собственных позиций — сам request.title и есть
-  // "материал", про который вообще идёт речь (запрос без разбивки на items).
-  const fallbackName = request.items[0]?.name || request.title;
-  const fallbackUnit = request.items[0]?.unit || '';
+  // У запроса больше нет собственных позиций (поле удалено, владелец,
+  // 2026-09-11) — сам request.title и есть "материал", про который вообще
+  // идёт речь, когда счёт поставщика распознан только итогом без разбивки.
+  const fallbackName = request.title;
+  const fallbackUnit = '';
 
   for (const offer of confirmedOffers) {
     if (offer.items.length > 0) {
@@ -702,19 +700,6 @@ function RequestCard({
               {SUPPLIER_COMPARISON_MODE_LABELS[request.comparisonMode]}
             </button>
           </div>
-          {request.items.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {request.items.map((item) => (
-                <span
-                  key={item.id}
-                  className="rounded-full bg-surface-muted px-2.5 py-0.5 text-xs text-ink-muted"
-                >
-                  {item.name}
-                  {item.quantity ? ` · ${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -1286,7 +1271,6 @@ export function Suppliers() {
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [editingRequest, setEditingRequest] = useState<SupplierRequest | null>(null);
   const [requestForm, setRequestForm] = useState(emptyRequestForm);
-  const [manualItemName, setManualItemName] = useState('');
   const [savingRequest, setSavingRequest] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
 
@@ -1558,12 +1542,10 @@ export function Suppliers() {
 
   // Владелец, 2026-09-03: "у нас же загружена ведомость в платформу, давай
   // делать этот список, буду выбирать из него" — при сборке ведомости
-  // материалов для письма (MaterialLedgerModal) не все категории имеют
-  // собственные request.items (например, "Универсальные поставщики" —
-  // пустая категория без привязки к смете), выбирать позиции руками
+  // материалов для письма (MaterialLedgerModal) выбирать позиции руками
   // неудобно. Плоский список ВСЕХ материалов ВСЕХ смет (тот же источник,
   // что и у вкладки "Ведомости материалов" на этой же странице) — поиск по
-  // нему в модалке, не жёсткая привязка к текущей категории.
+  // нему в модалке.
   const allEstimateMaterials = useMemo(() => {
     const list: { item: PurchaseItem; context: string }[] = [];
     for (const e of estimates) {
@@ -1583,43 +1565,6 @@ export function Suppliers() {
 
   const selectedRequestEstimate = estimates.find((e) => e.id === requestForm.estimateId) ?? null;
   const selectedRequestSection = selectedRequestEstimate?.sections.find((s) => s.id === requestForm.sectionId) ?? null;
-
-  function addMaterialToRequestItems(m: EstimateMaterial) {
-    if (requestForm.items.some((i) => i.sourceMaterialId === m.id)) return;
-    const item: PurchaseItem = {
-      id: crypto.randomUUID(),
-      sourceMaterialId: m.id,
-      name: m.name,
-      unit: m.unit,
-      quantity: m.quantity,
-      price: null,
-      note: m.note,
-    };
-    setRequestForm((f) => ({ ...f, items: [...f.items, item] }));
-  }
-
-  function addManualRequestItem() {
-    if (!manualItemName.trim()) return;
-    const item: PurchaseItem = {
-      id: crypto.randomUUID(),
-      sourceMaterialId: null,
-      name: manualItemName.trim(),
-      unit: '',
-      quantity: null,
-      price: null,
-      note: '',
-    };
-    setRequestForm((f) => ({ ...f, items: [...f.items, item] }));
-    setManualItemName('');
-  }
-
-  function updateRequestItem(id: string, patch: Partial<PurchaseItem>) {
-    setRequestForm((f) => ({ ...f, items: f.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
-  }
-
-  function removeRequestItem(id: string) {
-    setRequestForm((f) => ({ ...f, items: f.items.filter((i) => i.id !== id) }));
-  }
 
   // Владелец, 2026-09-03: "будут поставщики из Беларуси и России" — пресет
   // + фактически встречающиеся значения (тот же паттерн, что и у
@@ -1794,7 +1739,6 @@ export function Suppliers() {
   function openAddRequest(group: SupplierRequestGroup = 'materials') {
     setEditingRequest(null);
     setRequestForm({ ...emptyRequestForm, group });
-    setManualItemName('');
     setRequestError(null);
     setRequestModalOpen(true);
   }
@@ -1802,7 +1746,6 @@ export function Suppliers() {
   function openEditRequest(r: SupplierRequest) {
     setEditingRequest(r);
     setRequestForm(requestToForm(r));
-    setManualItemName('');
     setRequestError(null);
     setRequestModalOpen(true);
   }
@@ -1818,7 +1761,6 @@ export function Suppliers() {
       estimateId: requestForm.estimateId || null,
       sectionId: requestForm.sectionId || null,
       sectionTitle: requestForm.sectionTitle,
-      items: requestForm.items,
       legalEntityId: requestForm.legalEntityId || null,
       comparisonMode: requestForm.comparisonMode,
     };
@@ -1865,7 +1807,6 @@ export function Suppliers() {
       estimateId: r.estimateId,
       sectionId: r.sectionId,
       sectionTitle: r.sectionTitle,
-      items: r.items,
       legalEntityId: r.legalEntityId,
       comparisonMode: nextMode,
     };
@@ -1919,7 +1860,7 @@ export function Suppliers() {
   }
 
   function openWebQueryModal(request: SupplierRequest, country: string) {
-    setWebQueryForm({ itemsText: formatRequestItemsText(request.items, request.title), extra: '', country });
+    setWebQueryForm({ itemsText: request.title, extra: '', country });
     setWebQueryModal(request);
   }
 
@@ -2779,93 +2720,6 @@ export function Suppliers() {
             />
           )}
 
-          {selectedRequestSection && selectedRequestSection.materials.length > 0 && (
-            <div className="flex flex-col gap-2 rounded-control bg-surface-muted p-3">
-              <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
-                Материалы раздела «{selectedRequestSection.title}»
-              </span>
-              <div className="flex flex-col gap-1.5">
-                {selectedRequestSection.materials.map((m) => {
-                  const added = requestForm.items.some((i) => i.sourceMaterialId === m.id);
-                  return (
-                    <div key={m.id} className="flex items-center justify-between gap-3 text-sm">
-                      <span className="text-ink">
-                        {m.name}
-                        {m.unit && (
-                          <span className="text-ink-faint">
-                            {' '}
-                            · {m.quantity ?? '—'} {m.unit}
-                          </span>
-                        )}
-                      </span>
-                      <Button type="button" variant="secondary" disabled={added} onClick={() => addMaterialToRequestItems(m)}>
-                        {added ? 'Добавлено' : 'Добавить'}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <div className="flex flex-col gap-2">
-            <span className="text-sm text-ink-muted">Что просим оценить у поставщиков</span>
-            {requestForm.items.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                {requestForm.items.map((item) => (
-                  <div key={item.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="flex-1 text-ink">{item.name}</span>
-                      <input
-                        type="number"
-                        placeholder="Кол-во"
-                        value={item.quantity ?? ''}
-                        onChange={(e) =>
-                          updateRequestItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
-                        }
-                        className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
-                      />
-                      {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
-                      <button
-                        type="button"
-                        onClick={() => removeRequestItem(item.id)}
-                        aria-label="Удалить позицию"
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    {/* Владелец, 2026-09-09: "важно не только объём, но и ряд
-                        параметров... нет поля комментария, которое бы и в
-                        таблицу попадало, и в письмо" (пример — Grigliato:
-                        нужны не только м², но и фактура/формат и т.п.) —
-                        note у PurchaseItem уже существовал (для сопоставления
-                        счетов), просто не был виден/редактируем здесь; теперь
-                        попадает и в ведомость (materialLedgerXlsx.ts), и в
-                        текст письма ({материалы}, formatRequestItemsText). */}
-                    <input
-                      type="text"
-                      placeholder="Важные параметры — фактура, формат, цвет и т.п. (попадёт и в ведомость, и в письмо)"
-                      value={item.note}
-                      onChange={(e) => updateRequestItem(item.id, { note: e.target.value })}
-                      className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-primary"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <Input
-                placeholder="Добавить позицию вручную"
-                value={manualItemName}
-                onChange={(e) => setManualItemName(e.target.value)}
-              />
-              <Button type="button" variant="secondary" onClick={addManualRequestItem} disabled={!manualItemName.trim()}>
-                Добавить
-              </Button>
-            </div>
-          </div>
-
           {requestError && <p className="text-sm text-danger">{requestError}</p>}
           <div className="mt-2 flex justify-end gap-3">
             <Button type="button" variant="secondary" onClick={() => setRequestModalOpen(false)}>
@@ -3361,7 +3215,7 @@ export function Suppliers() {
         <MaterialLedgerModal
           open
           readyOnly
-          requestItems={bulkLedgerPickerRequest.items}
+          requestItems={[]}
           allMaterials={allEstimateMaterials}
           ledgers={materialLedgers}
           onClose={() => setBulkLedgerPickerRequest(null)}
