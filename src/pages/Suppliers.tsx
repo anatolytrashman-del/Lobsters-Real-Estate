@@ -275,7 +275,11 @@ function VerificationBadge({
   enrichmentState: Map<string, OfferEnrichmentState>;
 }) {
   const status = supplierVerificationStatus(offer, enrichmentState);
-  const tone = status === 'verified' ? 'success' : status === 'ready' ? 'primary' : status === 'enriching' ? 'neutral' : 'warning';
+  // Владелец, 2026-09-11: "измени красный цвет надписи Готово к верификации
+  // на жёлтый" — светофор по смыслу «что требуется от человека»: серый —
+  // ничего (данные ещё собираются или собирать нечего), жёлтый — готово,
+  // ждём проверки, зелёный — проверено.
+  const tone = status === 'verified' ? 'success' : status === 'ready' ? 'warning' : 'neutral';
   return <Badge tone={tone}>{SUPPLIER_VERIFICATION_LABEL[status]}</Badge>;
 }
 
@@ -844,6 +848,8 @@ function OfferDetailModal({
   onDeleteFile,
   deletingFileIndex,
   enrichmentState,
+  onVerify,
+  verifying,
 }: {
   offer: SupplierOffer;
   emails: SupplierOfferEmail[];
@@ -855,6 +861,8 @@ function OfferDetailModal({
   onDeleteFile: (o: SupplierOffer, index: number) => void;
   deletingFileIndex: number | null;
   enrichmentState: Map<string, OfferEnrichmentState>;
+  onVerify: (o: SupplierOffer) => void;
+  verifying: boolean;
 }) {
   const status = offerCommunicationStatus(offer, emails);
   return (
@@ -1058,20 +1066,32 @@ function OfferDetailModal({
           >
             Удалить поставщика целиком
           </Button>
+          {/* Владелец, 2026-09-11: "добавь галочку «Верифицировать» прямо в
+              карточку, чтобы даже редактирование открывать не нужно было" —
+              раньше единственным способом отметить поставщика проверенным
+              было открыть форму и сохранить её (submitOffer всегда ставит
+              verified:true). Теперь это один клик прямо здесь, карточка
+              после него закрывается. */}
+          {!offer.verified && (
+            <Button
+              type="button"
+              icon={verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              disabled={verifying}
+              onClick={() => onVerify(offer)}
+            >
+              {verifying ? 'Сохраняем...' : 'Верифицировать'}
+            </Button>
+          )}
           {/* Владелец, 2026-09-04: "поставщик становится доступен для
-              email-переписок" только после верификации — до этого "Написать"
-              недоступна, нужно сначала открыть форму (кнопка Редактировать
-              наверху) и сохранить известные данные. */}
-          <Button
-            type="button"
-            variant="secondary"
-            icon={<Mail className="h-4 w-4" />}
-            disabled={!offer.verified}
-            title={offer.verified ? undefined : 'Сначала заполните данные через «Редактировать» и сохраните'}
-            onClick={() => onEmail(offer)}
-          >
-            Написать
-          </Button>
+              email-переписок" только после верификации — поэтому до неё здесь
+              стоит кнопка верификации (выше), а не заблокированная "Написать":
+              две кнопки рядом всё равно не помещались в подвал карточки, а
+              смысл у них взаимоисключающий — сначала подтверди, потом пиши. */}
+          {offer.verified && (
+            <Button type="button" variant="secondary" icon={<Mail className="h-4 w-4" />} onClick={() => onEmail(offer)}>
+              Написать
+            </Button>
+          )}
         </div>
       </div>
     </Modal>
@@ -1273,6 +1293,7 @@ export function Suppliers() {
   // предложения сама обновилась, как только фоновый скрипт применит
   // найденное к supplier_research_offers.
   const [enrichmentJobs, setEnrichmentJobs] = useState<SupplierEnrichmentJob[]>([]);
+  const [verifyingOfferId, setVerifyingOfferId] = useState<string | null>(null);
   // Ошибка ПОСТАНОВКИ в очередь (сам INSERT не прошёл — сетевая икота и
   // т.п.), не ошибка самого поиска (та приходит как status:'error' у уже
   // поставленного задания и показывается через searchJob на карточке).
@@ -2022,6 +2043,24 @@ export function Suppliers() {
       setOfferError(errorMessage(err, 'Не удалось сохранить предложение'));
     } finally {
       setSavingOffer(false);
+    }
+  }
+
+  // Верификация одним кликом прямо из карточки (владелец, 2026-09-11) — тот
+  // же смысл, что и сохранение формы предложения: человек подтвердил, что
+  // данные верны. Логируем то же событие, что и submitOffer, чтобы метрика
+  // "Верифицировано поставщиков" (Metrics.tsx) считала оба пути одинаково.
+  async function handleVerifyOffer(o: SupplierOffer) {
+    setVerifyingOfferId(o.id);
+    try {
+      logActivity('supplier_offer_verified');
+      const updated = await updateSupplierOffer(o.id, { ...o, verified: true });
+      setOffers((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setDetailOfferId(null);
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось верифицировать поставщика'));
+    } finally {
+      setVerifyingOfferId(null);
     }
   }
 
@@ -2947,6 +2986,8 @@ export function Suppliers() {
               onDeleteFile={handleDeleteOfferFile}
               deletingFileIndex={deletingOfferId === offer.id ? null : deletingOfferFileIndex}
               enrichmentState={enrichmentState}
+              onVerify={handleVerifyOffer}
+              verifying={verifyingOfferId === offer.id}
             />
           );
         })()}
