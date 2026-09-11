@@ -1106,7 +1106,7 @@ export function EmailThread({
 
       <MaterialLedgerModal
         open={ledgerModalOpen}
-        requestItems={request.items}
+        requestItems={[]}
         allMaterials={allMaterials}
         ledgers={ledgers}
         onClose={() => setLedgerModalOpen(false)}

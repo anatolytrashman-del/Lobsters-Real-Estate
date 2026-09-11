@@ -12,7 +12,6 @@ import type {
 } from '../data/supplierResearch';
 import type { DocumentFile } from '../data/contractorDocuments';
 import type { Currency } from '../data/transactions';
-import type { PurchaseItem } from '../data/purchases';
 
 function requestFromRow(row: SupplierRequestRow): SupplierRequest {
   return {
@@ -22,7 +21,6 @@ function requestFromRow(row: SupplierRequestRow): SupplierRequest {
     estimateId: row.estimate_id,
     sectionId: row.section_id,
     sectionTitle: row.section_title ?? '',
-    items: row.items ?? [],
     legalEntityId: row.legal_entity_id ?? null,
     comparisonMode: (row.comparison_mode as SupplierComparisonMode) || 'material',
     createdAt: row.created_at,
@@ -67,7 +65,6 @@ export interface SupplierRequestInput {
   estimateId: string | null;
   sectionId: string | null;
   sectionTitle: string;
-  items: PurchaseItem[];
   legalEntityId: string | null;
   comparisonMode: SupplierComparisonMode;
 }
@@ -82,7 +79,6 @@ export function insertSupplierRequest(input: SupplierRequestInput): Promise<Supp
         estimate_id: input.estimateId,
         section_id: input.sectionId,
         section_title: input.sectionTitle,
-        items: input.items,
         legal_entity_id: input.legalEntityId,
         comparison_mode: input.comparisonMode,
       })
@@ -103,7 +99,6 @@ export function updateSupplierRequest(id: string, input: SupplierRequestInput): 
         estimate_id: input.estimateId,
         section_id: input.sectionId,
         section_title: input.sectionTitle,
-        items: input.items,
         legal_entity_id: input.legalEntityId,
         comparison_mode: input.comparisonMode,
       })
