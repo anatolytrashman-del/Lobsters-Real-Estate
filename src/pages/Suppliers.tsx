@@ -56,7 +56,7 @@ import { fetchMaterialLedgers, deleteMaterialLedger } from '../lib/materialLedge
 import type { SupplierOrder } from '../data/supplierOrders';
 import { fetchSupplierOrders } from '../lib/supplierOrdersApi';
 import type { SupplierQuote } from '../data/supplierQuotes';
-import { fetchSupplierQuotes, updateSupplierQuote } from '../lib/supplierQuotesApi';
+import { fetchSupplierQuotes, updateSupplierQuote, deleteSupplierQuote } from '../lib/supplierQuotesApi';
 import {
   fetchSupplierRequests,
   insertSupplierRequest,
@@ -1009,7 +1009,9 @@ function OfferDetailModal({
   verifying,
   offerQuotes,
   onQuoteAlternativeChange,
+  onQuoteDelete,
   savingQuoteId,
+  deletingQuoteId,
 }: {
   offer: SupplierOffer;
   emails: SupplierOfferEmail[];
@@ -1022,7 +1024,9 @@ function OfferDetailModal({
   deletingFileIndex: number | null;
   offerQuotes: SupplierQuote[];
   onQuoteAlternativeChange: (quote: SupplierQuote, isAlternative: boolean, note: string) => void;
+  onQuoteDelete: (quote: SupplierQuote) => void;
   savingQuoteId: string | null;
+  deletingQuoteId: string | null;
   enrichmentState: Map<string, OfferEnrichmentState>;
   onVerify: (o: SupplierOffer) => void;
   verifying: boolean;
@@ -1212,6 +1216,22 @@ function OfferDetailModal({
                   <span className="tabular-nums font-semibold text-ink">
                     {q.price > 0 ? formatPrice(q.price, q.currency) : '—'}
                   </span>
+                  {/* Владелец, 2026-09-11: поставщик прислал в ту же ветку счёт
+                      "по ошибке" (не по нашей заявке), и убрать его из сравнения
+                      было нечем — строка КП рисуется и в списке "Получено КП", и
+                      в предупреждении про аналог, а удаления не существовало
+                      вовсе (deleteSupplierQuote был написан, но не вызывался
+                      ниоткуда). Крестик — тот же приём, что у файлов ниже. */}
+                  <button
+                    type="button"
+                    onClick={() => onQuoteDelete(q)}
+                    disabled={deletingQuoteId === q.id || savingQuoteId === q.id}
+                    aria-label={`Удалить КП «${q.title}»`}
+                    title="Удалить только это КП — поставщик, переписка и файлы карточки останутся"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger disabled:opacity-50"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
                 </div>
                 <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
                   <input
@@ -1408,6 +1428,7 @@ export function Suppliers() {
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
   const [deletingOfferFileIndex, setDeletingOfferFileIndex] = useState<number | null>(null);
   const [savingQuoteId, setSavingQuoteId] = useState<string | null>(null);
+  const [deletingQuoteId, setDeletingQuoteId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   // Владелец, 2026-09-09: автораспознавание КП, загруженного вручную в
   // форму предложения — offerUploadingFile крутится во время загрузки
@@ -2339,6 +2360,34 @@ export function Suppliers() {
     }
   }
 
+  // Владелец, 2026-09-11: "Добавь крестик для удаления КП". До этого ошибочно
+  // распознанное КП (поставщик может прислать в ту же ветку чужой счёт —
+  // реальный случай: "произошла ошибка, счет не Ваш") убиралось только
+  // SQL-запросом в supplier_offer_quotes. Удаляется ровно строка КП: цена,
+  // позиции и файлы самой карточки поставщика живут отдельно в supplier_
+  // research_offers (их наливает applyExtractionToOffer при подтверждении
+  // распознавания) и здесь не трогаются — об этом и предупреждаем в confirm,
+  // чтобы удаление КП не выглядело откатом карточки.
+  async function handleDeleteQuote(quote: SupplierQuote) {
+    if (deletingQuoteId) return;
+    if (
+      !window.confirm(
+        `Удалить КП «${quote.title}»? Оно пропадёт из сравнения цен и из пометки про аналог. ` +
+          'Сам поставщик, переписка и цена с позициями в его карточке останутся.',
+      )
+    )
+      return;
+    setDeletingQuoteId(quote.id);
+    try {
+      await deleteSupplierQuote(quote.id);
+      setSupplierQuotes((prev) => prev.filter((q) => q.id !== quote.id));
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось удалить КП'));
+    } finally {
+      setDeletingQuoteId(null);
+    }
+  }
+
   // Владелец, 2026-09-11: раньше единственным способом убрать один ошибочно
   // прикреплённый файл (например, задвоенный счёт) была кнопка "Удалить" на
   // всю карточку поставщика — она удаляла не только файл, а весь supplier_
@@ -3247,7 +3296,9 @@ export function Suppliers() {
               deletingFileIndex={deletingOfferId === offer.id ? null : deletingOfferFileIndex}
               offerQuotes={supplierQuotes.filter((q) => q.offerId === offer.id)}
               onQuoteAlternativeChange={handleQuoteAlternativeChange}
+              onQuoteDelete={handleDeleteQuote}
               savingQuoteId={savingQuoteId}
+              deletingQuoteId={deletingQuoteId}
               enrichmentState={enrichmentState}
               onVerify={handleVerifyOffer}
               verifying={verifyingOfferId === offer.id}
