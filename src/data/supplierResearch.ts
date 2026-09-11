@@ -62,6 +62,21 @@ export const SUPPLIER_COMPARISON_MODE_HINTS: Record<SupplierComparisonMode, stri
   lot: 'Все позиции идут одной поставкой от одного поставщика (как компоненты Грильято) — сравниваем сумму всего КП целиком, не по отдельным строкам.',
 };
 
+// Владелец, 2026-09-11: "номера в телеграме, вотапе и максе — нам
+// понадобится отдельное поле, там сейчас один номер телефона, а тут надо и
+// номер, и название мессенджера фиксировать" — в отличие от contact/
+// contactMethod (ровно ОДИН способ связи, телефон ИЛИ телеграм, см. ниже),
+// у поставщика может быть сразу несколько мессенджеров с разными номерами.
+// Жёсткий enum (не AddableSelect) — ровно те три мессенджера, что owner
+// назвал явно, не растущий пользовательский список.
+export const SUPPLIER_MESSENGER_TYPES = ['Telegram', 'WhatsApp', 'Max'] as const;
+export type SupplierMessengerType = (typeof SUPPLIER_MESSENGER_TYPES)[number];
+
+export interface SupplierMessengerContact {
+  type: SupplierMessengerType;
+  number: string;
+}
+
 // Владелец, 2026-09-03: "вместо 'Страна Беларусь'/'Страна Россия' ставь
 // просто эмодзи с флагом" — бейджи страны везде в UI показывают флаг
 // вместо текста. Для страны, добавленной вручную сверх пресета (нет в
@@ -177,6 +192,12 @@ export interface SupplierOffer {
   // веб-поиска (см. SupplierWebSearchModal/addWebSearchResults в
   // Suppliers.tsx), но остаётся обычным редактируемым полем.
   listingUrl: string;
+  // Номера в мессенджерах (см. SupplierMessengerContact выше) — заполняются
+  // либо вручную, либо автообогащением (см. lib/supplierEnrichmentApi.ts).
+  // Может быть несколько записей одного типа (например, два номера
+  // WhatsApp) — не выбрасываем дубли автоматически, обогащение само не
+  // добавляет уже присутствующий тип+номер повторно.
+  messengers: SupplierMessengerContact[];
   catalogModelName: string;
   catalogModelPhoto: DocumentFile | null;
   // Итоговая цена/валюта — больше не редактируется вручную (владелец,
@@ -224,6 +245,7 @@ export interface SupplierOfferRow {
   country: string | null;
   website_url: string;
   listing_url: string | null;
+  messengers: SupplierMessengerContact[] | null;
   catalog_model_name: string;
   catalog_model_photo: DocumentFile | null;
   price: number;

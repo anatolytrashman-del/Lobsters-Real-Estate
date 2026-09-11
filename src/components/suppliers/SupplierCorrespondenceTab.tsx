@@ -232,6 +232,7 @@ async function applyExtractionToOffer(
     country: offer.country,
     websiteUrl: offer.websiteUrl,
     listingUrl: offer.listingUrl,
+    messengers: offer.messengers,
     catalogModelName: offer.catalogModelName,
     catalogModelPhoto: offer.catalogModelPhoto,
     price: extraction.price ?? offer.price,
