@@ -6,6 +6,7 @@ import { cn } from '../../lib/cn';
 import { glassPillClass, glassPillShadow } from '../../lib/glass';
 import { useMarketOfferDiscussionWatcher } from '../../lib/marketOfferDiscussionWatcher';
 import { useSupplierEmailWatcher } from '../../lib/supplierEmailWatcher';
+import { useSupplierWebSearchJobWatcher } from '../../lib/supplierWebSearchJobWatcher';
 
 // index.html — общий статический файл на все роуты (публичный SPA-фолбэк),
 // его <title> заточен под OG-превью продающей страницы (см. index.html).
@@ -21,6 +22,7 @@ export function AppLayout() {
   // Один опрос на всё приложение, не с каждой страницы — см. сами хуки.
   useMarketOfferDiscussionWatcher();
   useSupplierEmailWatcher();
+  useSupplierWebSearchJobWatcher();
 
   useEffect(() => {
     const previousTitle = document.title;
