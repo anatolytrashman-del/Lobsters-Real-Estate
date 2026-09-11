@@ -59,7 +59,7 @@
 // даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT_DIR = new URL('..', import.meta.url).pathname;
@@ -568,12 +568,50 @@ async function shouldForceFullPrerender() {
 // что renderPath ждёт от headless-рендера) — «голый» SPA-шелл (например,
 // если путь на проде почему-то ещё не был пререндерен) не проходит, и
 // вызывающий код делает настоящий рендер именно для этого пути.
+// Имя входного чанка (assets/index-<hash>.js) в переданном HTML. Хэш в имени
+// считается от содержимого бандла, поэтому он меняется при ЛЮБОЙ правке кода
+// фронта — по нему и сверяем, из той ли сборки снапшот.
+function entryAssetOf(html) {
+  const m = html.match(/assets\/index-[A-Za-z0-9_-]+\.js/);
+  return m ? m[0] : null;
+}
+
+// Входной чанк ТЕКУЩЕЙ сборки (читается один раз, лениво — dist/index.html
+// к этому моменту уже собран vite).
+let currentEntryAssetCache;
+function currentEntryAsset() {
+  if (currentEntryAssetCache === undefined) {
+    try {
+      currentEntryAssetCache = entryAssetOf(readFileSync(join(DIST_DIR, 'index.html'), 'utf8'));
+    } catch {
+      currentEntryAssetCache = null;
+    }
+  }
+  return currentEntryAssetCache;
+}
+
 async function fetchPathLive(path) {
   try {
     const res = await fetch(`${SITE_ORIGIN}/${path}`, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return false;
     const html = await res.text();
     if (!/<h1[\s>]/i.test(html)) return false;
+    // 2026-09-11, прод лёг после первого же быстрого деплоя с правкой кода:
+    // копия страницы с прода тащит с собой и её <script src="/assets/
+    // index-<старый хэш>.js">, а в НОВОМ деплое файлов с такими именами нет
+    // (хэш пересчитался) — SPA-рерайт vercel.json отдавал на них index.html,
+    // браузер отказывался исполнять HTML как модуль, и все ~285 публичных
+    // страниц оставались статикой без приложения. Поэтому снапшот с прода
+    // годится, только если он ссылается на входной чанк этой же сборки;
+    // иначе — честный рендер (то есть при любой правке кода фронта быстрый
+    // путь сам собой вырождается в полный, что и требуется).
+    const expected = currentEntryAsset();
+    if (expected && !html.includes(expected)) {
+      console.log(
+        `[prerender] /${path}: живая копия от другой сборки (${entryAssetOf(html) ?? 'чанк не найден'} вместо ${expected}) — рендерю заново`,
+      );
+      return false;
+    }
     const dir = join(DIST_DIR, path);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'index.html'), html);
