@@ -31,3 +31,12 @@ jobs:
         env:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           PROXYAPI_KEY: ${{ secrets.PROXYAPI_KEY }}
+      # Владелец, 2026-09-11: "скрипт обогащения сразу берёт в работу" —
+      # найденные поставщики создаются предложениями прямо в поисковом
+      # скрипте выше и там же ставятся в очередь на обогащение, поэтому
+      # обработчик очереди запускается тем же прогоном, а не ждёт своего
+      # крона (тот остаётся страховкой, см. process-supplier-enrichment-jobs.yml).
+      - run: node scripts/process-supplier-enrichment-jobs.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PROXYAPI_KEY: ${{ secrets.PROXYAPI_KEY }}

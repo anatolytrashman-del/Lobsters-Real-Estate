@@ -1,5 +1,14 @@
 // Фоновая обработка очереди веб-поиска поставщиков (supplier_web_search_jobs).
 //
+// 2026-09-11 (вторая итерация конвейера): найденные компании больше НЕ ждут
+// ручного добавления из модалки результатов — скрипт сам создаёт предложения
+// и сам ставит их в очередь обогащения контактов (см.
+// createOffersAndQueueEnrichment ниже). Полный путь, как его описал владелец:
+// запустили поиск по категории → ИИ нашёл поставщиков → сразу добавил их в
+// базу → скрипт обогащения (следующий шаг того же воркфлоу) собрал с их
+// сайтов email для заказов/телефон/мессенджеры → поставщик получил статус
+// "Готово к верификации" (считается в lib/supplierEnrichmentApi.ts).
+//
 // Владелец, 2026-09-11: "минуту ждать перед открытой вкладкой не захочется,
 // поэтому я бы сделал так: я или Альмира формирует поиск, система начинает
 // искать, я могу закрыть спокойно вкладку, когда система найдёт — по
@@ -231,13 +240,107 @@ async function updateJob(id, patch) {
   if (error) console.error(`  → не удалось обновить задание ${id}:`, error.message);
 }
 
+// Та же грубая эвристика, что и guessCountryFromWebsite в
+// src/data/supplierResearch.ts (продублирована по той же причине, что и
+// остальная логика этого скрипта — голому .mjs нельзя импортировать код
+// фронта). Пустая строка — не определили, поле останется пустым.
+function guessCountryFromWebsite(websiteUrl) {
+  const trimmed = (websiteUrl || '').trim();
+  if (!trimmed) return '';
+  const host = trimmed
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .split(/[/?#]/)[0]
+    .toLowerCase();
+  if (host.endsWith('.by')) return 'Беларусь';
+  if (host.endsWith('.ru')) return 'Россия';
+  return '';
+}
+
+// Владелец, 2026-09-11: "мне не нужна кнопка обогащения. Хочу так: запустили
+// поиск по категории → ИИ нашёл поставщиков → сразу добавил их в базу (без
+// текущего ручного добавления) → скрипт обогащения сразу берёт их в работу
+// → когда вся инфа собрана, поставщик получает статус «Готово к
+// верификации»". Раньше найденное складывалось только в results задания, а
+// предложения создавал человек руками из модалки результатов
+// (addWebSearchResults в Suppliers.tsx, удалён вместе с самой модалкой) —
+// теперь это делает сам скрипт, сразу после поиска.
+//
+// Дубли: модели и так передаётся список уже известных компаний
+// (exclude_companies), но полагаться только на это нельзя — здесь ещё и
+// прямая проверка по уже существующим предложениям этой же категории
+// (тот же dedupKey: нормализованный домен, а при его отсутствии имя).
+async function createOffersAndQueueEnrichment(job, results) {
+  if (DRY_RUN || results.length === 0) return 0;
+
+  const { data: existing, error: existingError } = await supabase
+    .from('supplier_research_offers')
+    .select('name, website_url')
+    .eq('request_id', job.request_id);
+  if (existingError) {
+    console.error('  → не удалось прочитать уже существующие предложения:', existingError.message);
+    return 0;
+  }
+  const existingKeys = new Set((existing ?? []).map((o) => dedupKey({ name: o.name, website: o.website_url })));
+  const fresh = results.filter((r) => !existingKeys.has(dedupKey(r)));
+  if (fresh.length === 0) return 0;
+
+  const { data: created, error: insertError } = await supabase
+    .from('supplier_research_offers')
+    .insert(
+      fresh.map((r) => ({
+        request_id: job.request_id,
+        name: r.name,
+        contact: r.phone,
+        contact_method: 'Телефон',
+        email: r.email,
+        manager_name: '',
+        country: guessCountryFromWebsite(r.website),
+        website_url: r.website,
+        listing_url: r.link,
+        messengers: [],
+        catalog_model_name: '',
+        catalog_model_photo: null,
+        price: 0,
+        currency: 'USD',
+        items: [],
+        files: [],
+        // Автодобавленный поставщик всегда не верифицирован — человек
+        // проверяет его уже после того, как обогащение соберёт контакты
+        // (статус "Готово к верификации", см. lib/supplierEnrichmentApi.ts).
+        verified: false,
+      })),
+    )
+    .select('id, website_url');
+  if (insertError) {
+    console.error('  → не удалось добавить предложения:', insertError.message);
+    return 0;
+  }
+
+  const enrichable = (created ?? []).filter((o) => o.website_url);
+  if (enrichable.length > 0) {
+    const { error: jobsError } = await supabase
+      .from('supplier_enrichment_jobs')
+      .insert(enrichable.map((o) => ({ offer_id: o.id })));
+    if (jobsError) console.error('  → не удалось поставить обогащение в очередь:', jobsError.message);
+  }
+  console.log(`  → добавлено предложений: ${created?.length ?? 0}, из них в очередь на обогащение: ${enrichable.length}`);
+  return created?.length ?? 0;
+}
+
 async function processJob(job) {
   const label = `${job.section_title || '(без раздела)'} — ${job.items_text.slice(0, 60)}`;
   console.log(`Обрабатываю задание ${job.id} (${label})...`);
   await updateJob(job.id, { status: 'processing' });
   try {
     const results = await runSearchRounds(job);
-    await updateJob(job.id, { status: 'done', results, completed_at: new Date().toISOString() });
+    const addedCount = await createOffersAndQueueEnrichment(job, results);
+    await updateJob(job.id, {
+      status: 'done',
+      results,
+      added_count: addedCount,
+      completed_at: new Date().toISOString(),
+    });
     console.log(`  → готово, найдено ${results.length} компаний`);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Не удалось выполнить веб-поиск поставщиков';
