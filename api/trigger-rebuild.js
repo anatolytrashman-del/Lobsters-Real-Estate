@@ -53,6 +53,12 @@
 // уведомление" — веб-поиск (2 раунда по 40-115с каждый, см. комментарий в
 // scripts/process-supplier-web-search-jobs.mjs) переведён с синхронного
 // HTTP-запроса на ту же очередь, что и массовая рассылка.
+//
+// 2026-09-11: и снова тот же принцип — action 'dispatch-supplier-
+// enrichment', дёргает process-supplier-enrichment-jobs.yml (обогащение
+// контактов уже добавленного поставщика: email для заказов/телефон/
+// мессенджеры, реальный просмотр его сайта — см. scripts/process-supplier-
+// enrichment-jobs.mjs).
 import { requireStaffAuth } from './_auth.js';
 
 const DEBOUNCE_MS = 5 * 60_000;
@@ -140,6 +146,10 @@ export default async function handler(req, res) {
   }
   if (action === 'dispatch-supplier-search') {
     await dispatchWorkflow(res, 'process-supplier-web-search-jobs.yml');
+    return;
+  }
+  if (action === 'dispatch-supplier-enrichment') {
+    await dispatchWorkflow(res, 'process-supplier-enrichment-jobs.yml');
     return;
   }
 
