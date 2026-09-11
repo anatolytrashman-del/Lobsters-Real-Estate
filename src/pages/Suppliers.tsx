@@ -82,6 +82,7 @@ import {
   supplierVerificationStatus,
   SUPPLIER_VERIFICATION_LABEL,
   type SupplierEnrichmentJob,
+  type SupplierVerificationStatus,
   type OfferEnrichmentState,
 } from '../lib/supplierEnrichmentApi';
 import { logActivity } from '../lib/activityLogApi';
@@ -177,9 +178,8 @@ function siteLabel(url: string): string {
 // Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
 // цен. И внутри уже группировка по запросам, как грильято" — то самое
 // сравнение "лучшая цена"/таблица по позициям, которое до этого жило только
-// внутри карточки запроса на вкладке "Поставщики" (см. PriceComparisonBlock
-// ниже — общий компонент для обоих мест), получило свою отдельную вкладку —
-// чистый вид только для сравнения, без кнопок управления запросом/
+// внутри карточки запроса на вкладке "Поставщики", получило свою отдельную
+// вкладку — чистый вид только для сравнения, без кнопок управления запросом/
 // предложением, сгруппированный по тем же категориям (Материалы и
 // оборудование/Сервисы), что и "Поставщики".
 const SUPPLIER_TABS = ['Поставщики', 'Сравнение цен', 'Ведомости материалов', 'Письма'] as const;
@@ -322,17 +322,19 @@ function VerificationBadge({
   return <Badge tone={tone}>{SUPPLIER_VERIFICATION_LABEL[status]}</Badge>;
 }
 
-// RequestCard в отдельный переиспользуемый блок: сам RequestCard (вкладка
-// "Поставщики", с кнопками управления запросом/предложением) и новая
-// вкладка "Сравнение цен" (только просмотр, сгруппировано по категориям)
-// показывают ровно один и тот же блок сравнения, не две разные реализации.
+// Владелец, 2026-09-11: "давай выводить цены и статус «лучшая цена» на
+// странице сравнения цен, а в списке поставщиков просто оставим самих
+// поставщиков со статусом Верифицировано/Нет" — раньше и здесь, и на
+// вкладке "Сравнение цен" рисовался один и тот же OfferTotalComparison
+// (цены, бейдж "лучшая цена", статус переписки, разбивка по КП). Теперь
+// сравнение цен живёт ровно в одном месте — на своей вкладке, а вкладка
+// "Поставщики" отвечает только за состав списка: кто у нас есть по этой
+// категории и в каком состоянии его проверка. Отсюда и новое имя
+// компонента — сравнением он больше не является.
 // Свой стейт страны — самодостаточный компонент, реюзабельный без прокидки
 // состояния через родителя.
-function PriceComparisonBlock({
+function SupplierListBlock({
   offers,
-  emails,
-  quotes,
-  rate,
   onOpenDetail,
   emptyHint,
   country: controlledCountry,
@@ -341,9 +343,6 @@ function PriceComparisonBlock({
   enrichmentState,
 }: {
   offers: SupplierOffer[];
-  emails: SupplierOfferEmail[];
-  quotes: SupplierQuote[];
-  rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
   // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
@@ -355,9 +354,6 @@ function PriceComparisonBlock({
   // RequestCard (вкладка "Поставщики") использует этот же переключатель
   // страны и для кнопки "Найти в сети" — там страна контролируется
   // родителем (controlled), чтобы оба места читали одно и то же значение.
-  // На вкладке "Сравнение цен" переключатель не нужен нигде, кроме самого
-  // блока — там он остаётся несвязанным (uncontrolled), свой на каждую
-  // карточку категории.
   country?: string;
   onCountryChange?: (country: string) => void;
   // Владелец, 2026-09-11: "у меня стало очень много поставщиков" — в
@@ -372,22 +368,45 @@ function PriceComparisonBlock({
   const setCountry = onCountryChange ?? setInternalCountry;
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
 
+  // Сортировки по цене здесь больше нет (как и самих цен) — порядок по
+  // состоянию проверки: проверенные сверху, за ними те, где ход за
+  // человеком, и только потом ещё собираемые; внутри статуса — по алфавиту.
+  const verificationOrder: Record<SupplierVerificationStatus, number> = {
+    verified: 0,
+    ready: 1,
+    needs_verification: 2,
+    enriching: 3,
+  };
+  const sortedOffers = [...offersInCountry].sort((a, b) => {
+    const diff =
+      verificationOrder[supplierVerificationStatus(a, enrichmentState)] -
+      verificationOrder[supplierVerificationStatus(b, enrichmentState)];
+    return diff !== 0 ? diff : a.name.localeCompare(b.name, 'ru');
+  });
+
   return (
     <>
       {showCountryToggle && <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />}
 
-      {offersInCountry.length === 0 ? (
+      {sortedOffers.length === 0 ? (
         <p className="text-sm text-ink-faint">{offers.length === 0 ? 'Пока нет предложений.' : `Нет предложений из «${country}» — ${emptyHint}`}</p>
       ) : (
-        <OfferTotalComparison
-          offers={offersInCountry}
-          emails={emails}
-          quotes={quotes}
-          rate={rate}
-          onOpenDetail={onOpenDetail}
-          enrichmentState={enrichmentState}
-          showItemsSpoiler={false}
-        />
+        <div className="flex flex-col gap-2">
+          {sortedOffers.map((o) => (
+            <div
+              key={o.id}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-3"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium text-ink">{o.name}</span>
+                <VerificationBadge offer={o} enrichmentState={enrichmentState} />
+              </div>
+              <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
+                Подробнее
+              </Button>
+            </div>
+          ))}
+        </div>
       )}
     </>
   );
@@ -399,11 +418,10 @@ function PriceComparisonBlock({
 // равенстве) подсвечена зелёным + бейдж "лучшая цена" — тот же принцип, что
 // и у сравнения предложений подрядчиков (ContractorsResearch.tsx). Плюс
 // разбивка по компонентам снизу, если у сравниваемых КП есть построчная
-// структура. Вынесено в отдельный компонент — используется и в
-// PriceComparisonBlock (вкладка "Поставщики", весь список), и в
-// MaterialPriceComparisonCard для категорий с comparisonMode:'lot' (вкладка
-// "Сравнение цен", только confirmed — владелец, 2026-09-09: "Грильято, где
-// есть комплектующие, нужно оценивать полностью... мы не будем заказывать
+// структура. Используется на вкладке "Сравнение цен" — в
+// MaterialPriceComparisonCard для категорий с comparisonMode:'lot' (только
+// confirmed — владелец, 2026-09-09: "Грильято, где есть комплектующие,
+// нужно оценивать полностью... мы не будем заказывать
 // несущие в одном месте, а подвесы в другом" — там сравнение "лучшая цена
 // по каждой позиции" вводило бы в заблуждение, реальный выбор — это ОДИН
 // поставщик на всю поставку целиком).
@@ -414,12 +432,6 @@ function OfferTotalComparison({
   rate,
   onOpenDetail,
   enrichmentState,
-  // Владелец, 2026-09-09: "в общем списке поставщиков убирай эту таблицу" —
-  // список позиций (в любом виде) нужен только на вкладке "Сравнение цен"
-  // (там это и есть смысл lot-режима — детализация того, из чего сложилась
-  // общая сумма), на "Поставщики" (весь список, включая ещё не ответивших)
-  // он только загромождает карточку категории.
-  showItemsSpoiler = true,
 }: {
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
@@ -427,7 +439,6 @@ function OfferTotalComparison({
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
-  showItemsSpoiler?: boolean;
 }) {
   const quotesByOffer = useMemo(() => {
     const map = new Map<string, SupplierQuote[]>();
@@ -533,7 +544,7 @@ function OfferTotalComparison({
                 каждого поставщика свои формулировки в счёте. Теперь список
                 позиций — под спойлером и СТРОГО отдельно на каждого
                 поставщика, без попытки свести их в одну таблицу. */}
-            {showItemsSpoiler && o.items.length > 0 && (
+            {o.items.length > 0 && (
               <details className="group">
                 <summary className="cursor-pointer text-xs font-medium text-ink-muted">
                   Список материалов ({o.items.length} поз.)
@@ -579,10 +590,10 @@ function OfferTotalComparison({
 // Владелец, 2026-09-09: "В сравнении цен нужно добавлять только тех, кто
 // уже прислал КП" + "не списки поставщиков, а материал — КП по убыванию" —
 // вкладка "Сравнение цен" перестроена целиком под этот принцип, отдельно от
-// PriceComparisonBlock (тот остаётся как был для вкладки "Поставщики" — там
-// нужен весь список, включая ещё не ответивших, это управление запросом, а
-// не сравнение готовых цен). Здесь: (1) только offerCommunicationStatus ===
-// 'confirmed' — offer.items или offer.price уже зафиксированы, счёт реально
+// списка на вкладке "Поставщики" (SupplierListBlock — там нужен весь состав,
+// включая ещё не ответивших, это управление запросом, а не сравнение цен;
+// с 2026-09-11 цен там нет вовсе). Здесь: (1) только
+// offerCommunicationStatus === 'confirmed' — offer.items или offer.price уже зафиксированы, счёт реально
 // получен, не просто отправлено письмо; (2) единица сравнения — не
 // поставщик, а МАТЕРИАЛ: заголовок самого запроса (request.title) плюс
 // любые доп. компоненты, обнаруженные в разбивке присланных счетов (см.
@@ -804,9 +815,6 @@ function MaterialPriceComparisonCard({
 function RequestCard({
   request,
   offers,
-  emails,
-  quotes,
-  rate,
   onEditRequest,
   onDeleteRequest,
   onAddOffer,
@@ -821,9 +829,6 @@ function RequestCard({
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
-  emails: SupplierOfferEmail[];
-  quotes: SupplierQuote[];
-  rate: ExchangeRate | undefined;
   onEditRequest: (r: SupplierRequest) => void;
   onDeleteRequest: (r: SupplierRequest) => void;
   onAddOffer: (r: SupplierRequest) => void;
@@ -842,8 +847,8 @@ function RequestCard({
   enrichmentState: Map<string, OfferEnrichmentState>;
 }) {
   // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
-  // PriceComparisonBlock ниже — здесь он controlled, значение общее и для
-  // фильтра сравнения, и для кнопки "Найти в сети").
+  // SupplierListBlock выше — здесь он controlled, значение общее и для
+  // фильтра списка, и для кнопки "Найти в сети").
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
   // Владелец, 2026-09-11: "у меня стало очень много поставщиков — давай
   // сделаем название категории и основные кнопки видимыми, а список
@@ -977,11 +982,8 @@ function RequestCard({
       </div>
 
       {listOpen && (
-        <PriceComparisonBlock
+        <SupplierListBlock
           offers={offers}
-          emails={emails}
-          quotes={quotes}
-          rate={rate}
           onOpenDetail={onOpenDetail}
           emptyHint="переключите страну выше или добавьте предложение."
           country={country}
@@ -2490,9 +2492,6 @@ export function Suppliers() {
                       key={r.id}
                       request={r}
                       offers={offers.filter((o) => o.requestId === r.id)}
-                      emails={supplierEmails}
-                      quotes={supplierQuotes}
-                      rate={rate}
                       onEditRequest={openEditRequest}
                       onDeleteRequest={handleDeleteRequest}
                       onAddOffer={openAddOffer}
@@ -2533,9 +2532,9 @@ export function Suppliers() {
           Сравнение цен... как грильято", уточнение тем же днём: "нужно
           добавлять только тех, кто уже прислал КП" + "не списки
           поставщиков, а материал — КП по убыванию" — MaterialPriceComparisonCard
-          (не PriceComparisonBlock — тот для "Поставщики", там нужен весь
-          список включая неответивших). Категория попадает сюда, только
-          если у неё есть хотя бы одно ПОДТВЕРЖДЁННОЕ предложение
+          (не SupplierListBlock — тот для "Поставщики", там просто состав
+          списка, без цен). Категория попадает сюда, только если у неё есть
+          хотя бы одно ПОДТВЕРЖДЁННОЕ предложение
           (offerCommunicationStatus === 'confirmed') хоть в одной стране —
           иначе сравнивать нечего. */}
       {tab === 'Сравнение цен' && (
