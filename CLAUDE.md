@@ -130,6 +130,17 @@ curl -sS -X POST "https://api.supabase.com/v1/projects/iohcdylttyuhwovztrbk/data
 `api.supabase.com` вдруг снова недоступен (403 от прокси) — проверить, не пропал ли
 домен из Allowed domains.
 
+**Почта (Resend) — читаем сами, 2026-09-11+.** В окружении лежит `RESEND_API_KEY`
+(тот же ключ, что в Vercel), домены `resend.com`/`api.resend.com` открыты. Вся
+входящая переписка доступна через API и переживает удаление записей из нашей БД —
+это фактический бэкап писем: `GET /emails/receiving?limit=100[&after=<id>]` (список,
+`has_more` для пагинации), `GET /emails/receiving/<id>` (полное письмо: `text`,
+`html`, `subject`, `from`, `created_at`, `headers`, вложения с `filename`/`size`),
+`GET /emails/<id>/attachments/<attachment_id>` (сам файл). Исходящие — `GET /emails`.
+Использовано 2026-09-11 для восстановления снесённой переписки (см. журнал).
+`WebFetch` на resend.com может отдавать EGRESS_BLOCKED из старого кэша — ходить
+`curl`'ом. Ключ не печатать в чат/лог и не коммитить.
+
 Публичный флоу (бронирование, подписание) работает без авторизации — `leads`,
 `agreement_signatures` и т.п. закрыты RLS от анонимной записи там, где нужна
 серверная логика (email, генерация PDF), поэтому такие операции идут не напрямую из
