@@ -111,6 +111,45 @@ export function guessCountryFromWebsite(websiteUrl: string): string {
   return '';
 }
 
+// Как показать и куда вести номер в мессенджере. Владелец, 2026-09-11:
+// "ID в максе непонятный, хз как ему написать — сделай или кликабельной
+// ссылкой на макс, или как-то понятно". Обогащение забирает с сайта то, что
+// там реально написано: у Telegram это обычно @ник, у WhatsApp — телефон, а
+// у Max — длинный непрозрачный идентификатор из ссылки max.ru/u/<id>,
+// который человеку сам по себе ни о чём не говорит. Поэтому показываем не
+// сырое значение, а понятную подпись + ссылку, если по ней реально можно
+// открыть диалог.
+export function messengerLink(m: SupplierMessengerContact): { href: string | null; label: string } {
+  const value = m.number.trim();
+  if (!value) return { href: null, label: '—' };
+
+  // Уже готовая ссылка (модель иногда приносит её целиком) — ведём по ней,
+  // подпись достаём из последнего сегмента пути.
+  if (/^https?:\/\//i.test(value)) {
+    const tail = value.replace(/\/+$/, '').split('/').pop() ?? '';
+    if (m.type === 'Max') return { href: value, label: 'открыть диалог' };
+    return { href: value, label: tail.startsWith('+') || /^\d/.test(tail) ? tail : `@${tail.replace(/^@/, '')}` };
+  }
+
+  const digits = value.replace(/\D/g, '');
+  const isPhone = digits.length >= 10 && digits.length <= 15 && /^[+\d\s()-]+$/.test(value);
+
+  if (m.type === 'WhatsApp') {
+    return isPhone ? { href: `https://wa.me/${digits}`, label: value } : { href: null, label: value };
+  }
+  if (m.type === 'Telegram') {
+    // По телефону диалог в Telegram ссылкой не открыть (t.me/+<номер> — это
+    // инвайт в чат, не контакт), поэтому линкуем только ники.
+    if (isPhone) return { href: null, label: value };
+    const handle = value.replace(/^@/, '');
+    return { href: `https://t.me/${handle}`, label: `@${handle}` };
+  }
+  // Max: телефон показываем как есть, длинный id — только ссылкой с
+  // человекочитаемой подписью (сам id бесполезен на экране).
+  if (isPhone) return { href: null, label: value };
+  return { href: `https://max.ru/u/${value}`, label: 'открыть диалог' };
+}
+
 // Вкладка "Поставщики" (пункт меню "Стройка") — та же механика, что и у
 // "Подрядчики → Ресерч": 1 запрос — 1 карточка, внутри — сравнение
 // предложений разных поставщиков, дешевле всех подсвечено (см. rankOffers
