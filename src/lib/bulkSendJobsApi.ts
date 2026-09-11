@@ -69,3 +69,20 @@ export function insertBulkSendJob(input: {
     return job;
   });
 }
+
+// Поставщики, письма которым УЖЕ поставлены в очередь, но воркер (scripts/
+// process-bulk-send-jobs.mjs) до них ещё не дошёл — строки supplier_offer_emails
+// у них появятся только в момент реальной отправки, а между постановкой в
+// очередь и последним письмом проходит 25-35с × количество получателей (на
+// 20 поставщиков — минут десять). Без этого списка "кому ещё не писали" в
+// BulkSendModal считал бы их нетронутыми и владелец, поставив вторую
+// рассылку по той же категории, отправил бы части поставщиков дубль.
+// Статус 'error' сюда сознательно не попадает — письмо не ушло, повторить
+// такому поставщику как раз нужно.
+export function fetchQueuedBulkSendOfferIds(): Promise<string[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase.from('bulk_send_job_items').select('offer_id').eq('status', 'pending');
+    if (error) throw error;
+    return (data as { offer_id: string }[]).map((r) => r.offer_id);
+  });
+}
