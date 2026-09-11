@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText, ExternalLink } from 'lucide-react';
+import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText, ExternalLink, Sparkles, MessageCircle } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -33,11 +33,14 @@ import {
   countryFlag,
   offerCommunicationStatus,
   OFFER_COMMUNICATION_STATUS_LABEL,
+  SUPPLIER_MESSENGER_TYPES,
   type ResearchContactMethod,
   type SupplierRequest,
   type SupplierRequestGroup,
   type SupplierComparisonMode,
   type SupplierOffer,
+  type SupplierMessengerType,
+  type SupplierMessengerContact,
 } from '../data/supplierResearch';
 import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 import { fetchAllSupplierOfferEmails, markSupplierOfferEmailsRead } from '../lib/supplierOfferEmailsApi';
@@ -72,6 +75,11 @@ import {
   type SupplierWebSearchJob,
   type RecognizedInvoiceItem,
 } from '../lib/supplierWebSearchApi';
+import {
+  queueSupplierEnrichment,
+  fetchSupplierEnrichmentJobs,
+  type SupplierEnrichmentJob,
+} from '../lib/supplierEnrichmentApi';
 import { logActivity } from '../lib/activityLogApi';
 import { purchaseItemTotal, type PurchaseItem } from '../data/purchases';
 import { emptySection, type Estimate, type EstimateMaterial, type EstimateSection } from '../data/estimates';
@@ -196,6 +204,7 @@ const emptyOfferForm = {
   country: '',
   websiteUrl: '',
   listingUrl: '',
+  messengers: [] as SupplierMessengerContact[],
   catalogModelName: '',
   catalogModelPhoto: null as DocumentFile | null,
   // Владелец, 2026-09-09: файлы теперь грузятся сразу по выбору (как и
@@ -652,6 +661,8 @@ function RequestCard({
   searchQueueError,
   onOpenSearchResults,
   onDismissSearchJob,
+  onEnrichAll,
+  bulkEnriching,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
@@ -664,6 +675,8 @@ function RequestCard({
   onWebSearch: (r: SupplierRequest, country: string) => void;
   onToggleComparisonMode: (r: SupplierRequest) => void;
   searching: boolean;
+  onEnrichAll: (r: SupplierRequest) => void;
+  bulkEnriching: boolean;
   // Владелец, 2026-09-11: веб-поиск переехал на фоновую очередь (см.
   // supplierWebSearchApi.ts) — searchJob здесь ТОЛЬКО отображает последнее
   // ещё не отклонённое ("не открытое") задание этой категории:
@@ -713,6 +726,18 @@ function RequestCard({
           </Button>
           <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
             Добавить предложение
+          </Button>
+          {/* Владелец, 2026-09-11: массовое обогащение — по сайтам всех
+              поставщиков категории разом (тот же принцип, что тестировали на
+              "Краска интерьерная"), а не по одному. */}
+          <Button
+            type="button"
+            variant="secondary"
+            icon={bulkEnriching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            disabled={bulkEnriching}
+            onClick={() => onEnrichAll(request)}
+          >
+            {bulkEnriching ? 'Ставим в очередь...' : 'Обогатить всех'}
           </Button>
           <button
             type="button"
@@ -985,6 +1010,8 @@ function OfferDetailModal({
   onEdit,
   onDelete,
   deleting,
+  onEnrich,
+  enriching,
 }: {
   offer: SupplierOffer;
   emails: SupplierOfferEmail[];
@@ -993,6 +1020,8 @@ function OfferDetailModal({
   onEdit: (o: SupplierOffer) => void;
   onDelete: (o: SupplierOffer) => void;
   deleting: boolean;
+  onEnrich: (o: SupplierOffer) => void;
+  enriching: boolean;
 }) {
   const status = offerCommunicationStatus(offer, emails);
   return (
@@ -1061,6 +1090,20 @@ function OfferDetailModal({
           <span className="text-ink-faint">Email</span>
           <span className="text-ink">{offer.email || '—'}</span>
         </div>
+
+        {offer.messengers.length > 0 && (
+          <div className="flex flex-col gap-1 text-sm">
+            <span className="text-ink-faint">Мессенджеры</span>
+            <div className="flex flex-wrap gap-1.5">
+              {offer.messengers.map((m, i) => (
+                <span key={i} className="flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-ink">
+                  <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+                  {m.type}: {m.number}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col gap-1 text-sm">
           <span className="text-ink-faint">Менеджер</span>
@@ -1171,6 +1214,20 @@ function OfferDetailModal({
         <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
           <Button type="button" variant="ghost" icon={<Trash2 className="h-4 w-4" />} disabled={deleting} onClick={() => onDelete(offer)} className="mr-auto">
             Удалить
+          </Button>
+          {/* Владелец, 2026-09-11: "иишка ходит по сайту поставщика и
+              собирает email для заказов/телефон/мессенджеры" — обогащает
+              ТОЛЬКО пустые поля (см. scripts/process-supplier-enrichment-
+              jobs.mjs), недоступна без указанного сайта. */}
+          <Button
+            type="button"
+            variant="secondary"
+            icon={enriching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            disabled={enriching || !offer.websiteUrl}
+            title={offer.websiteUrl ? undefined : 'Сначала укажите адрес сайта'}
+            onClick={() => onEnrich(offer)}
+          >
+            {enriching ? 'Собираем данные...' : 'Обогатить данные'}
           </Button>
           {/* Владелец, 2026-09-04: "поставщик становится доступен для
               email-переписок" только после верификации — до этого "Написать"
@@ -1379,6 +1436,15 @@ export function Suppliers() {
   // supplierWebSearchApi.ts) — все задания страницы разом, чтобы у каждой
   // категории посчитать своё последнее незавершённое/неоткрытое.
   const [webSearchJobs, setWebSearchJobs] = useState<SupplierWebSearchJob[]>([]);
+  // Владелец, 2026-09-11: обогащение контактов поставщика с его сайта (email
+  // для заказов/телефон/мессенджеры) — тот же принцип фоновой очереди, что и
+  // у веб-поиска (supplierEnrichmentApi.ts). enrichmentJobs — все задания,
+  // опрашиваются вместе с offers (см. поллинг ниже), чтобы карточка
+  // предложения сама обновилась, как только фоновый скрипт применит
+  // найденное к supplier_research_offers.
+  const [enrichmentJobs, setEnrichmentJobs] = useState<SupplierEnrichmentJob[]>([]);
+  const [bulkEnrichingRequestId, setBulkEnrichingRequestId] = useState<string | null>(null);
+  const [enrichQueueError, setEnrichQueueError] = useState<string | null>(null);
   // Ошибка ПОСТАНОВКИ в очередь (сам INSERT не прошёл — сетевая икота и
   // т.п.), не ошибка самого поиска (та приходит как status:'error' у уже
   // поставленного задания и показывается через searchJob на карточке).
@@ -1430,6 +1496,7 @@ export function Suppliers() {
     fetchSupplierOrders().then(setSupplierOrders).catch(() => setSupplierOrders([]));
     fetchTodayRate().then(setRate).catch(() => setRate(undefined));
     fetchSupplierWebSearchJobs().then(setWebSearchJobs).catch(() => setWebSearchJobs([]));
+    fetchSupplierEnrichmentJobs().then(setEnrichmentJobs).catch(() => setEnrichmentJobs([]));
   }, []);
 
   // Владелец, 2026-09-03: "в ведомости по умолчанию всегда выбран Red One" —
@@ -1476,6 +1543,23 @@ export function Suppliers() {
     const interval = setInterval(() => {
       fetchSupplierWebSearchJobs()
         .then(setWebSearchJobs)
+        .catch(() => {});
+    }, 20000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Тот же принцип для обогащения контактов — сам фоновый скрипт пишет
+  // найденное напрямую в supplier_research_offers (не только в
+  // supplier_enrichment_jobs), поэтому поллинг обновляет ОБА списка разом:
+  // иначе карточка предложения не подхватила бы новый email/телефон/
+  // мессенджеры без ручного F5.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchSupplierEnrichmentJobs()
+        .then(setEnrichmentJobs)
+        .catch(() => {});
+      fetchSupplierOffers()
+        .then(setOffers)
         .catch(() => {});
     }, 20000);
     return () => clearInterval(interval);
@@ -2004,6 +2088,7 @@ export function Suppliers() {
             country: guessCountryFromWebsite(r.website),
             websiteUrl: r.website,
             listingUrl: r.link,
+            messengers: [],
             catalogModelName: '',
             catalogModelPhoto: null,
             price: 0,
@@ -2054,6 +2139,7 @@ export function Suppliers() {
       country: o.country || guessCountryFromWebsite(o.websiteUrl),
       websiteUrl: o.websiteUrl,
       listingUrl: o.listingUrl,
+      messengers: o.messengers,
       catalogModelName: o.catalogModelName,
       catalogModelPhoto: o.catalogModelPhoto,
       existingFiles: o.files,
@@ -2226,6 +2312,7 @@ export function Suppliers() {
         country: offerForm.country,
         websiteUrl: offerForm.websiteUrl.trim(),
         listingUrl: offerForm.listingUrl.trim(),
+        messengers: offerForm.messengers,
         catalogModelName: offerForm.catalogModelName.trim(),
         catalogModelPhoto: offerForm.catalogModelPhoto,
         price: offerForm.price.trim() ? Number(offerForm.price) : 0,
@@ -2273,6 +2360,45 @@ export function Suppliers() {
     }
   }
 
+  // Есть ли для этого предложения ещё не завершённое задание обогащения —
+  // дизейблит кнопку карточки, пока фоновый скрипт не закончит (pending —
+  // ещё в очереди, processing — уже пошёл на сайт).
+  function isEnrichingOffer(offerId: string): boolean {
+    return enrichmentJobs.some((j) => j.offerId === offerId && (j.status === 'pending' || j.status === 'processing'));
+  }
+
+  async function handleEnrichOffer(offer: SupplierOffer) {
+    if (!offer.websiteUrl || isEnrichingOffer(offer.id)) return;
+    setEnrichQueueError(null);
+    try {
+      const jobs = await queueSupplierEnrichment([offer.id]);
+      setEnrichmentJobs((prev) => [...jobs, ...prev]);
+    } catch (err) {
+      setEnrichQueueError(errorMessage(err, 'Не удалось поставить обогащение в очередь'));
+    }
+  }
+
+  // Владелец, 2026-09-11: "обогатить категорию Краски целиком" — по одному
+  // заданию на каждое предложение этой категории, у которого указан сайт и
+  // сейчас нет своего незавершённого задания (не дублируем то, что уже в
+  // очереди/обрабатывается).
+  async function handleEnrichRequest(request: SupplierRequest) {
+    const eligible = offers.filter(
+      (o) => o.requestId === request.id && o.websiteUrl && !isEnrichingOffer(o.id),
+    );
+    if (eligible.length === 0) return;
+    setBulkEnrichingRequestId(request.id);
+    setEnrichQueueError(null);
+    try {
+      const jobs = await queueSupplierEnrichment(eligible.map((o) => o.id));
+      setEnrichmentJobs((prev) => [...jobs, ...prev]);
+    } catch (err) {
+      setEnrichQueueError(errorMessage(err, 'Не удалось поставить обогащение в очередь'));
+    } finally {
+      setBulkEnrichingRequestId(null);
+    }
+  }
+
   const supplierAddButton =
     tab === 'Поставщики' ? (
       <Button icon={<Plus className="h-4 w-4" />} onClick={() => openAddRequest()}>
@@ -2311,6 +2437,7 @@ export function Suppliers() {
           </Card>
         )}
         {!loading && loadError && <Card className="py-10 text-center text-sm text-danger">{loadError}</Card>}
+        {enrichQueueError && <p className="text-sm text-danger">{enrichQueueError}</p>}
 
         {/* Владелец, 2026-09-03: "Страницу Поставщики разбиваем на 3
             логических блока — Материалы и оборудование, Работы, Сервисы".
@@ -2348,6 +2475,8 @@ export function Suppliers() {
                       searchQueueError={webSearchQueueError?.requestId === r.id ? webSearchQueueError.message : null}
                       onOpenSearchResults={openWebSearchResults}
                       onDismissSearchJob={dismissWebSearchJob}
+                      onEnrichAll={handleEnrichRequest}
+                      bulkEnriching={bulkEnrichingRequestId === r.id}
                     />
                   ))}
 
@@ -2765,6 +2894,56 @@ export function Suppliers() {
             </div>
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Мессенджеры</span>
+            {offerForm.messengers.map((m, i) => (
+              <div key={i} className="flex gap-2">
+                <div className="w-36 shrink-0">
+                  <Select
+                    options={[...SUPPLIER_MESSENGER_TYPES]}
+                    value={m.type}
+                    onChange={(v) =>
+                      setOfferForm((f) => ({
+                        ...f,
+                        messengers: f.messengers.map((x, xi) => (xi === i ? { ...x, type: v as SupplierMessengerType } : x)),
+                      }))
+                    }
+                  />
+                </div>
+                <Input
+                  placeholder="+7 9__ ..."
+                  value={m.number}
+                  onChange={(e) =>
+                    setOfferForm((f) => ({
+                      ...f,
+                      messengers: f.messengers.map((x, xi) => (xi === i ? { ...x, number: e.target.value } : x)),
+                    }))
+                  }
+                  className="flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => setOfferForm((f) => ({ ...f, messengers: f.messengers.filter((_, xi) => xi !== i) }))}
+                  aria-label="Удалить мессенджер"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-danger hover:text-danger"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="secondary"
+              icon={<Plus className="h-4 w-4" />}
+              className="w-fit"
+              onClick={() =>
+                setOfferForm((f) => ({ ...f, messengers: [...f.messengers, { type: SUPPLIER_MESSENGER_TYPES[0], number: '' }] }))
+              }
+            >
+              Мессенджер
+            </Button>
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input
               label="Email"
@@ -3082,6 +3261,8 @@ export function Suppliers() {
               onEdit={openEditOffer}
               onDelete={handleDeleteOffer}
               deleting={deletingOfferId === offer.id}
+              onEnrich={handleEnrichOffer}
+              enriching={isEnrichingOffer(offer.id)}
             />
           );
         })()}
