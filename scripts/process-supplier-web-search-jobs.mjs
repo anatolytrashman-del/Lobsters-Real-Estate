@@ -66,14 +66,44 @@ const supabase = DRY_RUN ? null : createClient(SUPABASE_URL, SUPABASE_SERVICE_RO
 const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_SEARCHES = 30;
 const MAX_RESULTS = 40;
-const COUNTRY_SEARCH_HINTS = {
+// Регион поиска (колонка country в supplier_web_search_jobs — историческое
+// имя, см. src/lib/supplierWebSearchApi.ts). Держать в синхроне с
+// supabase/functions/process-supplier-jobs/index.ts — это ручной запасной
+// путь той же очереди.
+const REGION_SEARCH_HINTS = {
   Беларусь: 'в Беларуси (если в пожеланиях не указан конкретный город — ищи прежде всего в Минске)',
   Россия: 'в России (если в пожеланиях не указан конкретный город — ищи прежде всего в Москве и других крупных городах)',
+  Москва:
+    'в Москве и Московской области — бери ТОЛЬКО компании, у которых есть офис, склад или шоурум в Москве или Подмосковье. Компании из других городов (Санкт-Петербург, Новосибирск, Екатеринбург, Казань, Пермь, Самара, Нижний Новгород и любые другие) НЕ ПОДХОДЯТ, даже если возят по всей России; региональные сайты федеральных сетей (поддомены spb., ekb., perm., nsk., kazan., samara. и подобные) — тоже, нужен московский сайт сети',
 };
-const DEFAULT_COUNTRY = 'Беларусь';
+const DEFAULT_REGION = 'Беларусь';
 
-function buildSystemPrompt(country, excludeNames) {
-  const hint = COUNTRY_SEARCH_HINTS[country] || COUNTRY_SEARCH_HINTS[DEFAULT_COUNTRY];
+// Детерминированная отсечка региональных поставщиков для московского поиска
+// (модель хинт выше местами игнорирует) — см. тот же список в
+// supabase/functions/process-supplier-jobs/index.ts.
+const OTHER_CITY_WORDS = [
+  'санкт-петербург', 'петербург', 'спб', 'новосибирск', 'екатеринбург', 'казань', 'пермь',
+  'самара', 'нижний новгород', 'челябинск', 'ростов', 'краснодар', 'уфа', 'воронеж',
+  'волгоград', 'красноярск', 'омск', 'тюмень', 'саратов', 'барнаул', 'иркутск',
+  'владивосток', 'хабаровск', 'ярославль', 'тольятти', 'ижевск', 'ульяновск', 'кемерово',
+  'сочи', 'калининград', 'оренбург', 'томск', 'астрахань', 'минск',
+];
+const OTHER_CITY_SUBDOMAIN =
+  /^(spb|piter|nsk|novosib|novosibirsk|ekb|ekaterinburg|perm|kazan|kaz|samara|nn|nnv|nnov|nizhniy-novgorod|ufa|rostov|rnd|krd|krasnodar|chel|chelyabinsk|omsk|tmn|tyumen|vrn|voronezh|krsk|krasnoyarsk|saratov|irk|vlg|volgograd|kld|sochi|tula|tver)\./i;
+
+function looksLikeOtherCity(r) {
+  const name = (r.name || '').toLowerCase();
+  if (OTHER_CITY_WORDS.some((c) => name.includes(c))) return true;
+  const host = (r.website || '')
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .split(/[/?#]/)[0]
+    .toLowerCase();
+  return OTHER_CITY_SUBDOMAIN.test(host);
+}
+
+function buildSystemPrompt(region, excludeNames) {
+  const hint = REGION_SEARCH_HINTS[region] || REGION_SEARCH_HINTS[DEFAULT_REGION];
   const excludeBlock = excludeNames.length
     ? `\n\nЭТИ КОМПАНИИ УЖЕ НАЙДЕНЫ РАНЕЕ ПО ЭТОМУ ЖЕ ЗАПРОСУ — НЕ ВКЛЮЧАЙ ИХ СНОВА,
 ищи ДРУГИХ, ещё не упомянутых поставщиков:
@@ -119,12 +149,12 @@ ${excludeNames.map((n) => `- ${n}`).join('\n')}`
 Если ничего подходящего не нашёл — верни пустой массив [].`;
 }
 
-function buildUserQuery(itemsText, sectionTitle, extra, country) {
+function buildUserQuery(itemsText, sectionTitle, extra, region) {
   const parts = [];
   if (sectionTitle) parts.push(`Раздел: ${sectionTitle}.`);
   parts.push(`Материалы: ${itemsText}.`);
   if (extra) parts.push(`Дополнительные пожелания: ${extra}.`);
-  const hint = COUNTRY_SEARCH_HINTS[country] || COUNTRY_SEARCH_HINTS[DEFAULT_COUNTRY];
+  const hint = REGION_SEARCH_HINTS[region] || REGION_SEARCH_HINTS[DEFAULT_REGION];
   parts.push(`Найди поставщиков этих материалов ${hint}, если пожелания не указывают иное.`);
   return parts.join(' ');
 }
@@ -182,7 +212,7 @@ function dedupeResults(list) {
   return result;
 }
 
-function sanitizeResults(raw, excludeKeys) {
+function sanitizeResults(raw, excludeKeys, region) {
   const cleaned = raw
     .filter((r) => r && typeof r.name === 'string' && r.name.trim())
     .map((r) => ({
@@ -193,12 +223,13 @@ function sanitizeResults(raw, excludeKeys) {
       email: typeof r.email === 'string' ? r.email.trim() : '',
       note: typeof r.note === 'string' ? r.note.trim() : '',
     }));
-  const deduped = dedupeResults(cleaned);
+  const moscowOnly = region === 'Москва' ? cleaned.filter((r) => !looksLikeOtherCity(r)) : cleaned;
+  const deduped = dedupeResults(moscowOnly);
   const filtered = excludeKeys && excludeKeys.size ? deduped.filter((r) => !excludeKeys.has(dedupKey(r))) : deduped;
   return filtered.slice(0, MAX_RESULTS);
 }
 
-async function fetchWebSearchResults(country, itemsText, sectionTitle, extra, excludeNames) {
+async function fetchWebSearchResults(region, itemsText, sectionTitle, extra, excludeNames) {
   const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
     method: 'POST',
     headers: {
@@ -210,8 +241,8 @@ async function fetchWebSearchResults(country, itemsText, sectionTitle, extra, ex
       model: MODEL,
       max_tokens: 10000,
       tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES, allowed_callers: ['direct'] }],
-      system: buildSystemPrompt(country, excludeNames),
-      messages: [{ role: 'user', content: buildUserQuery(itemsText, sectionTitle, extra, country) }],
+      system: buildSystemPrompt(region, excludeNames),
+      messages: [{ role: 'user', content: buildUserQuery(itemsText, sectionTitle, extra, region) }],
     }),
   });
   if (!resp.ok) {
@@ -229,16 +260,16 @@ async function runSearchRounds(job) {
   const excludeList = Array.isArray(job.exclude_companies) ? job.exclude_companies : [];
   const excludeKeys = new Set(excludeList.map((r) => dedupKey(r)));
   const excludeNames = excludeList.map((r) => r.name || r.website).filter(Boolean);
-  const country = job.country && COUNTRY_SEARCH_HINTS[job.country] ? job.country : DEFAULT_COUNTRY;
+  const region = job.country && REGION_SEARCH_HINTS[job.country] ? job.country : DEFAULT_REGION;
 
-  const round1Raw = await fetchWebSearchResults(country, job.items_text, job.section_title, job.extra, excludeNames);
-  const round1 = sanitizeResults(round1Raw, excludeKeys);
+  const round1Raw = await fetchWebSearchResults(region, job.items_text, job.section_title, job.extra, excludeNames);
+  const round1 = sanitizeResults(round1Raw, excludeKeys, region);
 
   let combined = round1;
   if (round1.length < MAX_RESULTS) {
     const round2ExcludeNames = [...excludeNames, ...round1.map((r) => r.name || r.website).filter(Boolean)];
-    const round2Raw = await fetchWebSearchResults(country, job.items_text, job.section_title, job.extra, round2ExcludeNames);
-    combined = sanitizeResults([...round1, ...round2Raw], excludeKeys);
+    const round2Raw = await fetchWebSearchResults(region, job.items_text, job.section_title, job.extra, round2ExcludeNames);
+    combined = sanitizeResults([...round1, ...round2Raw], excludeKeys, region);
   }
   return combined;
 }

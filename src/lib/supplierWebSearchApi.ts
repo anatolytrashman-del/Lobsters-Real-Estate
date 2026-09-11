@@ -89,7 +89,12 @@ export interface SupplierWebSearchJob {
   itemsText: string;
   sectionTitle: string;
   extra: string;
-  country: string;
+  // Регион поиска ('Москва'/'Россия'/'Беларусь', см. SUPPLIER_SEARCH_REGIONS
+  // в data/supplierResearch.ts). В базе колонка исторически называется
+  // country — заводилась, когда выбор был только между двумя странами;
+  // переименовывать её ради этого не стали, значение читает только
+  // обработчик очереди (supabase/functions/process-supplier-jobs).
+  region: string;
   excludeCompanies: SupplierExcludeEntry[];
   status: SupplierWebSearchJobStatus;
   results: SupplierSearchResult[];
@@ -128,7 +133,7 @@ function fromRow(row: SupplierWebSearchJobRow): SupplierWebSearchJob {
     itemsText: row.items_text,
     sectionTitle: row.section_title,
     extra: row.extra,
-    country: row.country,
+    region: row.country,
     excludeCompanies: Array.isArray(row.exclude_companies) ? row.exclude_companies : [],
     status: (row.status as SupplierWebSearchJobStatus) || 'pending',
     results: Array.isArray(row.results) ? row.results : [],
@@ -159,7 +164,7 @@ export async function queueSupplierWebSearch(params: {
   itemsText: string;
   sectionTitle: string;
   extra: string;
-  country: string;
+  region: string;
   excludeCompanies?: SupplierExcludeEntry[];
 }): Promise<SupplierWebSearchJob> {
   const { data, error } = await supabase
@@ -169,7 +174,7 @@ export async function queueSupplierWebSearch(params: {
       items_text: params.itemsText,
       section_title: params.sectionTitle,
       extra: params.extra,
-      country: params.country,
+      country: params.region,
       exclude_companies: params.excludeCompanies ?? [],
     })
     .select()
