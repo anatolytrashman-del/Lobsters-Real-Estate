@@ -8,6 +8,8 @@ function fromRow(row: LegalEntityRow): LegalEntity {
     name: row.name,
     shortName: row.short_name ?? '',
     cardFile: row.card_file ?? null,
+    deliveryInfo: row.delivery_info ?? '',
+    deliveryFile: row.delivery_file ?? null,
     isDefault: row.is_default,
     country: row.country ?? null,
     createdAt: row.created_at,
@@ -32,7 +34,18 @@ export function insertLegalEntity(name: string): Promise<LegalEntity> {
 
 export function updateLegalEntity(
   id: string,
-  input: { name: string; shortName: string; cardFile: LegalEntity['cardFile']; country?: string | null },
+  input: {
+    name: string;
+    shortName: string;
+    cardFile: LegalEntity['cardFile'];
+    country?: string | null;
+    // Инфо по доставке (владелец, 2026-09-11 — см. data/legalEntities.ts)
+    // передаются только когда их реально меняют: остальные вызовы
+    // (сохранение короткого имени, замена карточки) не должны затирать уже
+    // сохранённый текст/файл — тот же приём, что уже был у country.
+    deliveryInfo?: string;
+    deliveryFile?: LegalEntity['deliveryFile'];
+  },
 ): Promise<LegalEntity> {
   return withRetry(async () => {
     const { data, error } = await supabase
@@ -42,6 +55,8 @@ export function updateLegalEntity(
         short_name: input.shortName || null,
         card_file: input.cardFile,
         ...(input.country !== undefined ? { country: input.country || null } : {}),
+        ...(input.deliveryInfo !== undefined ? { delivery_info: input.deliveryInfo || null } : {}),
+        ...(input.deliveryFile !== undefined ? { delivery_file: input.deliveryFile } : {}),
       })
       .eq('id', id)
       .select()
@@ -69,7 +84,10 @@ export async function setLegalEntityDefault(id: string, entities: LegalEntity[])
 
 // Тот же бакет/приём, что и у uploadSupplierFile (lib/supplierResearchApi.ts) —
 // общий публичный бакет object-documents под произвольные файлы админки.
-export function uploadLegalEntityCardFile(file: File): Promise<LegalEntity['cardFile']> {
+// Владелец, 2026-09-11: той же функцией грузится и сгенерированная
+// "Информация по доставке" (lib/deliveryInfoDocx.ts отдаёт готовый File) —
+// бакет и форма результата {url, fileName} у обоих файлов юрлица одни и те же.
+export function uploadLegalEntityFile(file: File): Promise<LegalEntity['cardFile']> {
   return withRetry(
     async () => {
       const ext = file.name.split('.').pop() ?? 'bin';

@@ -129,7 +129,7 @@ async function uploadAttachmentToStorage(bytes, contentType, fileName) {
 
 async function fetchDocumentFileAsBase64(file) {
   const res = await fetch(file.url);
-  if (!res.ok) throw new Error('Не удалось загрузить карточку организации');
+  if (!res.ok) throw new Error('Не удалось загрузить файл юрлица');
   const buf = Buffer.from(await res.arrayBuffer());
   const ext = fileExtension(file.fileName);
   const contentType =
@@ -170,14 +170,24 @@ async function sendOneEmail({ offer, request, legalEntity, job }) {
     console.error('  Не удалось сохранить ведомость в Storage:', err.message);
   }
 
-  if (isFirstOutgoing && legalEntity?.card_file) {
+  // Файлы юрлица, которые идут только первому письму конкретному поставщику:
+  // карточка организации (реквизиты) и — владелец, 2026-09-11 — "Информация
+  // по доставке" (адрес объекта, машины до 20 тонн с боковой разгрузкой,
+  // разгрузка нашими силами; текст задаётся на странице юрлица, .docx
+  // собирается там же, см. src/lib/deliveryInfoDocx.ts). Оба лежат в Storage
+  // обычным {url, fileName}, обработка одинаковая — один цикл. Сбой на одном
+  // файле не роняет письмо: уходит без него, как и раньше с карточкой.
+  const firstEmailFiles = isFirstOutgoing
+    ? [legalEntity?.card_file, legalEntity?.delivery_file].filter(Boolean)
+    : [];
+  for (const file of firstEmailFiles) {
     try {
-      const cardAttachment = await fetchDocumentFileAsBase64(legalEntity.card_file);
-      resendAttachments.push({ filename: cardAttachment.fileName, content: cardAttachment.contentBase64 });
-      const bytes = Buffer.from(cardAttachment.contentBase64, 'base64');
-      storedFiles.push(await uploadAttachmentToStorage(bytes, cardAttachment.contentType, cardAttachment.fileName));
+      const attachment = await fetchDocumentFileAsBase64(file);
+      resendAttachments.push({ filename: attachment.fileName, content: attachment.contentBase64 });
+      const bytes = Buffer.from(attachment.contentBase64, 'base64');
+      storedFiles.push(await uploadAttachmentToStorage(bytes, attachment.contentType, attachment.fileName));
     } catch (err) {
-      console.error('  Не удалось приложить карточку организации:', err.message);
+      console.error(`  Не удалось приложить файл юрлица (${file.fileName}):`, err.message);
     }
   }
 
