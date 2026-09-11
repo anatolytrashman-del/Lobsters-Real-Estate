@@ -841,6 +841,8 @@ function OfferDetailModal({
   onEdit,
   onDelete,
   deleting,
+  onDeleteFile,
+  deletingFileIndex,
   enrichmentState,
 }: {
   offer: SupplierOffer;
@@ -850,6 +852,8 @@ function OfferDetailModal({
   onEdit: (o: SupplierOffer) => void;
   onDelete: (o: SupplierOffer) => void;
   deleting: boolean;
+  onDeleteFile: (o: SupplierOffer, index: number) => void;
+  deletingFileIndex: number | null;
   enrichmentState: Map<string, OfferEnrichmentState>;
 }) {
   const status = offerCommunicationStatus(offer, emails);
@@ -1022,23 +1026,37 @@ function OfferDetailModal({
           <div className="flex flex-col gap-1.5">
             <span className="text-sm text-ink-faint">Файлы</span>
             {offer.files.map((f, i) => (
-              <a
-                key={i}
-                href={f.url}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-control border border-border px-3 py-2 text-sm text-primary-hover hover:underline"
-              >
-                <Paperclip className="h-3.5 w-3.5 shrink-0" />
-                <span className="min-w-0 flex-1 truncate">{f.fileName}</span>
-              </a>
+              <div key={i} className="flex items-center gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
+                <Paperclip className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                <a href={f.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-primary-hover hover:underline">
+                  {f.fileName}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => onDeleteFile(offer, i)}
+                  disabled={deletingFileIndex === i}
+                  aria-label={`Удалить файл «${f.fileName}»`}
+                  title="Удалить только этот файл — сам поставщик и переписка не пострадают"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger disabled:opacity-50"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             ))}
           </div>
         )}
 
         <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
-          <Button type="button" variant="ghost" icon={<Trash2 className="h-4 w-4" />} disabled={deleting} onClick={() => onDelete(offer)} className="mr-auto">
-            Удалить
+          <Button
+            type="button"
+            variant="ghost"
+            icon={<Trash2 className="h-4 w-4" />}
+            disabled={deleting}
+            onClick={() => onDelete(offer)}
+            className="mr-auto"
+            title="Удаляет всего поставщика целиком: карточку, все файлы и всю переписку с ним"
+          >
+            Удалить поставщика целиком
           </Button>
           {/* Владелец, 2026-09-04: "поставщик становится доступен для
               email-переписок" только после верификации — до этого "Написать"
@@ -1150,6 +1168,7 @@ export function Suppliers() {
   const [savingOffer, setSavingOffer] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
+  const [deletingOfferFileIndex, setDeletingOfferFileIndex] = useState<number | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   // Владелец, 2026-09-09: автораспознавание КП, загруженного вручную в
   // форму предложения — offerUploadingFile крутится во время загрузки
@@ -2007,7 +2026,12 @@ export function Suppliers() {
   }
 
   async function handleDeleteOffer(o: SupplierOffer) {
-    if (!window.confirm(`Удалить предложение «${o.name}»?`)) return;
+    if (
+      !window.confirm(
+        `Удалить поставщика «${o.name}» целиком? Вместе с карточкой удалятся ВСЕ файлы и ВСЯ переписка с ним — восстановить это будет нельзя.\n\nЧтобы удалить только один файл (например, ошибочный счёт), закройте это окно и нажмите ✕ рядом с нужным файлом в списке «Файлы».`,
+      )
+    )
+      return;
     setDeletingOfferId(o.id);
     try {
       await deleteSupplierOffer(o.id);
@@ -2017,6 +2041,46 @@ export function Suppliers() {
       setLoadError(errorMessage(err, 'Не удалось удалить предложение'));
     } finally {
       setDeletingOfferId(null);
+    }
+  }
+
+  // Владелец, 2026-09-11: раньше единственным способом убрать один ошибочно
+  // прикреплённый файл (например, задвоенный счёт) была кнопка "Удалить" на
+  // всю карточку поставщика — она удаляла не только файл, а весь supplier_
+  // research_offers, каскадом стирая переписку (supplier_offer_emails),
+  // заявки (supplier_orders) и т.п. (см. FK ON DELETE CASCADE в БД). Отдельное
+  // удаление одного файла из offer.files через updateSupplierOffer — без
+  // затрагивания самой карточки и переписки.
+  async function handleDeleteOfferFile(o: SupplierOffer, index: number) {
+    const file = o.files[index];
+    if (!file || deletingOfferFileIndex !== null) return;
+    if (!window.confirm(`Удалить файл «${file.fileName}»? Сам поставщик и переписка с ним останутся.`)) return;
+    setDeletingOfferFileIndex(index);
+    try {
+      const updated = await updateSupplierOffer(o.id, {
+        requestId: o.requestId,
+        name: o.name,
+        contact: o.contact,
+        contactMethod: o.contactMethod,
+        email: o.email,
+        managerName: o.managerName,
+        messengers: o.messengers,
+        country: o.country,
+        websiteUrl: o.websiteUrl,
+        listingUrl: o.listingUrl,
+        catalogModelName: o.catalogModelName,
+        catalogModelPhoto: o.catalogModelPhoto,
+        price: o.price,
+        currency: o.currency,
+        items: o.items,
+        files: o.files.filter((_, i) => i !== index),
+        verified: o.verified,
+      });
+      handleSupplierOfferUpdated(updated);
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось удалить файл'));
+    } finally {
+      setDeletingOfferFileIndex(null);
     }
   }
 
@@ -2880,6 +2944,8 @@ export function Suppliers() {
               onEdit={openEditOffer}
               onDelete={handleDeleteOffer}
               deleting={deletingOfferId === offer.id}
+              onDeleteFile={handleDeleteOfferFile}
+              deletingFileIndex={deletingOfferId === offer.id ? null : deletingOfferFileIndex}
               enrichmentState={enrichmentState}
             />
           );
