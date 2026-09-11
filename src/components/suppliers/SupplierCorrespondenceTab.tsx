@@ -29,6 +29,8 @@ import { logActivity } from '../../lib/activityLogApi';
 import { DocumentPreviewModal, isPreviewable, type PreviewFile } from '../documents/DocumentPreviewModal';
 import { currencies, type Currency } from '../../data/transactions';
 import type { PurchaseItem } from '../../data/purchases';
+import type { SupplierQuote } from '../../data/supplierQuotes';
+import { insertSupplierQuote } from '../../lib/supplierQuotesApi';
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
@@ -211,6 +213,34 @@ function extractionItemsToPurchaseItems(items: EmailExtractionItem[], materialMa
   });
 }
 
+// Каждое подтверждённое распознавание — отдельное КП (data/supplierQuotes.ts):
+// поставщик может прислать в одну ветку несколько счетов, и раньше они
+// схлопывались в карточку (цена от последнего, позиции от всех сразу).
+// Карточка по-прежнему показывает последнее КП, но история вариантов теперь
+// не теряется и видна в сравнении цен.
+async function saveExtractionAsQuote(
+  offerId: string,
+  email: SupplierOfferEmail,
+  extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[] },
+  items: PurchaseItem[],
+  sourceFile: { url: string; fileName: string } | null,
+  currency: Currency,
+): Promise<SupplierQuote> {
+  return insertSupplierQuote({
+    offerId,
+    title: email.subject || 'Счёт без темы',
+    price: extraction.price ?? 0,
+    currency,
+    items,
+    files: sourceFile ? [{ url: sourceFile.url, fileName: sourceFile.fileName }] : [],
+    // Ставит человек: по данным счёта не отличить "аналог" от того, что
+    // просили, — см. комментарий у SupplierQuote.isAlternative.
+    isAlternative: false,
+    alternativeNote: '',
+    sourceEmailId: email.id,
+  });
+}
+
 async function applyExtractionToOffer(
   offer: SupplierOffer,
   extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[] },
@@ -358,6 +388,7 @@ export function EmailThread({
   onOfferUpdated,
   onOrderUpdated,
   onEmailUpdated,
+  onQuoteAdded,
 }: {
   offer: SupplierOffer;
   // Владелец, 2026-09-03: "1 заявка на поставку — одна ветка" — null здесь
@@ -382,6 +413,7 @@ export function EmailThread({
   onOfferUpdated: (offer: SupplierOffer) => void;
   onOrderUpdated: (order: SupplierOrder) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
+  onQuoteAdded: (quote: SupplierQuote) => void;
 }) {
   // Письма именно текущего треда — основной переписки (order=null) или
   // конкретной заявки. e.orderId null и undefined тут не разводим, в базе
@@ -612,7 +644,18 @@ export function EmailThread({
       if (order) {
         onOrderUpdated(await applyExtractionToOrder(order, e.extraction, e.extraction.sourceFile ?? null, materialMatches));
       } else {
-        onOfferUpdated(await applyExtractionToOffer(offer, e.extraction, e.extraction.sourceFile ?? null, materialMatches));
+        const updated = await applyExtractionToOffer(offer, e.extraction, e.extraction.sourceFile ?? null, materialMatches);
+        onOfferUpdated(updated);
+        onQuoteAdded(
+          await saveExtractionAsQuote(
+            offer.id,
+            e,
+            e.extraction,
+            extractionItemsToPurchaseItems(e.extraction.items, materialMatches),
+            e.extraction.sourceFile ?? null,
+            updated.currency,
+          ),
+        );
       }
       await setSupplierOfferEmailExtractionStatus(e.id, e.extraction, 'confirmed');
       onEmailUpdated({ ...e, extraction: { ...e.extraction, status: 'confirmed' } });
@@ -1315,6 +1358,7 @@ export function SupplierCorrespondenceTab({
   onOfferUpdated,
   onOrdersChange,
   onEmailUpdated,
+  onQuoteAdded,
 }: {
   requests: SupplierRequest[];
   offers: SupplierOffer[];
@@ -1347,6 +1391,7 @@ export function SupplierCorrespondenceTab({
   onOfferUpdated: (offer: SupplierOffer) => void;
   onOrdersChange: (orders: SupplierOrder[]) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
+  onQuoteAdded: (quote: SupplierQuote) => void;
 }) {
   // Владелец, 2026-09-04: "сидишь на странице конкретной переписки,
   // обновляешь — и всё слетело... кастомный урл даже на переписки с
@@ -1810,6 +1855,7 @@ export function SupplierCorrespondenceTab({
                 onOfferUpdated={onOfferUpdated}
                 onOrderUpdated={handleOrderUpdated}
                 onEmailUpdated={onEmailUpdated}
+                onQuoteAdded={onQuoteAdded}
               />
             </div>
           )}

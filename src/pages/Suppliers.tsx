@@ -54,6 +54,8 @@ import type { MaterialLedger } from '../data/materialLedgers';
 import { fetchMaterialLedgers, deleteMaterialLedger } from '../lib/materialLedgersApi';
 import type { SupplierOrder } from '../data/supplierOrders';
 import { fetchSupplierOrders } from '../lib/supplierOrdersApi';
+import type { SupplierQuote } from '../data/supplierQuotes';
+import { fetchSupplierQuotes, updateSupplierQuote } from '../lib/supplierQuotesApi';
 import {
   fetchSupplierRequests,
   insertSupplierRequest,
@@ -238,9 +240,18 @@ const emptyOfferForm = {
 // SupplierOffer.price). Предложения без цены — в хвост списка, не участвуют
 // в сравнении (0 не должен ложно выигрывать). Лидеров может быть несколько
 // (тот же принцип, что и там же).
+//
+// Владелец, 2026-09-11: "если указано, что это альтернатива, давай прямо возле
+// поставки выводить уведомление" — предложение, все КП которого помечены как
+// аналог (alternativeOfferIds), в борьбе за "лучшую цену" не участвует: оно
+// почти всегда дешевле просто потому, что это другой товар (реальный случай —
+// ГРИЛЬЯТО-Мастер со стальным h30 против алюминиевого h40 у остальных), и
+// зелёный бейдж на нём means "сравнили разное". В списке оно остаётся и цену
+// показывает, рядом — предупреждение.
 function rankOffersByPrice(
   offers: SupplierOffer[],
   rate: ExchangeRate | undefined,
+  alternativeOfferIds: Set<string> = new Set(),
 ): { sorted: SupplierOffer[]; cheapestIds: Set<string> } {
   const withUsd = offers.map((o) => ({
     offer: o,
@@ -248,9 +259,12 @@ function rankOffersByPrice(
   }));
   const priced = withUsd.filter((x) => x.usd != null).sort((a, b) => a.usd! - b.usd!);
   const unpriced = withUsd.filter((x) => x.usd == null);
-  const minUsd = priced[0] ? Math.round(priced[0].usd! * 100) : null;
+  // Место в списке альтернатива занимает по своей цене, как все — прячем от
+  // неё только бейдж "дешевле всех".
+  const comparable = priced.filter((x) => !alternativeOfferIds.has(x.offer.id));
+  const minUsd = comparable[0] ? Math.round(comparable[0].usd! * 100) : null;
   const cheapestIds = new Set(
-    minUsd == null ? [] : priced.filter((x) => Math.round(x.usd! * 100) === minUsd).map((x) => x.offer.id),
+    minUsd == null ? [] : comparable.filter((x) => Math.round(x.usd! * 100) === minUsd).map((x) => x.offer.id),
   );
   return { sorted: [...priced, ...unpriced].map((x) => x.offer), cheapestIds };
 }
@@ -292,6 +306,7 @@ function VerificationBadge({
 function PriceComparisonBlock({
   offers,
   emails,
+  quotes,
   rate,
   onOpenDetail,
   emptyHint,
@@ -301,6 +316,7 @@ function PriceComparisonBlock({
 }: {
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  quotes: SupplierQuote[];
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
@@ -334,6 +350,7 @@ function PriceComparisonBlock({
         <OfferTotalComparison
           offers={offersInCountry}
           emails={emails}
+          quotes={quotes}
           rate={rate}
           onOpenDetail={onOpenDetail}
           enrichmentState={enrichmentState}
@@ -361,6 +378,7 @@ function PriceComparisonBlock({
 function OfferTotalComparison({
   offers,
   emails,
+  quotes,
   rate,
   onOpenDetail,
   enrichmentState,
@@ -373,18 +391,38 @@ function OfferTotalComparison({
 }: {
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  quotes: SupplierQuote[];
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
   showItemsSpoiler?: boolean;
 }) {
-  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offers, rate);
+  const quotesByOffer = useMemo(() => {
+    const map = new Map<string, SupplierQuote[]>();
+    quotes.forEach((q) => map.set(q.offerId, [...(map.get(q.offerId) ?? []), q]));
+    return map;
+  }, [quotes]);
+
+  // Поставщик считается "предложил аналог" только когда ВСЕ его КП помечены
+  // альтернативой: если рядом есть хоть одно КП ровно по заявке, сравнивать
+  // его с остальными честно.
+  const alternativeOfferIds = useMemo(() => {
+    const ids = new Set<string>();
+    quotesByOffer.forEach((list, offerId) => {
+      if (list.length > 0 && list.every((q) => q.isAlternative)) ids.add(offerId);
+    });
+    return ids;
+  }, [quotesByOffer]);
+
+  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offers, rate, alternativeOfferIds);
 
   return (
     <div className="flex flex-col gap-2">
       {sortedOffers.map((o) => {
         const status = offerCommunicationStatus(o, emails);
         const isCheapest = cheapestIds.has(o.id);
+        const offerQuotes = quotesByOffer.get(o.id) ?? [];
+        const alternativeQuotes = offerQuotes.filter((q) => q.isAlternative);
         return (
           <div
             key={o.id}
@@ -413,6 +451,48 @@ function OfferTotalComparison({
                 </Button>
               </div>
             </div>
+
+            {/* Владелец, 2026-09-11: "надо бы показывать все" — поставщик может
+                прислать в одну ветку несколько счетов, раньше в карточке
+                оставался только последний. Показываем, когда их правда
+                несколько; одно КП и так уже видно ценой выше. */}
+            {offerQuotes.length > 1 && (
+              <div className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted/40 px-3 py-2">
+                <span className="text-xs font-medium text-ink-muted">Получено КП: {offerQuotes.length}</span>
+                {offerQuotes.map((q) => (
+                  <div key={q.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                    <span className="min-w-0 flex-1 truncate text-ink">{q.title}</span>
+                    {q.isAlternative && (
+                      <span className="rounded-full bg-warning-bg px-2 py-0.5 text-[11px] font-semibold text-warning">
+                        аналог
+                      </span>
+                    )}
+                    <span className="tabular-nums font-medium text-ink">
+                      {q.price > 0 ? formatPrice(q.price, q.currency) : '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Само уведомление — рядом с ценой, а не внутри карточки: решение
+                принимают, глядя на эту строку. */}
+            {alternativeQuotes.length > 0 && (
+              <div className="flex flex-col gap-0.5 rounded-control border border-warning/30 bg-warning-bg px-3 py-2 text-sm text-ink">
+                <span className="font-medium">
+                  {alternativeQuotes.length === offerQuotes.length
+                    ? 'Это аналог, а не то, что запрашивали — цены сопоставимы не напрямую'
+                    : 'Среди КП есть аналог — не то, что запрашивали'}
+                </span>
+                {alternativeQuotes
+                  .filter((q) => q.alternativeNote.trim())
+                  .map((q) => (
+                    <span key={q.id} className="text-ink-muted">
+                      {q.title}: {q.alternativeNote}
+                    </span>
+                  ))}
+              </div>
+            )}
 
             {/* Владелец, 2026-09-09: "названия позиций будут 100% отличаться,
                 ты перекрестные сравнения не найдешь" — раньше здесь строилась
@@ -563,6 +643,7 @@ function MaterialPriceComparisonCard({
   request,
   offers,
   emails,
+  quotes,
   rate,
   onOpenDetail,
   enrichmentState,
@@ -570,6 +651,7 @@ function MaterialPriceComparisonCard({
   request: SupplierRequest;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  quotes: SupplierQuote[];
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
@@ -609,6 +691,7 @@ function MaterialPriceComparisonCard({
           <OfferTotalComparison
             offers={confirmedOffers}
             emails={emails}
+            quotes={quotes}
             rate={rate}
             onOpenDetail={onOpenDetail}
             enrichmentState={enrichmentState}
@@ -681,6 +764,7 @@ function RequestCard({
   request,
   offers,
   emails,
+  quotes,
   rate,
   onEditRequest,
   onDeleteRequest,
@@ -697,6 +781,7 @@ function RequestCard({
   request: SupplierRequest;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  quotes: SupplierQuote[];
   rate: ExchangeRate | undefined;
   onEditRequest: (r: SupplierRequest) => void;
   onDeleteRequest: (r: SupplierRequest) => void;
@@ -826,6 +911,7 @@ function RequestCard({
       <PriceComparisonBlock
         offers={offers}
         emails={emails}
+        quotes={quotes}
         rate={rate}
         onOpenDetail={onOpenDetail}
         emptyHint="переключите страну выше или добавьте предложение."
@@ -850,6 +936,9 @@ function OfferDetailModal({
   enrichmentState,
   onVerify,
   verifying,
+  offerQuotes,
+  onQuoteAlternativeChange,
+  savingQuoteId,
 }: {
   offer: SupplierOffer;
   emails: SupplierOfferEmail[];
@@ -860,6 +949,9 @@ function OfferDetailModal({
   deleting: boolean;
   onDeleteFile: (o: SupplierOffer, index: number) => void;
   deletingFileIndex: number | null;
+  offerQuotes: SupplierQuote[];
+  onQuoteAlternativeChange: (quote: SupplierQuote, isAlternative: boolean, note: string) => void;
+  savingQuoteId: string | null;
   enrichmentState: Map<string, OfferEnrichmentState>;
   onVerify: (o: SupplierOffer) => void;
   verifying: boolean;
@@ -1030,6 +1122,46 @@ function OfferDetailModal({
           </div>
         )}
 
+        {/* Все КП этого поставщика (data/supplierQuotes.ts). Здесь же ставится
+            пометка "аналог": по данным счёта отличить его от запрошенного
+            нельзя, это знание человека — зато после пометки предупреждение
+            видно прямо в сравнении цен, где принимают решение. */}
+        {offerQuotes.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-faint">Полученные КП</span>
+            {offerQuotes.map((q) => (
+              <div key={q.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-ink">{q.title}</span>
+                  <span className="tabular-nums font-semibold text-ink">
+                    {q.price > 0 ? formatPrice(q.price, q.currency) : '—'}
+                  </span>
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
+                  <input
+                    type="checkbox"
+                    checked={q.isAlternative}
+                    disabled={savingQuoteId === q.id}
+                    onChange={(e) => onQuoteAlternativeChange(q, e.target.checked, q.alternativeNote)}
+                    className="h-3.5 w-3.5"
+                  />
+                  Это аналог, а не то, что запрашивали
+                </label>
+                {q.isAlternative && (
+                  <Input
+                    placeholder="Чем отличается (например: сталь h30 вместо алюминия h40)"
+                    defaultValue={q.alternativeNote}
+                    disabled={savingQuoteId === q.id}
+                    onBlur={(e) => {
+                      if (e.target.value !== q.alternativeNote) onQuoteAlternativeChange(q, true, e.target.value);
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {offer.files.length > 0 && (
           <div className="flex flex-col gap-1.5">
             <span className="text-sm text-ink-faint">Файлы</span>
@@ -1189,6 +1321,7 @@ export function Suppliers() {
   const [offerError, setOfferError] = useState<string | null>(null);
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
   const [deletingOfferFileIndex, setDeletingOfferFileIndex] = useState<number | null>(null);
+  const [savingQuoteId, setSavingQuoteId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   // Владелец, 2026-09-09: автораспознавание КП, загруженного вручную в
   // форму предложения — offerUploadingFile крутится во время загрузки
@@ -1230,6 +1363,9 @@ export function Suppliers() {
   // одна ветка") — все сразу, группировка по offerId на клиенте
   // (SupplierCorrespondenceTab), тот же принцип, что и у offers/emails.
   const [supplierOrders, setSupplierOrders] = useState<SupplierOrder[]>([]);
+  // Все КП поставщиков (data/supplierQuotes.ts) — несколько счетов в одной
+  // ветке переписки больше не схлопываются в карточку, см. сравнение цен.
+  const [supplierQuotes, setSupplierQuotes] = useState<SupplierQuote[]>([]);
   // Владелец, 2026-08-29: "слишком много инфы на превью, все вразнобой.
   // Давай выводить название + цену + статус + кнопка Подробнее" — остальные
   // поля (контакт/сайт/модель/срок/требования/файлы) и действия
@@ -1318,6 +1454,7 @@ export function Suppliers() {
     fetchEmailTemplates().then(setEmailTemplates).catch(() => setEmailTemplates([]));
     fetchMaterialLedgers().then(setMaterialLedgers).catch(() => setMaterialLedgers([]));
     fetchSupplierOrders().then(setSupplierOrders).catch(() => setSupplierOrders([]));
+    fetchSupplierQuotes().then(setSupplierQuotes).catch(() => setSupplierQuotes([]));
     fetchTodayRate().then(setRate).catch(() => setRate(undefined));
     fetchSupplierWebSearchJobs().then(setWebSearchJobs).catch(() => setWebSearchJobs([]));
     fetchSupplierEnrichmentJobs().then(setEnrichmentJobs).catch(() => setEnrichmentJobs([]));
@@ -2083,6 +2220,28 @@ export function Suppliers() {
     }
   }
 
+  async function handleQuoteAlternativeChange(quote: SupplierQuote, isAlternative: boolean, note: string) {
+    setSavingQuoteId(quote.id);
+    try {
+      const updated = await updateSupplierQuote(quote.id, {
+        offerId: quote.offerId,
+        title: quote.title,
+        price: quote.price,
+        currency: quote.currency,
+        items: quote.items,
+        files: quote.files,
+        isAlternative,
+        alternativeNote: isAlternative ? note : '',
+        sourceEmailId: quote.sourceEmailId,
+      });
+      setSupplierQuotes((prev) => prev.map((q) => (q.id === updated.id ? updated : q)));
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось сохранить пометку КП'));
+    } finally {
+      setSavingQuoteId(null);
+    }
+  }
+
   // Владелец, 2026-09-11: раньше единственным способом убрать один ошибочно
   // прикреплённый файл (например, задвоенный счёт) была кнопка "Удалить" на
   // всю карточку поставщика — она удаляла не только файл, а весь supplier_
@@ -2186,6 +2345,7 @@ export function Suppliers() {
                       request={r}
                       offers={offers.filter((o) => o.requestId === r.id)}
                       emails={supplierEmails}
+                      quotes={supplierQuotes}
                       rate={rate}
                       onEditRequest={openEditRequest}
                       onDeleteRequest={handleDeleteRequest}
@@ -2268,6 +2428,7 @@ export function Suppliers() {
                       request={r}
                       offers={offers.filter((o) => o.requestId === r.id)}
                       emails={supplierEmails}
+                      quotes={supplierQuotes}
                       rate={rate}
                       onOpenDetail={(o) => setDetailOfferId(o.id)}
                       enrichmentState={enrichmentState}
@@ -2482,6 +2643,7 @@ export function Suppliers() {
             onLedgersChange={setMaterialLedgers}
             onOfferUpdated={handleSupplierOfferUpdated}
             onOrdersChange={setSupplierOrders}
+            onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
             onEmailUpdated={handleSupplierEmailUpdated}
           />
         </div>
@@ -2962,6 +3124,7 @@ export function Suppliers() {
               onLedgersChange={setMaterialLedgers}
               onOfferUpdated={handleSupplierOfferUpdated}
               onEmailUpdated={handleSupplierEmailUpdated}
+              onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
               onClose={() => setEmailOfferId(null)}
             />
           );
@@ -2985,6 +3148,9 @@ export function Suppliers() {
               deleting={deletingOfferId === offer.id}
               onDeleteFile={handleDeleteOfferFile}
               deletingFileIndex={deletingOfferId === offer.id ? null : deletingOfferFileIndex}
+              offerQuotes={supplierQuotes.filter((q) => q.offerId === offer.id)}
+              onQuoteAlternativeChange={handleQuoteAlternativeChange}
+              savingQuoteId={savingQuoteId}
               enrichmentState={enrichmentState}
               onVerify={handleVerifyOffer}
               verifying={verifyingOfferId === offer.id}
@@ -3138,6 +3304,7 @@ function OfferEmailModal({
   onLedgersChange,
   onOfferUpdated,
   onEmailUpdated,
+  onQuoteAdded,
   onClose,
 }: {
   offer: SupplierOffer;
@@ -3154,6 +3321,7 @@ function OfferEmailModal({
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
   onOfferUpdated: (offer: SupplierOffer) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
+  onQuoteAdded: (quote: SupplierQuote) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -3187,6 +3355,7 @@ function OfferEmailModal({
         onOfferUpdated={onOfferUpdated}
         onOrderUpdated={() => {}}
         onEmailUpdated={onEmailUpdated}
+        onQuoteAdded={onQuoteAdded}
       />
     </Modal>
   );
