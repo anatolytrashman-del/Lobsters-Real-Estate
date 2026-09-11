@@ -36,6 +36,8 @@
 // добавляется, уже присутствующий не трогается и не дублируется.
 
 import { createClient } from '@supabase/supabase-js';
+import https from 'node:https';
+import http from 'node:http';
 
 const SUPABASE_URL = 'https://iohcdylttyuhwovztrbk.supabase.co';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -127,6 +129,195 @@ function sanitizeResult(raw) {
     note: typeof raw.note === 'string' ? raw.note.trim() : '',
     siteAccessible: raw.siteAccessible !== false,
   };
+}
+
+// ——— Запасные пути, когда web_fetch не открыл сайт ————————————————————
+// Владелец, 2026-09-11: "осталось много нераспознанных поставщиков, хотя их
+// сайты известны. Один сайт не открылся с VPN, только из России, другой — с
+// ошибкой SSL-сертификата. Хочу, чтобы распознавание было максимальным".
+// Реальные причины по журналу заданий: бот-защита против серверов Anthropic
+// (403), гео-блокировка, битый сертификат. Поэтому вместо одной попытки —
+// три, по убыванию достоверности источника:
+//   1) web_fetch — настоящая страница глазами модели (как было);
+//   2) прямой запрос с раннера GitHub Actions — другой IP и обычный
+//      браузерный User-Agent, плюс мы сами управляем проверкой сертификата
+//      (это и чинит кейс с битым SSL);
+//   3) веб-поиск — карточки организации в Яндекс.Картах/2ГИС и каталогах;
+//      единственный путь для сайтов, которые физически не открываются
+//      извне России.
+// Источник, из которого реально взяты контакты, дописывается в note —
+// человек при верификации должен видеть, насколько данным можно верить.
+const PAGE_FETCH_TIMEOUT_MS = 15000;
+const MAX_PAGE_BYTES = 500_000;
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
+const CONTACT_PATHS = ['', '/contacts', '/contacts/', '/kontakty', '/kontakty/', '/contact', '/about'];
+
+function fetchPageOnce(url, { insecure, redirectsLeft = 3 }) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const client = target.protocol === 'http:' ? http : https;
+    const req = client.get(
+      target,
+      {
+        headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ru-RU,ru;q=0.9' },
+        timeout: PAGE_FETCH_TIMEOUT_MS,
+        // Битый/просроченный сертификат — причина, по которой сайт вообще не
+        // отдаётся инструменту; на втором заходе читаем его без проверки и
+        // ОБЯЗАТЕЛЬНО помечаем это в note (данные с такого сайта — с оговоркой).
+        ...(insecure && target.protocol === 'https:' ? { rejectUnauthorized: false } : {}),
+      },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          resolve(fetchPageOnce(new URL(res.headers.location, target).toString(), { insecure, redirectsLeft: redirectsLeft - 1 }));
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        let size = 0;
+        const chunks = [];
+        res.on('data', (chunk) => {
+          size += chunk.length;
+          if (size > MAX_PAGE_BYTES) {
+            res.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        res.on('error', reject);
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+  });
+}
+
+// Сначала как положено (с проверкой сертификата), и только если упало именно
+// на сертификате — повтор без проверки. Возвращает и сам факт такого повтора.
+async function fetchPage(url) {
+  try {
+    return { html: await fetchPageOnce(url, { insecure: false }), insecure: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const certProblem = /certificate|CERT_|SELF_SIGNED|ALT_NAME|SSL|TLS/i.test(message) || /^(ERR_TLS|UNABLE_TO_VERIFY)/i.test(err?.code ?? '');
+    if (!certProblem) throw err;
+    return { html: await fetchPageOnce(url, { insecure: true }), insecure: true };
+  }
+}
+
+// Грубое приведение страницы к тексту: сначала вытаскиваем mailto:/tel: из
+// разметки (почта и телефон часто только в href, в видимом тексте их нет —
+// иконкой или картинкой), потом снимаем теги.
+function htmlToText(html) {
+  const links = [...html.matchAll(/(?:mailto|tel):([^"'\s>]+)/gi)].map((m) => m[0]);
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const linksBlock = links.length ? `Ссылки-контакты со страницы: ${[...new Set(links)].join(', ')}\n\n` : '';
+  return `${linksBlock}${text}`.slice(0, 20000);
+}
+
+async function askModel(body) {
+  const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': PROXYAPI_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    if (resp.status === 402) throw new Error('Недостаточно средств на балансе ProxyAPI — пополните счёт в личном кабинете ProxyAPI.');
+    throw new Error(`Ошибка обогащения (${resp.status}): ${text.slice(0, 300)}`);
+  }
+  const data = await resp.json();
+  return sanitizeResult(extractJson(data.content));
+}
+
+// Попытка 2: читаем страницы сами с раннера и отдаём модели уже готовый текст.
+async function fetchFromPagesDirectly(name, websiteUrl) {
+  const base = /^https?:\/\//i.test(websiteUrl) ? websiteUrl : `https://${websiteUrl}`;
+  const pages = [];
+  let insecureUsed = false;
+  for (const path of CONTACT_PATHS) {
+    if (pages.length >= 2) break;
+    try {
+      const { html, insecure } = await fetchPage(new URL(path, base).toString());
+      insecureUsed = insecureUsed || insecure;
+      const text = htmlToText(html);
+      if (text.length > 200) pages.push(text);
+    } catch {
+      // Страницы может не быть (404) или она недоступна — просто пробуем следующую.
+    }
+  }
+  if (pages.length === 0) throw new Error('страницы не открылись напрямую');
+
+  const result = await askModel({
+    model: MODEL,
+    max_tokens: 2000,
+    system: `${SYSTEM_PROMPT}\n\nВАЖНО: инструментов нет, страницы уже скачаны и приведены к тексту — работай только с тем, что прислано ниже, ничего не выдумывай.`,
+    messages: [
+      {
+        role: 'user',
+        content: `Компания «${name}», сайт ${base}. Текст страниц сайта:\n\n${pages.join('\n\n--- следующая страница ---\n\n')}`,
+      },
+    ],
+  });
+  return { result, insecureUsed };
+}
+
+// Попытка 3: веб-поиск — для сайтов, которые физически не открываются извне
+// (гео-блокировка) или закрыты бот-защитой наглухо.
+async function searchContacts(name, websiteUrl) {
+  return askModel({
+    model: MODEL,
+    max_tokens: 3000,
+    tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 5, allowed_callers: ['direct'] }],
+    system: `Ты собираешь контактные данные поставщика для закупщика строительной компании.
+Сайт компании НЕДОСТУПЕН для прямого просмотра (бот-защита, гео-блокировка или
+проблема с сертификатом), поэтому ищи контакты через веб-поиск: карточки
+организации в Яндекс.Картах/2ГИС, каталоги (Rusprofile, Zoon, Tiu, Prom),
+описания и объявления компании. Найди:
+1) email для оформления заказов (order@/zakaz@/zakupki@/sales@; если такого
+   нет — общий email компании);
+2) основной телефон (если несколько офисов — московский);
+3) номера в мессенджерах Telegram/WhatsApp/Max, если явно указан САМ НОМЕР
+   (одного упоминания "есть WhatsApp" недостаточно — тогда не добавляй).
+Бери только то, что относится именно к ЭТОЙ компании с ЭТИМ сайтом — при
+сомнении оставляй пусто, выдумывать нельзя.
+
+Верни СТРОГО JSON без markdown-разметки и пояснений:
+{"orderEmail":"","phone":"","messengers":[{"type":"Telegram","number":""}],"note":"","siteAccessible":false}
+
+"messengers" — массив, type строго одно из "Telegram"/"WhatsApp"/"Max".
+"note" — одной фразой по-русски, откуда взяты контакты (какой источник).`,
+    messages: [{ role: 'user', content: `Компания «${name}», сайт ${websiteUrl}. Найди её контакты.` }],
+  });
+}
+
+// Слияние попыток: непустое поле побеждает пустое, уже найденное не
+// затирается более поздней (менее достоверной) попыткой.
+function mergeResults(base, extra) {
+  const messengerTypes = new Set(base.messengers.map((m) => m.type));
+  return {
+    orderEmail: base.orderEmail || extra.orderEmail,
+    phone: base.phone || extra.phone,
+    messengers: [...base.messengers, ...extra.messengers.filter((m) => !messengerTypes.has(m.type))],
+    note: [base.note, extra.note].filter(Boolean).join(' '),
+    siteAccessible: base.siteAccessible || extra.siteAccessible,
+  };
+}
+
+function hasContacts(result) {
+  return Boolean(result.orderEmail || result.phone);
 }
 
 async function fetchEnrichment(name, websiteUrl) {
@@ -221,7 +412,42 @@ async function processJob(job) {
   }
 
   try {
-    const result = await fetchEnrichment(offer.name, offer.website_url);
+    // Цепочка попыток (см. комментарий у fetchPage выше): настоящая страница →
+    // прямой запрос с раннера → веб-поиск. Следующая попытка идёт только если
+    // предыдущая не дала ни email, ни телефона — ради экономии вызовов и
+    // потому, что каждая следующая менее достоверна.
+    const sources = [];
+    let result = { orderEmail: '', phone: '', messengers: [], note: '', siteAccessible: false };
+
+    try {
+      result = mergeResults(result, await fetchEnrichment(offer.name, offer.website_url));
+      if (hasContacts(result)) sources.push('сайт');
+    } catch (err) {
+      console.error(`  → web_fetch не сработал: ${err instanceof Error ? err.message : err}`);
+    }
+
+    if (!hasContacts(result)) {
+      try {
+        const direct = await fetchFromPagesDirectly(offer.name, offer.website_url);
+        result = mergeResults(result, direct.result);
+        if (hasContacts(result)) {
+          sources.push(direct.insecureUsed ? 'прямой просмотр сайта (сертификат сайта невалиден)' : 'прямой просмотр сайта');
+        }
+      } catch (err) {
+        console.error(`  → прямой просмотр не сработал: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    if (!hasContacts(result)) {
+      try {
+        result = mergeResults(result, await searchContacts(offer.name, offer.website_url));
+        if (hasContacts(result)) sources.push('веб-поиск (сайт напрямую не открылся)');
+      } catch (err) {
+        console.error(`  → веб-поиск не сработал: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    if (sources.length > 0) result.note = `Источник: ${sources[sources.length - 1]}. ${result.note}`.trim();
     const applied = await applyToOffer(job.offer_id, result);
     await updateJob(job.id, { status: 'done', result, completed_at: new Date().toISOString() });
     console.log(
