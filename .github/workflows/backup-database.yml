@@ -1,0 +1,22 @@
+name: Backup database
+
+on:
+  schedule:
+    # Каждый день в 02:30 UTC (05:30 по Москве) — заведомо тихое время,
+    # чтобы снимок не совпадал с часовыми синками статистики.
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/backup-database.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
