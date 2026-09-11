@@ -59,6 +59,13 @@ const supabase = DRY_RUN ? null : createClient(SUPABASE_URL, SUPABASE_SERVICE_RO
 
 const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_FETCHES = 3;
+// Владелец, 2026-09-11: "а че, не можем параллельно собирать инфу несколькими
+// агентами?" — можем: задание почти целиком стоит в ожидании сети (web_fetch
+// одного сайта — десятки секунд), процессор при этом простаивает. Пул из
+// нескольких воркеров сокращает разбор очереди во столько же раз. Больше не
+// ставим намеренно: у ProxyAPI есть лимиты на частоту, а 429 здесь стоит
+// дороже, чем лишняя минута ожидания.
+const CONCURRENCY = 5;
 const MESSENGER_TYPES = ['Telegram', 'WhatsApp', 'Max'];
 
 const SYSTEM_PROMPT = `Ты собираешь контактные данные поставщика для закупщика строительной компании.
@@ -227,7 +234,7 @@ function htmlToText(html) {
   return `${linksBlock}${text}`.slice(0, 20000);
 }
 
-async function askModel(body) {
+async function askModel(body, retried = false) {
   const resp = await fetch('https://api.proxyapi.ru/anthropic/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': PROXYAPI_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
@@ -236,6 +243,12 @@ async function askModel(body) {
   if (!resp.ok) {
     const text = await resp.text();
     if (resp.status === 402) throw new Error('Недостаточно средств на балансе ProxyAPI — пополните счёт в личном кабинете ProxyAPI.');
+    // Параллельные воркеры (см. CONCURRENCY) могут упереться в лимит частоты —
+    // это не ошибка задания, а просьба подождать: один спокойный повтор.
+    if (resp.status === 429 && !retried) {
+      await new Promise((resolve) => setTimeout(resolve, 15000));
+      return askModel(body, true);
+    }
     throw new Error(`Ошибка обогащения (${resp.status}): ${text.slice(0, 300)}`);
   }
   const data = await resp.json();
@@ -394,6 +407,21 @@ async function applyToOffer(offerId, result) {
   return { emailApplied, phoneApplied, messengersAdded };
 }
 
+// Простой пул: N воркеров разбирают общий список, каждый берёт следующий
+// свободный индекс. Без внешних зависимостей — голому .mjs-скрипту их взять
+// неоткуда (см. комментарий про дублирование логики в шапке файла).
+async function runPool(items, limit, worker) {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      await worker(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+}
+
 async function processJob(job) {
   const offer = job.supplier_research_offers;
   const label = offer?.name || job.offer_id;
@@ -483,10 +511,8 @@ async function main() {
     console.log('Очередь пуста.');
     return;
   }
-  console.log(`В очереди ${jobs.length} задани${jobs.length === 1 ? 'е' : jobs.length < 5 ? 'я' : 'й'}.`);
-  for (const job of jobs) {
-    await processJob(job);
-  }
+  console.log(`В очереди ${jobs.length} задани${jobs.length === 1 ? 'е' : jobs.length < 5 ? 'я' : 'й'}, обрабатываю по ${CONCURRENCY} параллельно.`);
+  await runPool(jobs, CONCURRENCY, processJob);
 }
 
 await main();
