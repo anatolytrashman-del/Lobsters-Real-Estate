@@ -2770,7 +2770,10 @@ export function Suppliers() {
         // документ целиком), дальше цепочка flex-1/min-h-0 идёт вниз до
         // самого списка писем внутри SupplierCorrespondenceTab/EmailThread —
         // композер всегда виден целиком, скроллится только лента писем.
-        <div className="mt-6 flex flex-col lg:min-h-0 lg:flex-1">
+        // Владелец, 2026-09-11: это поведение теперь под вариантом roomy
+        // (см. src/index.css) — на невысоком окне (ноутбук закупщицы) вкладка
+        // больше не пытается уложиться в высоту экрана, а скроллится страницей.
+        <div className="mt-6 flex flex-col roomy:min-h-0 roomy:flex-1">
           <SupplierCorrespondenceTab
             requests={requests}
             offers={offers}

@@ -751,7 +751,13 @@ export function EmailThread({
     // не уезжает за нижний край экрана. Работает и внутри модалки быстрого
     // "Написать" (OfferEmailModal — max-h-[90vh] + overflow-y-auto на самой
     // модалке), не только на вкладке "Письма".
-    <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
+    // Владелец, 2026-09-11: вся эта раскладка "по высоте окна" теперь только
+    // под roomy (см. src/index.css) — на невысоком окне она ужимала ленту
+    // писем в ноль, см. комментарий у самой ленты ниже. Внутри roomy цепочка
+    // min-h-0 осталась (без неё лента не прокручивается внутри себя, а растёт
+    // по содержимому и уводит композер за экран), а от схлопывания страхует
+    // пол высоты на блоке "Переписка" ниже.
+    <div className="flex flex-col gap-4 roomy:min-h-0 roomy:flex-1">
       {/* Владелец, 2026-09-03: флаг страны из заголовка карточки убран
           (слишком много флагов на экране, см. запись про список слева),
           категория (раньше отдельным бейджем у заголовка выше, см.
@@ -766,12 +772,21 @@ export function EmailThread({
         {offer.country && <span title={offer.country}>{countryFlag(offer.country)}</span>}
       </div>
 
-      <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
+      <div className="flex flex-col gap-2 roomy:min-h-60 roomy:flex-1">
         <span className="text-sm font-semibold text-ink">Переписка</span>
         {extractionError && <p className="text-sm text-danger">{extractionError}</p>}
         {threadEmails.length === 0 && <p className="text-sm text-ink-faint">Писем пока нет.</p>}
         {threadEmails.length > 0 && (
-          <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+          // Владелец, 2026-09-11: "зажато размерами экрана, а не скроллится
+          //     разумно вниз" — у закупщицы (окно ~570 px по высоте) этот блок
+          //     получал ровно 0 px. Своя прокрутка у ленты осталась (она и
+          //     держит композер на виду), но включается только под roomy —
+          //     на невысоком окне письма идут натуральной высотой и вниз
+          //     скроллится сама страница. Пол высоты стоит на родителе
+          //     ("Переписка" выше, roomy:min-h-60), а не здесь: на самой
+          //     ленте он вылезал за сжатого min-h-0 родителя и налезал на
+          //     композер (проверено на макете со скомпилированным CSS).
+          <div className="flex flex-col gap-2 roomy:min-h-0 roomy:flex-1 roomy:overflow-y-auto">
             {/* Владелец, 2026-09-03: "когда много писем, приходится листать в
                 самый низ... я бы делал обратную хронологию — последнее письмо
                 наверху" — [...emails] копия перед reverse(), исходный emails
@@ -1699,14 +1714,14 @@ export function SupplierCorrespondenceTab({
   return (
     // Владелец, 2026-09-10: "весь блок письма должен быть виден на экране,
     // вне зависимости от экрана... даже если список поставщиков как-то
-    // скроется" — цепочка lg:min-h-0/lg:flex-1 вниз до EmailThread не
-    // растягивает список поставщиков поверх экрана, а даёт ему свою
-    // прокрутку (см. ниже), композер письма остаётся всегда видимым целиком.
-    // Ниже lg — как раньше, обычная прокрутка страницы, список и переписка
-    // друг под другом.
-    <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
-      <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1 lg:flex-row">
-        <div className="flex flex-col gap-3 lg:min-h-0 lg:w-80 lg:shrink-0">
+    // скроется" — цепочка roomy:flex-1 вниз до EmailThread не растягивает
+    // список поставщиков поверх экрана, а даёт ему свою прокрутку (см. ниже),
+    // композер письма остаётся всегда видимым целиком.
+    // Вне roomy (узкое ИЛИ невысокое окно — правка 2026-09-11) — как было до
+    // 2026-09-10: обычная прокрутка страницы, ничего не ужимается.
+    <div className="flex flex-col gap-4 roomy:min-h-0 roomy:flex-1">
+      <div className="flex flex-col gap-4 lg:flex-row roomy:min-h-0 roomy:flex-1">
+        <div className="flex flex-col gap-3 lg:w-80 lg:shrink-0 roomy:min-h-60">
           <Select
             label="Категория"
             options={categoryOptions.map((o) => o.label)}
@@ -1767,7 +1782,7 @@ export function SupplierCorrespondenceTab({
               поэтому вместо скрытия за кнопкой (список нужен сразу) он
               просто получил свою прокрутку — Select/тумблер страны/кнопка
               рассылки сверху всегда на виду. */}
-          <div className="flex flex-col gap-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+          <div className="flex flex-col gap-1 roomy:min-h-0 roomy:flex-1 roomy:overflow-y-auto">
             {isUnreadView
               ? unreadEntries.map((entry) => {
                   const key = `${entry.offer.id}:${entry.orderId ?? 'main'}`;
@@ -1825,11 +1840,11 @@ export function SupplierCorrespondenceTab({
           </div>
         </div>
 
-        <Card className="flex-1 p-5 lg:flex lg:min-h-0 lg:flex-col lg:overflow-y-auto">
+        <Card className="flex-1 p-5 roomy:flex roomy:min-h-0 roomy:flex-col roomy:overflow-y-auto">
           {!selected ? (
             <p className="text-sm text-ink-faint">Выберите поставщика слева, чтобы открыть переписку.</p>
           ) : (
-            <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1">
+            <div className="flex flex-col gap-3 roomy:min-h-0 roomy:flex-1">
               {/* Владелец, 2026-09-03: флаг и бейдж категории убраны отсюда —
                   флаг был лишним (слишком много флагов на экране), категория
                   переехала в блок реквизитов внутри EmailThread. */}
