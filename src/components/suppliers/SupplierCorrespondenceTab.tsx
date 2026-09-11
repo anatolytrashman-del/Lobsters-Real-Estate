@@ -9,6 +9,9 @@ import { Textarea } from '../ui/Textarea';
 import { Select } from '../ui/Select';
 import { cn } from '../../lib/cn';
 import type { SupplierRequest, SupplierOffer } from '../../data/supplierResearch';
+import { RiskBadge } from './RiskBadge';
+import type { SupplierReliability } from '../../data/supplierReliability';
+import { checkSupplierReliability } from '../../lib/supplierReliabilityApi';
 import { supplierOfferEmailAddress, countryFlag, SUPPLIER_COUNTRIES } from '../../data/supplierResearch';
 import { updateSupplierOffer } from '../../lib/supplierResearchApi';
 import type { SupplierOrder } from '../../data/supplierOrders';
@@ -243,7 +246,7 @@ async function saveExtractionAsQuote(
 
 async function applyExtractionToOffer(
   offer: SupplierOffer,
-  extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[] },
+  extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[]; supplierInn?: string | null },
   sourceFile: { url: string; fileName: string } | null,
   materialMatches: Record<number, MaterialMatch>,
 ): Promise<SupplierOffer> {
@@ -270,6 +273,13 @@ async function applyExtractionToOffer(
     items: [...offer.items, ...newItems],
     files,
     verified: offer.verified,
+    // Главный момент всей проверки благонадёжности: ИНН поставщика
+    // попадает в карточку именно здесь — когда закупщица подтверждает
+    // распознанный счёт. Владелец, 2026-09-11: "когда поставщик прислал
+    // счет и нам стали известны реквизиты, запускать процесс верификации".
+    // Уже сохранённый ИНН не затираем: если новый счёт пришёл без ИНН
+    // (модель не нашла), прежний остаётся — это не повод терять данные.
+    inn: extraction.supplierInn ?? offer.inn,
   });
 }
 
@@ -386,6 +396,7 @@ export function EmailThread({
   onTemplateSaved,
   onLedgersChange,
   onOfferUpdated,
+  onReliabilityChecked,
   onOrderUpdated,
   onEmailUpdated,
   onQuoteAdded,
@@ -411,6 +422,8 @@ export function EmailThread({
   onTemplateSaved: (template: EmailTemplate) => void;
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
   onOfferUpdated: (offer: SupplierOffer) => void;
+  onReliabilityChecked: (r: SupplierReliability) => void;
+  reliabilityByInn: Map<string, SupplierReliability>;
   onOrderUpdated: (order: SupplierOrder) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
   onQuoteAdded: (quote: SupplierQuote) => void;
@@ -657,6 +670,20 @@ export function EmailThread({
       } else {
         const updated = await applyExtractionToOffer(offer, e.extraction, e.extraction.sourceFile ?? null, materialMatches);
         onOfferUpdated(updated);
+        // Владелец, 2026-09-11: "когда поставщик прислал счет и нам стали
+        // известны реквизиты, запускать процесс верификации поставщика" —
+        // вот этот момент. Проверяем только если ИНН ПОЯВИЛСЯ или сменился:
+        // повторный счёт от того же юрлица перепроверять незачем, суточный
+        // лимит запросов к Checko не резиновый (перепроверить вручную можно
+        // кнопкой в карточке).
+        //
+        // Ошибку глотаем намеренно: подтверждение счёта — основная работа
+        // закупщицы, и она не должна падать из-за недоступности стороннего
+        // сервиса проверки. Сам сбой сохраняется в строке проверки и виден
+        // в карточке поставщика.
+        if (updated.inn && updated.inn !== offer.inn) {
+          checkSupplierReliability(updated.inn).then(onReliabilityChecked).catch(() => {});
+        }
         onQuoteAdded(
           await saveExtractionAsQuote(
             offer.id,
@@ -1402,6 +1429,8 @@ export function SupplierCorrespondenceTab({
   onTemplatesChange,
   onLedgersChange,
   onOfferUpdated,
+  onReliabilityChecked,
+  reliabilityByInn,
   onOrdersChange,
   onEmailUpdated,
   onQuoteAdded,
@@ -1435,6 +1464,8 @@ export function SupplierCorrespondenceTab({
   onTemplatesChange: (templates: EmailTemplate[]) => void;
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
   onOfferUpdated: (offer: SupplierOffer) => void;
+  onReliabilityChecked: (r: SupplierReliability) => void;
+  reliabilityByInn: Map<string, SupplierReliability>;
   onOrdersChange: (orders: SupplierOrder[]) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
   onQuoteAdded: (quote: SupplierQuote) => void;
@@ -1799,6 +1830,7 @@ export function SupplierCorrespondenceTab({
                     >
                       <span className="flex w-full items-center justify-between gap-2">
                         <span className="min-w-0 flex-1 truncate font-medium text-ink">{entry.offer.name}</span>
+                        <RiskBadge inn={entry.offer.inn} reliabilityByInn={reliabilityByInn} />
                         <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-danger px-1 text-[11px] font-bold text-white">
                           {entry.unreadCount}
                         </span>
@@ -1826,6 +1858,7 @@ export function SupplierCorrespondenceTab({
                         )}
                       >
                         <span className="min-w-0 flex-1 truncate font-medium text-ink">{offer.name}</span>
+                        <RiskBadge inn={offer.inn} reliabilityByInn={reliabilityByInn} />
                         <span className="flex shrink-0 items-center gap-1.5">
                           {unreadCount > 0 && (
                             <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1 text-[11px] font-bold text-white">
@@ -1849,6 +1882,7 @@ export function SupplierCorrespondenceTab({
                   флаг был лишним (слишком много флагов на экране), категория
                   переехала в блок реквизитов внутри EmailThread. */}
               <span className="text-lg font-bold text-ink">{selected.offer.name}</span>
+              <RiskBadge inn={selected.offer.inn} reliabilityByInn={reliabilityByInn} />
 
               {/* Владелец, 2026-09-03: "1 заявка на поставку — одна ветка" —
                   чипы переключают тред: "Основная" (та переписка, что была
@@ -1899,6 +1933,8 @@ export function SupplierCorrespondenceTab({
                 onTemplateSaved={handleTemplateSaved}
                 onLedgersChange={onLedgersChange}
                 onOfferUpdated={onOfferUpdated}
+                onReliabilityChecked={onReliabilityChecked}
+                reliabilityByInn={reliabilityByInn}
                 onOrderUpdated={handleOrderUpdated}
                 onEmailUpdated={onEmailUpdated}
                 onQuoteAdded={onQuoteAdded}

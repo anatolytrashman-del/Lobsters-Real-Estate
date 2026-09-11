@@ -24,6 +24,11 @@ export interface EmailExtraction {
   price: number | null;
   currency: string | null;
   items: EmailExtractionItem[];
+  // ИНН поставщика, выставившего счёт (не наш, не покупателя — см. промпт
+  // в api/_invoiceRecognition.js, там про это отдельно). null — в счёте не
+  // нашёлся, или модель не смогла уверенно отличить его от ИНН покупателя.
+  // Проверен на контрольный разряд ещё на сервере, до записи сюда.
+  supplierInn: string | null;
   sourceFile: { url: string; fileName: string } | null;
   recognizedAt: string;
 }
