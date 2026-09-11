@@ -15,6 +15,7 @@ import { ContactValue } from '../components/ui/ContactValue';
 import { ContractorsResearch } from '../components/contractors/ContractorsResearch';
 import { cn } from '../lib/cn';
 import { formatPhoneDisplay } from '../lib/formatPhone';
+import { estimateOptionLabel } from '../lib/estimateDisplay';
 import { currencySymbols, type Currency } from '../data/transactions';
 import type { ExchangeRate } from '../data/exchangeRates';
 import { fetchTodayRate } from '../lib/exchangeRatesApi';
@@ -1686,7 +1687,7 @@ export function Suppliers() {
     () =>
       estimates.map((e) => ({
         id: e.id,
-        label: `Смета — ${e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'}`,
+        label: estimateOptionLabel(e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'),
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimates, objects],
