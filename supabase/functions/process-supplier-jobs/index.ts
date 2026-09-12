@@ -1026,12 +1026,18 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
       roots.push(new URL(path, base).toString());
     }
   }
+  // В архивной копии ссылки уже развёрнуты в исходные адреса, но ходить по
+  // ним напрямую бессмысленно (сайт и так не открылся) — заворачиваем корень
+  // каталога обратно в архивный адрес с тем же слепком времени. Без этого
+  // шага у 19 из 31 архивных снимков было меньше трёх разделов: на главной
+  // многих сайтов полного меню каталога нет.
+  const archiveStamp = fromArchive ? /\/web\/(\d+)/.exec(base.pathname)?.[1] ?? '' : '';
+  const toFetchable = (u: string) =>
+    fromArchive && archiveStamp ? `https://web.archive.org/web/${archiveStamp}id_/${u}` : u;
   let rootsFetched = 0;
   for (const rootUrl of roots) {
-    // По архивной копии вглубь не ходим: у архива свои адреса и своя
-    // задержка, а разделов с главной для товарных групп достаточно.
-    if (fromArchive || rootsFetched >= 2 || !withinBudget()) break;
-    const html = await fetchSnapshotPage(rootUrl, 10000);
+    if (rootsFetched >= 2 || !withinBudget()) break;
+    const html = await fetchSnapshotPage(toFetchable(rootUrl), fromArchive ? 20000 : 10000);
     if (!html) continue;
     rootsFetched++;
     pagesFetched++;
