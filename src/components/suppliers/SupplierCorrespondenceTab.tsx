@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Mail, Paperclip, Send, FileText, Save, ChevronDown, ChevronUp, Reply, FileSearch, CheckCircle2, Eye, FileSpreadsheet, X, Plus, Users } from 'lucide-react';
+import { Mail, Paperclip, Send, FileText, Save, ChevronDown, ChevronUp, Reply, FileSearch, CheckCircle2, Eye, FileSpreadsheet, X, Plus, Users, Clock, AlertTriangle } from 'lucide-react';
 import { Card } from '../ui/Card';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
@@ -18,6 +18,7 @@ import type { SupplierOrder } from '../../data/supplierOrders';
 import { insertSupplierOrder, updateSupplierOrder } from '../../lib/supplierOrdersApi';
 import type { SupplierOfferEmail, EmailExtractionItem } from '../../data/supplierOfferEmails';
 import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
+import { emailSendStatusLabel } from '../../data/emailSendStatus';
 import { sendSupplierOfferEmail, setSupplierOfferEmailExtractionStatus } from '../../lib/supplierOfferEmailsApi';
 import type { LegalEntity } from '../../data/legalEntities';
 import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment, fileToAttachment } from '../../lib/legalEntityAttachment';
@@ -839,13 +840,41 @@ export function EmailThread({
                   e.direction === 'out' ? 'ml-6 border border-border bg-surface' : 'mr-6 bg-surface-muted',
                 )}
               >
+                {/* Исходящее письмо может ещё не уйти: при временном отказе
+                    почты (владелец, 2026-09-12 — закончился дневной лимит
+                    Resend) оно всё равно сохраняется и ждёт очереди, см.
+                    data/emailSendStatus.ts. Раньше такое письмо не
+                    сохранялось вообще, и в ленте его просто не было. */}
                 <div className="flex items-center justify-between gap-2 text-xs text-ink-faint">
-                  <span className="flex items-center gap-1">
-                    <Mail className="h-3 w-3" />
-                    {e.direction === 'out' ? 'Отправлено' : 'Получено'}
+                  <span
+                    className={cn(
+                      'flex items-center gap-1',
+                      e.direction === 'out' && e.sendStatus === 'failed' && 'text-danger',
+                    )}
+                  >
+                    {e.direction !== 'out' || e.sendStatus === 'sent' ? (
+                      <Mail className="h-3 w-3" />
+                    ) : e.sendStatus === 'queued' ? (
+                      <Clock className="h-3 w-3" />
+                    ) : (
+                      <AlertTriangle className="h-3 w-3" />
+                    )}
+                    {e.direction === 'out' ? emailSendStatusLabel[e.sendStatus] : 'Получено'}
                   </span>
                   <span>{new Date(e.createdAt).toLocaleString('ru-RU')}</span>
                 </div>
+                {e.direction === 'out' && e.sendStatus === 'queued' && (
+                  <div className="text-xs text-ink-faint">
+                    Почта временно недоступна — письмо уйдёт само, как только отправка заработает.
+                    {e.sendError ? ` Причина: ${e.sendError}` : ''}
+                  </div>
+                )}
+                {e.direction === 'out' && e.sendStatus === 'failed' && (
+                  <div className="text-xs text-danger">
+                    Письмо не отправлено{e.sendError ? `: ${e.sendError}` : ''}. Текст сохранён — можно скопировать и
+                    отправить заново.
+                  </div>
+                )}
                 {e.subject && <div className="font-semibold text-ink">{e.subject}</div>}
                 {/* Владелец, 2026-09-03: "все приложения к письмам в виде файлов
                     пусть прикрепляются к верху письма" — вложения сразу после

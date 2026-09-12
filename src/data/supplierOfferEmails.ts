@@ -1,4 +1,5 @@
 import type { DocumentFile } from './contractorDocuments';
+import type { EmailSendStatus } from './emailSendStatus';
 
 // Результат распознавания счёта/КП во вложении письма (Claude Haiku 4.5,
 // см. api/_invoiceRecognition.js) — и от автоматического срабатывания на
@@ -74,6 +75,12 @@ export interface SupplierOfferEmail {
   // разобранных бэкфиллом по подписи в теле (см. журнал 2026-09-12).
   sentByProfileId: string | null;
   sentByName: string | null;
+  // Ушло ли письмо на самом деле (см. data/emailSendStatus.ts). У входящих
+  // всегда 'sent' — колонка общая на обе стороны переписки, но смысл имеет
+  // только у исходящих. sendError — причина, по которой письмо ждёт очереди
+  // или не ушло совсем.
+  sendStatus: EmailSendStatus;
+  sendError: string | null;
   createdAt: string;
 }
 
@@ -103,5 +110,7 @@ export interface SupplierOfferEmailRow {
   extraction: EmailExtraction | null;
   sent_by_profile_id: string | null;
   sent_by_name: string | null;
+  send_status: string | null;
+  send_error: string | null;
   created_at: string;
 }

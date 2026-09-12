@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { withRetry } from './withRetry';
 import { authFetch } from './authFetch';
 import type { EmailExtraction, SupplierOfferEmail, SupplierOfferEmailRow } from '../data/supplierOfferEmails';
+import { emailSendStatusFromRow } from '../data/emailSendStatus';
 
 function fromRow(row: SupplierOfferEmailRow): SupplierOfferEmail {
   return {
@@ -19,6 +20,8 @@ function fromRow(row: SupplierOfferEmailRow): SupplierOfferEmail {
     extraction: row.extraction ?? null,
     sentByProfileId: row.sent_by_profile_id ?? null,
     sentByName: row.sent_by_name ?? null,
+    sendStatus: emailSendStatusFromRow(row.send_status),
+    sendError: row.send_error ?? null,
     createdAt: row.created_at,
   };
 }

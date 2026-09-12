@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Loader2, Trash2, Pencil, Send, Mail, Paperclip } from 'lucide-react';
+import { Plus, Loader2, Trash2, Pencil, Send, Mail, Paperclip, Clock, AlertTriangle } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -23,6 +23,7 @@ import {
   type Purchase,
   type PurchaseItem,
 } from '../data/purchases';
+import { emailSendStatusLabel } from '../data/emailSendStatus';
 import { fetchPurchases, insertPurchase, updatePurchase, deletePurchase, type PurchaseInput } from '../lib/purchasesApi';
 import type { PurchaseEmail } from '../data/purchaseEmails';
 import { fetchPurchaseEmails, sendPurchaseEmail } from '../lib/purchaseEmailsApi';
@@ -660,13 +661,37 @@ function PurchaseDetailModal({
                     e.direction === 'out' ? 'ml-6 bg-primary-soft' : 'mr-6 bg-surface-muted',
                   )}
                 >
+                  {/* Письмо, которое почта временно не приняла, всё равно
+                      сохраняется и ждёт очереди — см. data/emailSendStatus.ts
+                      и ту же шапку в SupplierCorrespondenceTab. */}
                   <div className="flex items-center justify-between gap-2 text-xs text-ink-faint">
-                    <span className="flex items-center gap-1">
-                      <Mail className="h-3 w-3" />
-                      {e.direction === 'out' ? 'Отправлено' : 'Получено'}
+                    <span
+                      className={cn(
+                        'flex items-center gap-1',
+                        e.direction === 'out' && e.sendStatus === 'failed' && 'text-danger',
+                      )}
+                    >
+                      {e.direction !== 'out' || e.sendStatus === 'sent' ? (
+                        <Mail className="h-3 w-3" />
+                      ) : e.sendStatus === 'queued' ? (
+                        <Clock className="h-3 w-3" />
+                      ) : (
+                        <AlertTriangle className="h-3 w-3" />
+                      )}
+                      {e.direction === 'out' ? emailSendStatusLabel[e.sendStatus] : 'Получено'}
                     </span>
                     <span>{new Date(e.createdAt).toLocaleString('ru-RU')}</span>
                   </div>
+                  {e.direction === 'out' && e.sendStatus === 'queued' && (
+                    <div className="text-xs text-ink-faint">
+                      Почта временно недоступна — письмо уйдёт само, как только отправка заработает.
+                    </div>
+                  )}
+                  {e.direction === 'out' && e.sendStatus === 'failed' && (
+                    <div className="text-xs text-danger">
+                      Письмо не отправлено{e.sendError ? `: ${e.sendError}` : ''}.
+                    </div>
+                  )}
                   {e.subject && <div className="font-semibold text-ink">{e.subject}</div>}
                   <div className="whitespace-pre-wrap text-ink">{e.body}</div>
                   {e.files.length > 0 && (
