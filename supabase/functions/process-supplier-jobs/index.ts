@@ -486,6 +486,22 @@ function guessCountry(website: string): string {
   return '';
 }
 
+// Карточки универсальных поставщиков — чтобы исключить их из результатов
+// поиска по профильной категории. Для самой категории "Универсальные
+// поставщики" исключать нечего (её собственные карточки уже в existing).
+const UNIVERSAL_SUPPLIERS_TITLE = 'Универсальные поставщики';
+
+async function fetchUniversalOffers(requestId: string): Promise<{ name: string; website_url: string }[]> {
+  const { data: universalRequests } = await supabase
+    .from('supplier_research_requests')
+    .select('id')
+    .ilike('title', UNIVERSAL_SUPPLIERS_TITLE);
+  const universalId = universalRequests?.[0]?.id;
+  if (!universalId || universalId === requestId) return [];
+  const { data } = await supabase.from('supplier_research_offers').select('name, website_url').eq('request_id', universalId);
+  return data ?? [];
+}
+
 async function processSearchJob(job: any): Promise<void> {
   const region = REGION_HINTS[job.country] ? job.country : 'Россия';
   const hint = REGION_HINTS[region];
@@ -494,7 +510,15 @@ async function processSearchJob(job: any): Promise<void> {
     .from('supplier_research_offers')
     .select('name, website_url')
     .eq('request_id', job.request_id);
-  const existing = existingOffers ?? [];
+  // Владелец, 2026-09-12: универсальный поставщик (Лемана Про, Петрович,
+  // Сатурн) живёт одной карточкой в категории "Универсальные поставщики" и
+  // в профильных категориях его быть не должно (см. блок "Универсальные
+  // поставщики" в src/data/supplierResearch.ts). Поиск об этом правиле
+  // обязан знать: иначе он раз за разом находит те же федеральные сети и
+  // молча заводит их дубликаты в каждой новой категории — без всякого
+  // уведомления, потому что добавляет их сюда не человек.
+  const universal = await fetchUniversalOffers(job.request_id);
+  const existing = [...(existingOffers ?? []), ...universal];
   const excludeKeys = new Set(existing.map((o: any) => dedupKey({ name: o.name, website: o.website_url })));
   const excludeNames = [
     ...existing.map((o: any) => o.name),
