@@ -37,7 +37,13 @@ import type { SupplierSiteSnapshot } from '../../data/supplierSiteSnapshots';
 // поставщика есть хотя бы одна товарная группа плитки. Один и тот же
 // поставщик так может оказаться сразу в нескольких плитках — это ожидаемо,
 // плитка отвечает «кто это реально возит», а не «в какую строку его завели».
-// «Баз +K» — отдельно, это универсальные поставщики с такой группой.
+// «Баз +K» — тот же принцип, четвёртая правка того же дня (владелец нашёл,
+// что известные гипермаркеты вроде «Бауцентр»/«TM.by» — они прямо названы
+// примерами в описании этого хаба — заведены в узкие категории и поэтому
+// нигде не видны как базы, а треть тех, кто заведён как «Универсальные»,
+// не подтверждается сайтом вовсе): «база» — это тоже ЛЮБОЙ из двух
+// признаков, название строки «Универсальные поставщики» ИЛИ группа
+// «Строительный гипермаркет» на снимке сайта, а не только название строки.
 //
 // Страна — не отдельный список внутри плитки (третья правка того же дня:
 // «не друг под другом выводить категории, а в целом вверху каталога выбор
@@ -67,6 +73,23 @@ interface HubStats {
 
 function offerGroups(o: SupplierOffer, snapshotByHost: Map<string, SupplierSiteSnapshot>): string[] {
   return snapshotByHost.get(supplierWebsiteHost(o.websiteUrl))?.categories ?? [];
+}
+
+// Товарная группа справочника, которой в SUPPLIER_CATALOG помечена сама
+// категория «Универсальные поставщики» — читаем из данных, а не дублируем
+// строкой, чтобы название группы не могло разъехаться в двух местах.
+const HYPERMARKET_GROUP = SUPPLIER_CATALOG.find((h) => isUniversalRequest({ title: h.name }))?.categories[0]?.supplyGroups[0] ?? '';
+
+function isUniversalOffer(
+  o: SupplierOffer,
+  requestTitleById: Map<string, string>,
+  snapshotByHost: Map<string, SupplierSiteSnapshot>,
+  universalRequest: SupplierRequest | null,
+): boolean {
+  const title = requestTitleById.get(o.requestId) ?? '';
+  const filedAsUniversal = universalRequest ? o.requestId === universalRequest.id : title.trim().toLowerCase() === UNIVERSAL_SUPPLIERS_TITLE.toLowerCase();
+  if (filedAsUniversal) return true;
+  return offerGroups(o, snapshotByHost).includes(HYPERMARKET_GROUP);
 }
 
 // Ярлык категории для строки поиска — «домашняя» (по названию строки
@@ -109,8 +132,8 @@ export function SupplierCatalog({
   const requestTitleById = useMemo(() => new Map(requests.map((r) => [r.id, r.title])), [requests]);
   const universalRequest = useMemo(() => requests.find((r) => isUniversalRequest(r)) ?? null, [requests]);
   const universalOffers = useMemo(
-    () => (universalRequest ? countryOffers.filter((o) => o.requestId === universalRequest.id) : []),
-    [countryOffers, universalRequest],
+    () => countryOffers.filter((o) => isUniversalOffer(o, requestTitleById, snapshotByHost, universalRequest)),
+    [countryOffers, requestTitleById, snapshotByHost, universalRequest],
   );
 
   const hubs = useMemo<HubStats[]>(() => {
@@ -122,7 +145,7 @@ export function SupplierCatalog({
         const bases: SupplierOffer[] = [];
         for (const o of countryOffers) {
           const title = requestTitleById.get(o.requestId) ?? '';
-          const isUniversal = universalRequest ? o.requestId === universalRequest.id : title.trim().toLowerCase() === UNIVERSAL_SUPPLIERS_TITLE.toLowerCase();
+          const isUniversal = isUniversalOffer(o, requestTitleById, snapshotByHost, universalRequest);
           // Категория присваивается по ЛЮБОМУ из двух признаков — по новому
           // или старому названию строки закупки (LEGACY_REQUEST_TITLES) ИЛИ
           // по товарной группе со снимка сайта. Оба источника равноправны.
