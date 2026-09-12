@@ -39,6 +39,7 @@ function offerFromRow(row: SupplierOfferRow): SupplierOffer {
     country: row.country ?? '',
     websiteUrl: row.website_url,
     listingUrl: row.listing_url ?? '',
+    contactSource: row.contact_source ?? '',
     messengers: Array.isArray(row.messengers) ? row.messengers : [],
     catalogModelName: row.catalog_model_name,
     catalogModelPhoto: row.catalog_model_photo,

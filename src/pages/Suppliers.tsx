@@ -1118,6 +1118,13 @@ function OfferDetailModal({
         <div className="flex flex-col gap-1 text-sm">
           <span className="text-ink-faint">Email</span>
           <span className="text-ink">{offer.email || '—'}</span>
+          {offer.contactSource && (
+            <span className="text-xs text-ink-faint">
+              {offer.contactSource === 'каталоги'
+                ? 'Контакты из каталогов — сайт автосбору не открылся, проверьте перед отправкой'
+                : `Контакты собраны автоматически: ${offer.contactSource}`}
+            </span>
+          )}
         </div>
 
         {offer.messengers.length > 0 && (
@@ -2453,6 +2460,8 @@ export function Suppliers() {
         country: offerForm.country,
         websiteUrl: offerForm.websiteUrl.trim(),
         listingUrl: offerForm.listingUrl.trim(),
+        // Служебное поле автосбора, в форме его нет — переносим как есть.
+        contactSource: editingOffer?.contactSource ?? '',
         messengers: offerForm.messengers,
         catalogModelName: offerForm.catalogModelName.trim(),
         catalogModelPhoto: offerForm.catalogModelPhoto,
@@ -2603,6 +2612,7 @@ export function Suppliers() {
         country: o.country,
         websiteUrl: o.websiteUrl,
         listingUrl: o.listingUrl,
+        contactSource: o.contactSource,
         catalogModelName: o.catalogModelName,
         catalogModelPhoto: o.catalogModelPhoto,
         price: o.price,

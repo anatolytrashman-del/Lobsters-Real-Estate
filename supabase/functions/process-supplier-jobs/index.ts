@@ -66,26 +66,53 @@ const ENRICHMENT_PROMPT = `Ты собираешь контактные данн
 "siteAccessible" — false, если сайт не открылся вообще.
 Если поле не нашёл — пустая строка/пустой массив, НЕ выдумывай контакты.`;
 
-// Первый ПОЛНЫЙ JSON-объект по глубине скобок: модель иногда возвращает два
-// блока подряд, и "от первой { до последней }" склеивало их в невалидный JSON.
-function extractJson(content: unknown): Record<string, unknown> {
-  const blocks = Array.isArray(content) ? content : [];
-  const text = blocks
-    .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
-    .map((b: any) => b.text)
-    .join('');
-  const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const start = stripped.indexOf('{');
-  if (start === -1) throw new Error('модель не вернула JSON');
-  let depth = 0;
-  for (let i = start; i < stripped.length; i++) {
-    if (stripped[i] === '{') depth++;
-    else if (stripped[i] === '}') {
-      depth--;
-      if (depth === 0) return JSON.parse(stripped.slice(start, i + 1));
+// Все ПОЛНЫЕ JSON-объекты текста по глубине скобок, в порядке появления.
+function balancedObjects(text: string): string[] {
+  const found: string[] = [];
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          found.push(text.slice(start, i + 1));
+          break;
+        }
+      }
     }
   }
-  throw new Error('не нашли закрывающую скобку JSON');
+  return found;
+}
+
+// Итоговый объект — ПОСЛЕДНИЙ разобравшийся, а не первый: с веб-поиском
+// модель комментирует ход поиска между вызовами инструмента, и в комментарии
+// попадаются фигурные скобки и куски шаблона ответа. Разбор "первого объекта
+// из склейки блоков" на этом ломался молча: 2026-09-11 по odissey2000.ru
+// веб-поиск нашёл zavod@, а задание завершилось пустым результатом. Та же
+// правка уже была сделана для массивов (extractJsonArray ниже).
+function extractJson(content: unknown): Record<string, unknown> {
+  const texts = (Array.isArray(content) ? content : [])
+    .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
+    .map((b: any) => b.text as string);
+  let fallback: Record<string, unknown> | null = null;
+  for (const text of [...texts].reverse()) {
+    const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    for (const candidate of balancedObjects(stripped).reverse()) {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(candidate);
+      } catch {
+        continue; // комментарий модели, а не ответ — пробуем предыдущий
+      }
+      if (parsed && typeof parsed === 'object') {
+        if ('orderEmail' in parsed || 'phone' in parsed) return parsed;
+        fallback ??= parsed;
+      }
+    }
+  }
+  if (fallback) return fallback;
+  throw new Error('модель не вернула JSON');
 }
 
 function extractJsonArray(content: unknown): Record<string, string>[] {
@@ -177,22 +204,53 @@ function htmlToText(html: string): string {
   return `${linksBlock}${text}`.slice(0, 15000);
 }
 
+// Ссылки на страницу контактов прямо из разметки главной. Перебор готовых
+// путей (/contacts, /kontakty, ...) промахивается на сайтах с нетиповым
+// адресом: у odissey2000.ru контакты лежат на /kontakty-odissey, и email
+// автосбором не находился вовсе (2026-09-11).
+const CONTACT_LINK_RE = /href\s*=\s*["']([^"'\s>]*(?:kontakt|contact|o-kompanii|about)[^"'\s>]*)["']/gi;
+
+async function fetchPageHtml(url: string): Promise<string | null> {
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ru-RU,ru;q=0.9' },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!resp.ok) return null;
+    return await resp.text();
+  } catch {
+    return null; // страницы может не быть, домен закрыт или отдаёт битый TLS
+  }
+}
+
 async function enrichViaDirectFetch(name: string, website: string): Promise<EnrichmentResult> {
   const base = /^https?:\/\//i.test(website) ? website : `https://${website}`;
   const pages: string[] = [];
-  for (const path of ['', '/contacts', '/kontakty', '/contact']) {
-    if (pages.length >= 2) break;
-    try {
-      const resp = await fetch(new URL(path, base).toString(), {
-        headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ru-RU,ru;q=0.9' },
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!resp.ok) continue;
-      const text = htmlToText(await resp.text());
-      if (text.length > 200) pages.push(text);
-    } catch {
-      // страницы может не быть или домен закрыт — пробуем следующую
+  const candidates: string[] = [];
+  const home = await fetchPageHtml(base);
+  if (home) {
+    const text = htmlToText(home);
+    if (text.length > 200) pages.push(text);
+    for (const m of home.matchAll(CONTACT_LINK_RE)) {
+      try {
+        candidates.push(new URL(m[1], base).toString());
+      } catch {
+        // мусорный href вроде "javascript:void(0)" — пропускаем
+      }
     }
+  }
+  for (const path of ['/contacts', '/kontakty', '/contact']) {
+    candidates.push(new URL(path, base).toString());
+  }
+  const seen = new Set<string>([base]);
+  for (const url of candidates) {
+    if (pages.length >= 3) break;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const html = await fetchPageHtml(url);
+    if (!html) continue;
+    const text = htmlToText(html);
+    if (text.length > 200) pages.push(text);
   }
   if (pages.length === 0) throw new Error('страницы не открылись напрямую');
   const content = await askProxyApi({
@@ -209,17 +267,23 @@ async function enrichViaSearch(name: string, website: string): Promise<Enrichmen
     model: MODEL,
     max_tokens: 3000,
     tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 5, allowed_callers: ['direct'] }],
-    system: `Ты собираешь контактные данные поставщика. Сайт компании НЕДОСТУПЕН для
-прямого просмотра (бот-защита, гео-блокировка, битый сертификат), поэтому ищи
-контакты веб-поиском: Яндекс.Карты/2ГИС, каталоги (Rusprofile, Zoon, Tiu, Prom),
-объявления. Нужны: email для заказов, основной телефон (московский, если офисов
-несколько), номера Telegram/WhatsApp/Max — только если указан сам номер.
-Бери только то, что относится именно к ЭТОЙ компании с ЭТИМ сайтом.
+    system: `Ты собираешь контактные данные поставщика веб-поиском: страница
+контактов на сайте компании, Яндекс.Карты/2ГИС, каталоги (Rusprofile, Zoon,
+Tiu, Prom), объявления. Нужны: email для заказов, основной телефон (московский,
+если офисов несколько), номера Telegram/WhatsApp/Max — только если указан сам
+номер. Бери только то, что относится именно к ЭТОЙ компании.
 
 Верни СТРОГО JSON без markdown:
 {"orderEmail":"","phone":"","messengers":[{"type":"Telegram","number":""}],"note":"","siteAccessible":false}
 "note" — одной фразой, откуда взяты контакты.`,
-    messages: [{ role: 'user', content: `Компания «${name}», сайт ${website}. Найди её контакты.` }],
+    messages: [
+      {
+        role: 'user',
+        content: website
+          ? `Компания «${name}», сайт ${website}. Найди её контакты.`
+          : `Компания «${name}», сайт неизвестен. Найди её контакты и сайт.`,
+      },
+    ],
   });
   return sanitizeEnrichment(extractJson(content));
 }
@@ -235,7 +299,61 @@ function merge(base: EnrichmentResult, extra: EnrichmentResult): EnrichmentResul
   };
 }
 
-const hasContacts = (r: EnrichmentResult) => Boolean(r.orderEmail || r.phone);
+// Шаг цепочки пропускаем, только когда собрано И то, И другое. Раньше здесь
+// было "email ИЛИ телефон", и сайт, отдавший один телефон, закрывал поиск
+// почты совсем: по termokit.ru на сайте был только телефон, а opt@termokit.ru
+// лежал в выдаче — но веб-поиск уже не запускался (2026-09-11).
+const isComplete = (r: EnrichmentResult) => Boolean(r.orderEmail && r.phone);
+
+// Один запрос "жив ли адрес". Тело не читаем: нужен только статус и то,
+// разрешилось ли вообще имя домена.
+async function probeUrl(url: string): Promise<{ status: number | null; dnsFailed: boolean }> {
+  for (const method of ['HEAD', 'GET'] as const) {
+    try {
+      const resp = await fetch(url, {
+        method,
+        redirect: 'follow',
+        headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ru-RU,ru;q=0.9' },
+        signal: AbortSignal.timeout(10000),
+      });
+      try {
+        await resp.body?.cancel();
+      } catch {
+        // тело уже закрыто — неважно
+      }
+      if (resp.status === 405 && method === 'HEAD') continue; // сайт не умеет HEAD
+      return { status: resp.status, dnsFailed: false };
+    } catch (err) {
+      const message = String(err).toLowerCase();
+      const dnsFailed =
+        message.includes('dns') || message.includes('lookup') || message.includes('name not resolved');
+      return { status: null, dnsFailed };
+    }
+  }
+  return { status: null, dnsFailed: false };
+}
+
+// Домен снят с делегирования (DNS не резолвится) — компании больше нет, а
+// каталоги 2ГИС/Яндекс/OrgPage годами держат её карточку с "рабочей" почтой.
+// Именно так в базу попал m-delivery.ru с sales@ (2026-09-11). Бот-защита и
+// 403/503 мёртвым сайтом НЕ считаются: там контакты добираются веб-поиском.
+async function siteIsDead(website: string): Promise<boolean> {
+  const host = website.replace(/^https?:\/\//i, '').split(/[/?#]/)[0].toLowerCase();
+  if (!host || !host.includes('.')) return true;
+  const first = await probeUrl(/^https?:\/\//i.test(website) ? website : `https://${website}`);
+  if (!first.dnsFailed) return false;
+  // A-запись бывает только у www — проверяем и её, прежде чем хоронить домен.
+  const second = await probeUrl(`https://${host.startsWith('www.') ? host : `www.${host}`}`);
+  return second.dnsFailed;
+}
+
+// Ссылку на позицию модель нередко конструирует по виду каталога, и она ведёт
+// в 404 (emarty.ru/catalog/tile/brands/4-Alma-Ceramica, 2026-09-11). Пустая
+// ссылка честнее битой: закупщик откроет сайт и найдёт позицию сам.
+async function listingIsMissing(link: string): Promise<boolean> {
+  const { status } = await probeUrl(/^https?:\/\//i.test(link) ? link : `https://${link}`);
+  return status === 404 || status === 410;
+}
 
 async function processEnrichmentJob(job: any): Promise<void> {
   const offer = job.supplier_research_offers;
@@ -246,37 +364,46 @@ async function processEnrichmentJob(job: any): Promise<void> {
       .eq('id', job.id);
     return;
   }
-  if (!offer.website_url) {
-    await supabase
-      .from('supplier_enrichment_jobs')
-      .update({ status: 'error', error: 'У поставщика не указан сайт', completed_at: new Date().toISOString() })
-      .eq('id', job.id);
-    return;
-  }
-
   let result: EnrichmentResult = { orderEmail: '', phone: '', messengers: [], note: '', siteAccessible: false };
-  let source = '';
-  const attempts: [string, () => Promise<EnrichmentResult>][] = [
-    ['сайт', () => enrichViaWebFetch(offer.name, offer.website_url)],
-    ['прямой просмотр сайта', () => enrichViaDirectFetch(offer.name, offer.website_url)],
-    ['веб-поиск (сайт напрямую не открылся)', () => enrichViaSearch(offer.name, offer.website_url)],
-  ];
+  const sources: string[] = [];
+  // Причины падений раньше уходили только в console.error, и снаружи упавший
+  // шаг было не отличить от "ничего не нашлось" — теперь они пишутся в
+  // задание, по ним и разбираем жалобы закупщицы.
+  const stepErrors: string[] = [];
+  // Поставщика без сайта раньше помечали ошибкой и не обогащали вовсе —
+  // карточка с одним названием так и висела пустой (кейс «Артикера»,
+  // 2026-09-11). Контакты по названию ищет тот же веб-поиск.
+  const attempts: [string, () => Promise<EnrichmentResult>][] = offer.website_url
+    ? [
+        ['сайт', () => enrichViaWebFetch(offer.name, offer.website_url)],
+        ['прямой просмотр сайта', () => enrichViaDirectFetch(offer.name, offer.website_url)],
+        ['веб-поиск', () => enrichViaSearch(offer.name, offer.website_url)],
+      ]
+    : [['веб-поиск по названию', () => enrichViaSearch(offer.name, '')]];
   for (const [label, attempt] of attempts) {
-    if (hasContacts(result)) break;
+    if (isComplete(result)) break;
     try {
+      const before = result;
       result = merge(result, await attempt());
-      if (hasContacts(result)) source = label;
+      if (result.orderEmail !== before.orderEmail || result.phone !== before.phone) sources.push(label);
     } catch (err) {
-      console.error(`  ${offer.name}: ${label} не сработал — ${err instanceof Error ? err.message : err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      stepErrors.push(`${label}: ${message}`);
+      console.error(`  ${offer.name}: ${label} не сработал — ${message}`);
     }
   }
-  if (source) result.note = `Источник: ${source}. ${result.note}`.trim();
+  if (sources.length > 0) result.note = `Источник: ${sources.join(', ')}. ${result.note}`.trim();
+  // Откуда контакты — в карточку: почта из каталога при недоступном сайте
+  // может быть годами не актуальной, и закупщица должна видеть разницу.
+  const fromSite = sources.some((s) => !s.startsWith('веб-поиск'));
+  const fromCatalogs = sources.some((s) => s.startsWith('веб-поиск'));
+  const contactSource = [fromSite ? 'сайт' : '', fromCatalogs ? 'каталоги' : ''].filter(Boolean).join(' + ');
 
   // Применяем только в пустые поля — по свежему состоянию строки, чтобы не
   // затереть правку, сделанную человеком, пока шёл сбор.
   const { data: fresh } = await supabase
     .from('supplier_research_offers')
-    .select('email, contact, messengers')
+    .select('email, contact, messengers, contact_source')
     .eq('id', job.offer_id)
     .single();
   if (fresh) {
@@ -290,6 +417,7 @@ async function processEnrichmentJob(job: any): Promise<void> {
     const existingTypes = new Set(existing.map((m: any) => m.type));
     const added = result.messengers.filter((m) => !existingTypes.has(m.type));
     if (added.length > 0) patch.messengers = [...existing, ...added];
+    if (contactSource && !fresh.contact_source) patch.contact_source = contactSource;
     if (Object.keys(patch).length > 0) {
       await supabase.from('supplier_research_offers').update(patch).eq('id', job.offer_id);
     }
@@ -297,7 +425,12 @@ async function processEnrichmentJob(job: any): Promise<void> {
 
   await supabase
     .from('supplier_enrichment_jobs')
-    .update({ status: 'done', result, completed_at: new Date().toISOString() })
+    .update({
+      status: 'done',
+      result,
+      error: stepErrors.join('; ') || null,
+      completed_at: new Date().toISOString(),
+    })
     .eq('id', job.id);
 }
 
@@ -401,7 +534,7 @@ email, note (одна фраза, что продают). Не выдумыва�
   });
 
   const seen = new Set<string>();
-  const fresh = extractJsonArray(content)
+  const candidates = extractJsonArray(content)
     .filter((r) => r && typeof r.name === 'string' && r.name.trim())
     .map((r) => ({
       name: r.name.trim(),
@@ -421,7 +554,25 @@ email, note (одна фраза, что продают). Не выдумыва�
       seen.add(key);
       return true;
     })
+    // Карточка, в которой нет ни сайта, ни телефона, ни почты, закупщице
+    // бесполезна: писать некуда, дособрать не из чего (кейс «Артикера»,
+    // 2026-09-11 — в списке висело одно название).
+    .filter((r) => r.website || r.phone || r.email)
     .slice(0, MAX_RESULTS);
+
+  // Проверяем найденное, прежде чем сохранять: мёртвый домен — компании нет,
+  // такую запись не заводим вовсе ("неактивные сайты надо удалять из списка
+  // ещё на этапе поиска", владелец 2026-09-11); битую ссылку на позицию
+  // просто не сохраняем. Проверки идут параллельно — это сеть, не процессор.
+  const fresh = (
+    await Promise.all(
+      candidates.map(async (r) => {
+        if (r.website && (await siteIsDead(r.website))) return null;
+        const link = r.link && (await listingIsMissing(r.link)) ? '' : r.link;
+        return { ...r, link };
+      }),
+    )
+  ).filter((r): r is (typeof candidates)[number] => r !== null);
 
   let added = 0;
   if (fresh.length > 0) {
@@ -450,9 +601,11 @@ email, note (одна фраза, что продают). Не выдумыва�
       )
       .select('id, website_url');
     added = created?.length ?? 0;
-    const enrichable = (created ?? []).filter((o: any) => o.website_url);
-    if (enrichable.length > 0) {
-      await supabase.from('supplier_enrichment_jobs').insert(enrichable.map((o: any) => ({ offer_id: o.id })));
+    // Обогащаем всех, включая записи без сайта: контакты ищутся и по названию.
+    if (added > 0) {
+      await supabase
+        .from('supplier_enrichment_jobs')
+        .insert((created ?? []).map((o: any) => ({ offer_id: o.id })));
     }
   }
 

@@ -310,6 +310,58 @@ function guessCountryFromWebsite(websiteUrl) {
 // (exclude_companies), но полагаться только на это нельзя — здесь ещё и
 // прямая проверка по уже существующим предложениям этой же категории
 // (тот же dedupKey: нормализованный домен, а при его отсутствии имя).
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
+
+// Один запрос "жив ли адрес": нужен только статус и то, разрешилось ли имя
+// домена. Бот-защита (403/503) мёртвым сайтом НЕ считается — там контакты
+// добираются веб-поиском.
+async function probeUrl(url) {
+  for (const method of ['HEAD', 'GET']) {
+    try {
+      const resp = await fetch(url, {
+        method,
+        redirect: 'follow',
+        headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ru-RU,ru;q=0.9' },
+        signal: AbortSignal.timeout(10000),
+      });
+      try {
+        await resp.body?.cancel();
+      } catch {
+        // тело уже закрыто — неважно
+      }
+      if (resp.status === 405 && method === 'HEAD') continue; // сайт не умеет HEAD
+      return { status: resp.status, dnsFailed: false };
+    } catch (err) {
+      const message = `${err?.cause?.code ?? ''} ${err}`.toLowerCase();
+      const dnsFailed =
+        message.includes('enotfound') || message.includes('eai_again') || message.includes('dns');
+      return { status: null, dnsFailed };
+    }
+  }
+  return { status: null, dnsFailed: false };
+}
+
+// Домен снят с делегирования — каталоги (2ГИС, Яндекс, OrgPage) годами держат
+// карточку закрывшейся компании с "рабочей" почтой (m-delivery.ru, 2026-09-11).
+async function siteIsDead(website) {
+  const host = website.replace(/^https?:\/\//i, '').split(/[/?#]/)[0].toLowerCase();
+  if (!host || !host.includes('.')) return true;
+  const first = await probeUrl(/^https?:\/\//i.test(website) ? website : `https://${website}`);
+  if (!first.dnsFailed) return false;
+  // A-запись бывает только у www — проверяем и её, прежде чем хоронить домен.
+  const second = await probeUrl(`https://${host.startsWith('www.') ? host : `www.${host}`}`);
+  return second.dnsFailed;
+}
+
+// Ссылку на позицию модель нередко конструирует по виду каталога, и она ведёт
+// в 404 (emarty.ru/catalog/tile/brands/4-Alma-Ceramica, 2026-09-11). Пустая
+// ссылка честнее битой: закупщик откроет сайт и найдёт позицию сам.
+async function listingIsMissing(link) {
+  const { status } = await probeUrl(/^https?:\/\//i.test(link) ? link : `https://${link}`);
+  return status === 404 || status === 410;
+}
+
 async function createOffersAndQueueEnrichment(job, results) {
   if (DRY_RUN || results.length === 0) return 0;
 
@@ -322,7 +374,25 @@ async function createOffersAndQueueEnrichment(job, results) {
     return 0;
   }
   const existingKeys = new Set((existing ?? []).map((o) => dedupKey({ name: o.name, website: o.website_url })));
-  const fresh = results.filter((r) => !existingKeys.has(dedupKey(r)));
+  const candidates = results
+    .filter((r) => !existingKeys.has(dedupKey(r)))
+    // Карточка без сайта, телефона и почты закупщице бесполезна: писать
+    // некуда, дособирать не из чего (кейс «Артикера», 2026-09-11).
+    .filter((r) => r.website || r.phone || r.email);
+  if (candidates.length === 0) return 0;
+
+  // Мёртвый домен — компании больше нет, такую запись не заводим вовсе
+  // ("неактивные сайты надо удалять из списка ещё на этапе поиска",
+  // владелец 2026-09-11); битую ссылку на позицию просто не сохраняем.
+  const fresh = (
+    await Promise.all(
+      candidates.map(async (r) => {
+        if (r.website && (await siteIsDead(r.website))) return null;
+        const link = r.link && (await listingIsMissing(r.link)) ? '' : r.link;
+        return { ...r, link };
+      }),
+    )
+  ).filter(Boolean);
   if (fresh.length === 0) return 0;
 
   const { data: created, error: insertError } = await supabase
@@ -357,14 +427,14 @@ async function createOffersAndQueueEnrichment(job, results) {
     return 0;
   }
 
-  const enrichable = (created ?? []).filter((o) => o.website_url);
-  if (enrichable.length > 0) {
+  // Обогащаем всех, включая записи без сайта: контакты ищутся и по названию.
+  if ((created ?? []).length > 0) {
     const { error: jobsError } = await supabase
       .from('supplier_enrichment_jobs')
-      .insert(enrichable.map((o) => ({ offer_id: o.id })));
+      .insert((created ?? []).map((o) => ({ offer_id: o.id })));
     if (jobsError) console.error('  → не удалось поставить обогащение в очередь:', jobsError.message);
   }
-  console.log(`  → добавлено предложений: ${created?.length ?? 0}, из них в очередь на обогащение: ${enrichable.length}`);
+  console.log(`  → добавлено предложений: ${created?.length ?? 0}, все поставлены в очередь на обогащение`);
   return created?.length ?? 0;
 }
 
