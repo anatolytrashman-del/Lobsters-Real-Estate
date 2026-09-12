@@ -686,6 +686,10 @@ const SNAPSHOT_MAX_SITEMAP = 150;
 // sitemap (+ до 2 вложенных). Дальше не ходим — wall-clock вызова общий с
 // обогащением.
 const SNAPSHOT_TIME_BUDGET_MS = 55000;
+// Медленный хостинг успевает ответить за 20с, но не за 12 (семь таймаутов на
+// первых 130 доменах). Повторов на домен — три, дальше считаем сайт мёртвым.
+const SNAPSHOT_HOME_TIMEOUT_MS = 20000;
+const SNAPSHOT_MAX_ATTEMPTS = 3;
 
 interface SiteSection {
   title: string;
@@ -885,8 +889,14 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
   lastFetchFailure = '';
   let home: string | null = null;
   let base: URL | null = null;
+  // Первым двум адресам даём полный таймаут, запасным — короткий, и в сумме
+  // не выходим за бюджет: пять адресов по 20с не уложились бы в wall-clock
+  // вызова, где такие же снимки идут ещё для четырёх доменов.
+  let tried = 0;
   for (const url of candidates) {
-    home = await fetchSnapshotPage(url, 12000);
+    if (!withinBudget()) break;
+    home = await fetchSnapshotPage(url, tried < 2 ? SNAPSHOT_HOME_TIMEOUT_MS : 8000);
+    tried++;
     if (home) {
       base = new URL(url);
       break;
@@ -1010,11 +1020,11 @@ async function processSnapshotQueue(summary: { snapshots: number; errors: string
 
   const { data: rows } = await supabase
     .from('supplier_site_snapshots')
-    .select('host, website_url')
+    .select('host, website_url, attempts')
     .eq('status', 'pending')
     .order('created_at', { ascending: true })
     .limit(SNAPSHOT_BATCH);
-  const claimed: { host: string; website_url: string }[] = [];
+  const claimed: { host: string; website_url: string; attempts: number }[] = [];
   for (const row of rows ?? []) {
     const { data } = await supabase
       .from('supplier_site_snapshots')
@@ -1032,9 +1042,18 @@ async function processSnapshotQueue(summary: { snapshots: number; errors: string
     }
     const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
     summary.errors.push(`снимок ${claimed[i].host}: ${message}`);
+    // Временный отказ (медленный хостинг, 429/503, обрыв соединения) — вернуть
+    // в очередь: на следующем круге сайт часто открывается. 401/403/404 —
+    // отказ по существу, повтор их не починит, сразу ошибка.
+    const attempts = (claimed[i].attempts ?? 0) + 1;
+    const transient = /timed out|timeout|HTTP (429|5\d\d)|client error \(Connect/i.test(message);
     await supabase
       .from('supplier_site_snapshots')
-      .update({ status: 'error', error: message.slice(0, 400), fetched_at: new Date().toISOString() })
+      .update(
+        transient && attempts < SNAPSHOT_MAX_ATTEMPTS
+          ? { status: 'pending', attempts, error: message.slice(0, 400) }
+          : { status: 'error', attempts, error: message.slice(0, 400), fetched_at: new Date().toISOString() },
+      )
       .eq('host', claimed[i].host);
   }
 }

@@ -108,3 +108,12 @@ notify pgrst, 'reload schema';
 alter table supplier_site_snapshots add column if not exists claimed_at timestamptz;
 
 notify pgrst, 'reload schema';
+
+-- ---------------------------------------------------------------------------
+-- Сколько раз пытались снять сайт. Разбор первых 130 доменов показал, что
+-- половина отказов — временные: таймаут медленного хостинга, 429, 503. Такие
+-- домены возвращаются в очередь (до 3 попыток), а 401/403/404 остаются
+-- ошибкой сразу — повтор их не починит.
+alter table supplier_site_snapshots add column if not exists attempts int not null default 0;
+
+notify pgrst, 'reload schema';
