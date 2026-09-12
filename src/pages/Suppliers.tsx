@@ -65,6 +65,7 @@ import { fetchEmailTemplates } from '../lib/emailTemplatesApi';
 import type { MaterialLedger } from '../data/materialLedgers';
 import { fetchMaterialLedgers, deleteMaterialLedger } from '../lib/materialLedgersApi';
 import { buildMasterLedgers, isMasterLedgerId } from '../lib/masterLedger';
+import { syncLedgersWithEstimates } from '../lib/ledgerSync';
 import type { SupplierOrder } from '../data/supplierOrders';
 import { fetchSupplierOrders } from '../lib/supplierOrdersApi';
 import type { SupplierQuote } from '../data/supplierQuotes';
@@ -1994,9 +1995,21 @@ export function Suppliers() {
   // ВЫБРАННОЙ здесь сметы (MaterialLedger.estimateId), не все сразу. Без
   // выбранной сметы список пуст (не имеет смысла показывать чужие ведомости
   // без контекста, к какой смете их отнести).
+  // Владелец, 2026-09-12: "внёс изменения в ведомость материалов по
+  // керамограниту, а к новому письму прикрепляется ведомость без изменений...
+  // при любом изменении ведомость должна обновляться" — единственная точка,
+  // где ведомости зеркалятся из живых смет (см. lib/ledgerSync.ts). Дальше по
+  // странице используется ТОЛЬКО этот список: и вкладка "Ведомости
+  // материалов", и мастер-ведомость, и пикеры письма/массовой рассылки —
+  // иначе .xlsx собрался бы из устаревшего снимка, как оно и было.
+  const syncedMaterialLedgers = useMemo(
+    () => syncLedgersWithEstimates(materialLedgers, estimates),
+    [materialLedgers, estimates],
+  );
+
   const scopedMaterialLedgers = useMemo(
-    () => (ledgerEstimateId ? materialLedgers.filter((l) => l.estimateId === ledgerEstimateId) : []),
-    [materialLedgers, ledgerEstimateId],
+    () => (ledgerEstimateId ? syncedMaterialLedgers.filter((l) => l.estimateId === ledgerEstimateId) : []),
+    [syncedMaterialLedgers, ledgerEstimateId],
   );
 
   // Мастер-ведомость (владелец, 2026-09-12: "нужна еще одна общая
@@ -2010,15 +2023,15 @@ export function Suppliers() {
   // Одна мастер-ведомость на смету — ведомости привязаны к смете, и смешивать
   // Red One с Зелёным в файле, который уходит поставщику, нельзя.
   const materialLedgersWithMasters = useMemo(() => {
-    const masters = buildMasterLedgers(materialLedgers, (estimateId) => {
+    const masters = buildMasterLedgers(syncedMaterialLedgers, (estimateId) => {
       const e = estimates.find((x) => x.id === estimateId);
       if (!e) return undefined;
       return (e.objectId ? objectLabel(e.objectId) : e.title) || undefined;
     });
     // Мастера первыми — в пикерах письма/рассылки это самый частый выбор.
-    return [...masters, ...materialLedgers];
+    return [...masters, ...syncedMaterialLedgers];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [materialLedgers, estimates, objects]);
+  }, [syncedMaterialLedgers, estimates, objects]);
 
   const masterLedgerForEstimate = useMemo(
     () =>
