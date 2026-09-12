@@ -415,6 +415,21 @@ async function listingIsMissing(link) {
   return status === 404 || status === 410;
 }
 
+const UNIVERSAL_SUPPLIERS_TITLE = 'Универсальные поставщики';
+
+// Карточки универсальных поставщиков — их нельзя заводить в профильных
+// категориях. Для самой универсальной категории исключать нечего.
+async function fetchUniversalOffers(requestId) {
+  const { data: universalRequests } = await supabase
+    .from('supplier_research_requests')
+    .select('id')
+    .ilike('title', UNIVERSAL_SUPPLIERS_TITLE);
+  const universalId = universalRequests?.[0]?.id;
+  if (!universalId || universalId === requestId) return [];
+  const { data } = await supabase.from('supplier_research_offers').select('name, website_url').eq('request_id', universalId);
+  return data ?? [];
+}
+
 async function createOffersAndQueueEnrichment(job, results) {
   if (DRY_RUN || results.length === 0) return 0;
 
@@ -426,7 +441,18 @@ async function createOffersAndQueueEnrichment(job, results) {
     console.error('  → не удалось прочитать уже существующие предложения:', existingError.message);
     return 0;
   }
-  const existingKeys = new Set((existing ?? []).map((o) => dedupKey({ name: o.name, website: o.website_url })));
+  // Владелец, 2026-09-12: универсальные поставщики (Лемана Про, Петрович,
+  // Сатурн) живут одной карточкой в категории "Универсальные поставщики",
+  // в профильных категориях их быть не должно (см. блок "Универсальные
+  // поставщики" в src/data/supplierResearch.ts). Поиск заводит карточки
+  // сам, без человека, поэтому правило приходится соблюдать здесь же —
+  // иначе те же федеральные сети будут всплывать дубликатами в каждой
+  // новой категории. То же самое в основном пути очереди —
+  // supabase/functions/process-supplier-jobs/index.ts.
+  const universal = await fetchUniversalOffers(job.request_id);
+  const existingKeys = new Set(
+    [...(existing ?? []), ...universal].map((o) => dedupKey({ name: o.name, website: o.website_url })),
+  );
   const candidates = results
     .filter((r) => !existingKeys.has(dedupKey(r)))
     // Карточка без сайта, телефона и почты закупщице бесполезна: писать

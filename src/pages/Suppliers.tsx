@@ -38,6 +38,9 @@ import {
   offerCommunicationStatus,
   OFFER_COMMUNICATION_STATUS_LABEL,
   SUPPLIER_MESSENGER_TYPES,
+  UNIVERSAL_SUPPLIERS_TITLE,
+  isUniversalRequest,
+  isSameSupplier,
   type ResearchContactMethod,
   type SupplierRequest,
   type SupplierRequestGroup,
@@ -55,6 +58,7 @@ import { EmailThread, SupplierCorrespondenceTab, countUnreadSupplierEmails } fro
 import { MaterialLedgerModal } from '../components/suppliers/MaterialLedgerModal';
 import { MasterLedgerCard } from '../components/suppliers/MasterLedgerCard';
 import { BulkSendModal } from '../components/suppliers/BulkSendModal';
+import { SupplierMergeModal, type SupplierMergePlan } from '../components/suppliers/SupplierMergeModal';
 import type { LedgerAttachment } from '../lib/materialLedgerXlsx';
 import type { EmailTemplate } from '../data/emailTemplates';
 import { fetchEmailTemplates } from '../lib/emailTemplatesApi';
@@ -865,6 +869,8 @@ function RequestCard({
   onDismissSearchJob,
   enrichmentState,
   reliabilityByInn,
+  duplicatesCount,
+  onMergeDuplicates,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
@@ -885,6 +891,11 @@ function RequestCard({
   onDismissSearchJob: (jobId: string) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
   reliabilityByInn: Map<string, SupplierReliability>;
+  // Сколько универсальных поставщиков этой категории продублировано в
+  // профильных категориях (нулю не равно только у самой категории
+  // "Универсальные поставщики", см. universalDuplicatePlans в Suppliers).
+  duplicatesCount: number;
+  onMergeDuplicates: () => void;
 }) {
   // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
   // SupplierListBlock выше — здесь он controlled, значение общее и для
@@ -954,6 +965,22 @@ function RequestCard({
       </div>
 
       {searchQueueError && <p className="text-sm text-danger">{searchQueueError}</p>}
+
+      {/* Владелец, 2026-09-12: универсальный поставщик не должен висеть ещё
+          и в профильных категориях. Найденные дубликаты не удаляем молча —
+          показываем здесь, объединяет их человек кнопкой (перенос переписки,
+          КП и файлов — lib/supplierMergeApi.ts). */}
+      {duplicatesCount > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-warning/30 bg-warning-bg px-3 py-2 text-sm text-ink">
+          <span className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+            {suppliersCountLabel(duplicatesCount)} из этого списка заведены ещё и в профильных категориях
+          </span>
+          <button type="button" onClick={onMergeDuplicates} className="shrink-0 font-semibold text-primary hover:underline">
+            Объединить
+          </button>
+        </div>
+      )}
 
       {/* Владелец, 2026-09-11: "я формирую поиск, система ищет в фоне, я
           закрываю вкладку, когда найдёт — уведомление" — статус фонового
@@ -1611,6 +1638,13 @@ export function Suppliers() {
   const [offerError, setOfferError] = useState<string | null>(null);
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
   const [deletingOfferFileIndex, setDeletingOfferFileIndex] = useState<number | null>(null);
+  // Универсальные поставщики (владелец, 2026-09-12) — см. блок
+  // "Универсальные поставщики" в data/supplierResearch.ts. mergePlans —
+  // открытая модалка объединения дубликатов, universalConflict —
+  // уведомление при попытке завести универсального поставщика ещё и в
+  // профильной категории.
+  const [mergePlans, setMergePlans] = useState<{ intro: string; plans: SupplierMergePlan[] } | null>(null);
+  const [universalConflict, setUniversalConflict] = useState<{ name: string; requestTitle: string } | null>(null);
   const [savingQuoteId, setSavingQuoteId] = useState<string | null>(null);
   const [deletingQuoteId, setDeletingQuoteId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -2228,6 +2262,58 @@ export function Suppliers() {
     }
   }
 
+  // --- Универсальные поставщики (владелец, 2026-09-12) ---------------------
+  // Правило: универсальный поставщик живёт ровно в одной карточке — в
+  // категории "Универсальные поставщики". Подробности и сравнение карточек
+  // — в data/supplierResearch.ts (isUniversalRequest/isSameSupplier),
+  // перенос содержимого — в lib/supplierMergeApi.ts.
+  const universalRequest = useMemo(() => requests.find((r) => isUniversalRequest(r)) ?? null, [requests]);
+  const universalOffers = useMemo(
+    () => (universalRequest ? offers.filter((o) => o.requestId === universalRequest.id) : []),
+    [offers, universalRequest],
+  );
+
+  // Дубликаты универсального поставщика в профильных категориях. Считается
+  // и для баннера на карточке "Универсальные поставщики" (разовая чистка
+  // уже накопленного), и для предложения объединить сразу после того, как
+  // поставщика завели универсальным.
+  function profileDuplicatesOf(offer: SupplierOffer, excludeOfferId?: string): { offer: SupplierOffer; requestTitle: string }[] {
+    if (!universalRequest) return [];
+    return offers
+      .filter((o) => o.requestId !== universalRequest.id && o.id !== offer.id && o.id !== excludeOfferId && isSameSupplier(o, offer))
+      .map((o) => ({ offer: o, requestTitle: requests.find((r) => r.id === o.requestId)?.title ?? 'без категории' }));
+  }
+
+  const universalDuplicatePlans = useMemo<SupplierMergePlan[]>(() => {
+    if (!universalRequest) return [];
+    const requestTitle = (id: string) => requests.find((r) => r.id === id)?.title ?? 'без категории';
+    return universalOffers
+      .map((target) => ({
+        target,
+        sources: offers
+          .filter((o) => o.requestId !== universalRequest.id && isSameSupplier(o, target))
+          .map((o) => ({ offer: o, requestTitle: requestTitle(o.requestId) })),
+      }))
+      .filter((plan) => plan.sources.length > 0);
+  }, [offers, requests, universalOffers, universalRequest]);
+
+  function handleOffersMerged(merged: SupplierOffer[], removedOfferIds: string[]) {
+    const removed = new Set(removedOfferIds);
+    const byId = new Map(merged.map((m) => [m.id, m]));
+    setOffers((prev) => {
+      const next = prev.filter((o) => !removed.has(o.id)).map((o) => byId.get(o.id) ?? o);
+      // Карточку могли создать прямо перед слиянием — в prev её ещё нет.
+      for (const m of merged) if (!next.some((o) => o.id === m.id)) next.push(m);
+      return next;
+    });
+    setMergePlans(null);
+    // Переписка/КП/заявки сменили offer_id в базе — перечитываем, иначе
+    // лента и сравнение цен будут показывать их под удалённой карточкой.
+    fetchAllSupplierOfferEmails().then(setSupplierEmails).catch(() => {});
+    fetchSupplierOrders().then(setSupplierOrders).catch(() => {});
+    fetchSupplierQuotes().then(setSupplierQuotes).catch(() => {});
+  }
+
   function openAddOffer(request: SupplierRequest) {
     setOfferRequestId(request.id);
     setEditingOffer(null);
@@ -2521,6 +2607,36 @@ export function Suppliers() {
   async function submitOffer(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmitOffer || savingOffer || !offerRequestId) return;
+    const targetRequest = requests.find((r) => r.id === offerRequestId) ?? null;
+
+    // Владелец, 2026-09-12: "если поставщик добавляется в универсальный, то
+    // его не должно быть в профильных. Если его ранее там не было, при
+    // попытке добавления нужно уведомление". Проверяем только при создании
+    // НОВОЙ карточки: правка уже существующей — это не "попытка добавить",
+    // ругаться на каждое сохранение телефона незачем (уже заведённые
+    // дубликаты разбираются объединением, см. баннер на карточке
+    // "Универсальные поставщики").
+    if (!editingOffer && targetRequest && !isUniversalRequest(targetRequest)) {
+      const twin = universalOffers.find((u) =>
+        isSameSupplier(u, {
+          name: offerForm.name.trim(),
+          email: offerForm.email.trim(),
+          websiteUrl: offerForm.websiteUrl.trim(),
+          inn: offerForm.inn ?? null,
+          country: offerForm.country,
+        }),
+      );
+      if (twin) {
+        setUniversalConflict({ name: twin.name, requestTitle: targetRequest.title });
+        return;
+      }
+    }
+
+    await saveOffer(targetRequest);
+  }
+
+  async function saveOffer(targetRequest: SupplierRequest | null) {
+    if (!canSubmitOffer || savingOffer || !offerRequestId) return;
     setSavingOffer(true);
     setOfferError(null);
     try {
@@ -2557,16 +2673,33 @@ export function Suppliers() {
       // insertSupplierOffer/updateSupplierOffer (те — общий API-слой без
       // понятия "кто и зачем сохраняет", а различие "было ли уже verified"
       // видно только тут, по editingOffer до сохранения).
+      let saved: SupplierOffer;
       if (editingOffer) {
         if (!editingOffer.verified) logActivity('supplier_offer_verified');
-        const updated = await updateSupplierOffer(editingOffer.id, payload);
+        saved = await updateSupplierOffer(editingOffer.id, payload);
+        const updated = saved;
         setOffers((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
       } else {
         logActivity('supplier_offer_added_manually');
-        const created = await insertSupplierOffer(payload);
+        saved = await insertSupplierOffer(payload);
+        const created = saved;
         setOffers((prev) => [...prev, created]);
       }
       setOfferModalOpen(false);
+
+      // Обратная сторона того же правила: поставщика завели (или отредактировали)
+      // в "Универсальных" — значит его карточки в профильных категориях должны
+      // исчезнуть, отдав сюда переписку, КП и файлы. Решение принимает человек:
+      // предлагаем объединить, молча ничего не удаляем.
+      if (targetRequest && isUniversalRequest(targetRequest)) {
+        const duplicates = profileDuplicatesOf(saved);
+        if (duplicates.length > 0) {
+          setMergePlans({
+            intro: `«${saved.name}» уже заведён в профильных категориях. Универсальный поставщик должен быть только здесь — перенесём всё в эту карточку, а дубликаты удалим.`,
+            plans: [{ target: saved, sources: duplicates }],
+          });
+        }
+      }
     } catch (err) {
       setOfferError(errorMessage(err, 'Не удалось сохранить предложение'));
     } finally {
@@ -2780,6 +2913,14 @@ export function Suppliers() {
                       onDismissSearchJob={dismissWebSearchJob}
                       enrichmentState={enrichmentState}
                       reliabilityByInn={reliabilityByInn}
+                      duplicatesCount={isUniversalRequest(r) ? universalDuplicatePlans.length : 0}
+                      onMergeDuplicates={() =>
+                        setMergePlans({
+                          intro:
+                            'Эти поставщики заведены и в «Универсальных», и в профильных категориях. Объединим: переписка, КП, заявки и файлы переедут в универсальную карточку, дубликаты удалим.',
+                          plans: universalDuplicatePlans,
+                        })
+                      }
                     />
                   ))}
 
@@ -3605,6 +3746,49 @@ export function Suppliers() {
             />
           );
         })()}
+
+      {/* Универсальные поставщики (владелец, 2026-09-12): уведомление при
+          попытке завести универсального поставщика ещё и в профильной
+          категории. Жёстко не запрещаем — бывает, что это всё-таки другая
+          компания с тем же названием, решает человек. */}
+      <Modal open={!!universalConflict} onClose={() => setUniversalConflict(null)} title="Это универсальный поставщик">
+        <p className="text-sm text-ink-muted">
+          «{universalConflict?.name}» уже заведён в категории «{UNIVERSAL_SUPPLIERS_TITLE}». Универсальные поставщики продают всё
+          сразу, поэтому их держат одной карточкой — иначе переписка, счета и заявки по одной и той же компании растекаются
+          по категориям.
+        </p>
+        <p className="text-sm text-ink-muted">
+          Не добавляйте его в «{universalConflict?.requestTitle}» — напишите ему из универсальной карточки, запрос по этой
+          категории уйдёт в ту же ветку переписки.
+        </p>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              const targetRequest = requests.find((r) => r.id === offerRequestId) ?? null;
+              setUniversalConflict(null);
+              void saveOffer(targetRequest);
+            }}
+          >
+            Всё равно добавить
+          </Button>
+          <Button type="button" onClick={() => setUniversalConflict(null)}>
+            Понятно, не добавлять
+          </Button>
+        </div>
+      </Modal>
+
+      <SupplierMergeModal
+        open={!!mergePlans}
+        plans={mergePlans?.plans ?? []}
+        intro={mergePlans?.intro ?? ''}
+        emails={supplierEmails}
+        quotes={supplierQuotes}
+        orders={supplierOrders}
+        onClose={() => setMergePlans(null)}
+        onMerged={handleOffersMerged}
+      />
 
       <Modal open={!!webQueryModal} onClose={() => setWebQueryModal(null)} title={`Найти в сети: ${webQueryModal?.title ?? ''}`}>
         <form onSubmit={submitWebQuery} className="flex flex-col gap-4">

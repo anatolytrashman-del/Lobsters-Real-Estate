@@ -6,7 +6,14 @@ import { Input } from '../ui/Input';
 import { Textarea } from '../ui/Textarea';
 import { Select } from '../ui/Select';
 import { ToggleGroup } from '../ui/ToggleGroup';
-import { countryFlag, SUPPLIER_COUNTRIES, type SupplierRequest, type SupplierOffer } from '../../data/supplierResearch';
+import {
+  countryFlag,
+  isUniversalRequest,
+  SUPPLIER_COUNTRIES,
+  UNIVERSAL_SUPPLIERS_TITLE,
+  type SupplierRequest,
+  type SupplierOffer,
+} from '../../data/supplierResearch';
 import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import type { LegalEntity } from '../../data/legalEntities';
@@ -221,18 +228,44 @@ export function BulkSendModal({
   // вкладке "Письма" целиком. Владелец, 2026-09-09: страна теперь ФИЛЬТРУЕТ
   // список — пока страна не выбрана, получателей не показываем вовсе
   // (не смысла демонстрировать список, который может тут же перефильтроваться).
+  // Владелец, 2026-09-12: "категорию универсальных поставщиков также
+  // добавляй в массовую отправку, им будут отправляться мастер-ведомости".
+  // Универсальный поставщик (Лемана Про, Петрович, Сатурн) с этого же дня
+  // живёт ОДНОЙ карточкой — в категории "Универсальные поставщики", и в
+  // профильных категориях его больше нет (см. data/supplierResearch.ts).
+  // Значит рассылка по профильной категории без него была бы неполной:
+  // он торгует всем и по ведомости этой категории отвечает так же, как
+  // профильные. Поэтому его карточки подмешиваются в получателей —
+  // отдельной группой, которую видно и можно выключить галочкой.
+  const universalRequest = useMemo(() => requests.find((r) => isUniversalRequest(r)) ?? null, [requests]);
+  const universalIsSelected = !!universalRequest && universalRequest.id === selectedRequestId;
+  const [includeUniversal, setIncludeUniversal] = useState(true);
+
+  const matchesFilters = useMemo(
+    () => (o: SupplierOffer) =>
+      !!o.email && o.verified && (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
+    [selectedCountry],
+  );
+
+  const universalCandidates = useMemo(
+    () =>
+      countryChosen && universalRequest && !universalIsSelected
+        ? offers.filter((o) => o.requestId === universalRequest.id && matchesFilters(o))
+        : [],
+    [offers, countryChosen, universalRequest, universalIsSelected, matchesFilters],
+  );
+
+  const universalIds = useMemo(() => new Set(universalCandidates.map((o) => o.id)), [universalCandidates]);
+
   const candidates = useMemo(
     () =>
       countryChosen
-        ? offers.filter(
-            (o) =>
-              o.requestId === selectedRequestId &&
-              o.email &&
-              o.verified &&
-              (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
-            )
+        ? [
+            ...offers.filter((o) => o.requestId === selectedRequestId && matchesFilters(o)),
+            ...(includeUniversal ? universalCandidates : []),
+          ]
         : [],
-    [offers, countryChosen, selectedRequestId, selectedCountry],
+    [offers, countryChosen, selectedRequestId, matchesFilters, includeUniversal, universalCandidates],
   );
 
   // Письма, уже стоящие в очереди рассылки (ещё не отправленные воркером) —
@@ -354,7 +387,7 @@ export function BulkSendModal({
   useEffect(() => {
     setSelected(new Set(visible.filter((o) => statusOf(o).kind === 'none').map((o) => o.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRequestId, selectedCountry, filter, queuedOfferIds]);
+  }, [selectedRequestId, selectedCountry, filter, queuedOfferIds, includeUniversal]);
 
   const [subject, setSubject] = useState(() => request.title || 'Поставка материалов');
   const [body, setBody] = useState(() => defaultBulkBody());
@@ -498,11 +531,29 @@ export function BulkSendModal({
                     показывает размер пополнения категории, чтобы не считать
                     строки глазами. */}
                 <ToggleGroup
-                  label={`Кому пишем — новых в категории: ${newCount} из ${candidates.length}`}
+                  label={`Кому пишем — новых: ${newCount} из ${candidates.length}`}
                   options={FILTERS}
                   value={filter}
                   onChange={setFilter}
                 />
+
+                {/* Универсальные поставщики идут в рассылку по любой
+                    категории (см. комментарий у universalCandidates выше).
+                    Галочка — на случай узкой рассылки, где они не нужны. */}
+                {universalCandidates.length > 0 && (
+                  <label className="-mt-1 flex items-start gap-2.5 text-sm text-ink-muted">
+                    <input
+                      type="checkbox"
+                      checked={includeUniversal}
+                      onChange={() => setIncludeUniversal((v) => !v)}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-primary"
+                    />
+                    <span>
+                      Добавить «{UNIVERSAL_SUPPLIERS_TITLE}» ({universalCandidates.length}) — они торгуют всем и отвечают по
+                      любой ведомости; в профильных категориях их карточек больше нет.
+                    </span>
+                  </label>
+                )}
 
                 {unverifiedCount > 0 && (
                   <p className="-mt-1 text-xs text-ink-faint">
@@ -557,6 +608,7 @@ export function BulkSendModal({
                         />
                         <span className="min-w-0 flex-1 truncate text-ink">
                           <span title={o.country || SUPPLIER_COUNTRIES[0]}>{countryFlag(o.country || SUPPLIER_COUNTRIES[0])}</span> {o.name}
+                          {universalIds.has(o.id) && <span className="text-ink-faint"> · универсальный</span>}
                           {status.kind === 'sent' && <span className="text-ink-faint"> · писали {formatDay(status.at)}</span>}
                           {status.kind === 'queued' && <span className="text-warning"> · письмо уже в очереди</span>}
                           {status.kind === 'quoted' && <span className="text-ink-faint"> · есть КП, уже работаем</span>}
