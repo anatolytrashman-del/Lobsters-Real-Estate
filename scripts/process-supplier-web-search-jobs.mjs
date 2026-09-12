@@ -64,8 +64,31 @@ if (!DRY_RUN) {
 const supabase = DRY_RUN ? null : createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 const MODEL = 'claude-haiku-4-5-20251001';
-const MAX_SEARCHES = 30;
+// 2026-09-11: было 30 — по данным CLAUDE.md модель и так сама останавливается
+// на 15-22 поисках независимо от разрешённого лимита (см. запись про диагностику
+// MAX_SEARCHES 20→30 не помогавшую), 30 никогда реально не использовалось —
+// снижено до 20 (верхняя граница уже наблюдавшегося саморегулирования модели),
+// поведение не меняется, просто убран неиспользуемый запас на теоретический
+// худший случай (влияет на цену только если модель когда-нибудь решит искать
+// больше 20 раз — сейчас такого не наблюдалось).
+const MAX_SEARCHES = 20;
 const MAX_RESULTS = 40;
+// 2026-09-11, по реальным логам ProxyAPI (см. docs/session-journal.md):
+// второй раунд запускался ВСЕГДА, если после первого меньше 40 — почти на
+// каждом задании, даже когда первый раунд уже показал, что рынок узкий.
+// Живой пример по "ceresit" (Россия/Москва — широкий рынок по словам
+// владельца): раунд 1 сам нашёл 25 поставщиков, раунд 2 — ещё 26 (часть
+// повторов), то есть оба раунда реально понадобились, чтобы дотянуть до ~40.
+// Резать бюджет второго раунда в ЭТОМ случае означало бы не добрать до 40
+// там, где владелец явно просит их гарантированно найти. Но для узких рынков
+// (Беларусь, нишевые бренды — сам владелец: "в беларуси мы столько не
+// найдем") первый раунд обычно находит намного меньше — если он нашёл совсем
+// мало, вторая полноценная попытка (тот же ~97₽) почти наверняка не окупится,
+// рынок просто исчерпан. Порог ниже — граница "похоже на узкий рынок, второй
+// раунд вряд ли поможет", подобрана с запасом ниже реально наблюдавшихся 25
+// у широкого рынка, чтобы не резать охват там, где он нужен.
+const MIN_ROUND1_FOR_SECOND_ROUND = 10;
+
 // Регион поиска (колонка country в supplier_web_search_jobs — историческое
 // имя, см. src/lib/supplierWebSearchApi.ts). Держать в синхроне с
 // supabase/functions/process-supplier-jobs/index.ts — это ручной запасной
@@ -253,6 +276,27 @@ async function fetchWebSearchResults(region, itemsText, sectionTitle, extra, exc
     throw new Error(`Ошибка веб-поиска (${resp.status}): ${text.slice(0, 300)}`);
   }
   const data = await resp.json();
+  // 2026-09-11: владелец пожаловался на дороговизну одного запроса (340 ₽
+  // за задание с 39 результатами) — раньше это никак не логировалось, любая
+  // диагностика стоимости была бы гаданием. web_search берёт $10 за 1000
+  // поисков ПЛЮС обычную цену токенов за контент результатов, а этот контент
+  // (по документации Anthropic) пересылается и тарифицируется заново на
+  // каждом внутреннем раунде поиска в пределах одного вызова — раздел
+  // "Server tools"/"Web search tool" явно говорит, что весь server-side
+  // agentic loop идёт ВНУТРИ одного HTTP-запроса, без доступа разработчика
+  // к промежуточным ходам, поэтому явный cache_control тут не расставить —
+  // кэшировать нечего, кроме статичной части system-промпта между раундом 1
+  // и раундом 2 (эффект небольшой на фоне растущего контекста самого поиска).
+  // Теперь usage/число поисков логируется в консоль (виден в логах GitHub
+  // Actions через get_job_logs) — при следующей жалобе на цену будут точные
+  // цифры, а не оценка по документации.
+  const usage = data.usage || {};
+  const searchCount = usage.server_tool_use?.web_search_requests ?? '?';
+  console.log(
+    `    usage: input=${usage.input_tokens ?? '?'} output=${usage.output_tokens ?? '?'} ` +
+      `cache_read=${usage.cache_read_input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0} ` +
+      `web_search_requests=${searchCount}`
+  );
   return extractJsonArray(data.content);
 }
 
@@ -264,12 +308,21 @@ async function runSearchRounds(job) {
 
   const round1Raw = await fetchWebSearchResults(region, job.items_text, job.section_title, job.extra, excludeNames);
   const round1 = sanitizeResults(round1Raw, excludeKeys, region);
+  console.log(`    раунд 1: найдено ${round1.length} поставщиков`);
 
   let combined = round1;
-  if (round1.length < MAX_RESULTS) {
+  if (round1.length >= MAX_RESULTS) {
+    console.log('    второй раунд не нужен — уже набрали лимит');
+  } else if (round1.length < MIN_ROUND1_FOR_SECOND_ROUND) {
+    console.log(
+      `    второй раунд пропущен — раунд 1 нашёл всего ${round1.length} ` +
+        `(< ${MIN_ROUND1_FOR_SECOND_ROUND}), похоже на узкий рынок, вторая полная попытка вряд ли окупится`
+    );
+  } else {
     const round2ExcludeNames = [...excludeNames, ...round1.map((r) => r.name || r.website).filter(Boolean)];
     const round2Raw = await fetchWebSearchResults(region, job.items_text, job.section_title, job.extra, round2ExcludeNames);
     combined = sanitizeResults([...round1, ...round2Raw], excludeKeys, region);
+    console.log(`    раунд 2: итого после объединения и дедупа — ${combined.length} поставщиков`);
   }
   return combined;
 }
@@ -362,6 +415,21 @@ async function listingIsMissing(link) {
   return status === 404 || status === 410;
 }
 
+const UNIVERSAL_SUPPLIERS_TITLE = 'Универсальные поставщики';
+
+// Карточки универсальных поставщиков — их нельзя заводить в профильных
+// категориях. Для самой универсальной категории исключать нечего.
+async function fetchUniversalOffers(requestId) {
+  const { data: universalRequests } = await supabase
+    .from('supplier_research_requests')
+    .select('id')
+    .ilike('title', UNIVERSAL_SUPPLIERS_TITLE);
+  const universalId = universalRequests?.[0]?.id;
+  if (!universalId || universalId === requestId) return [];
+  const { data } = await supabase.from('supplier_research_offers').select('name, website_url').eq('request_id', universalId);
+  return data ?? [];
+}
+
 async function createOffersAndQueueEnrichment(job, results) {
   if (DRY_RUN || results.length === 0) return 0;
 
@@ -373,7 +441,18 @@ async function createOffersAndQueueEnrichment(job, results) {
     console.error('  → не удалось прочитать уже существующие предложения:', existingError.message);
     return 0;
   }
-  const existingKeys = new Set((existing ?? []).map((o) => dedupKey({ name: o.name, website: o.website_url })));
+  // Владелец, 2026-09-12: универсальные поставщики (Лемана Про, Петрович,
+  // Сатурн) живут одной карточкой в категории "Универсальные поставщики",
+  // в профильных категориях их быть не должно (см. блок "Универсальные
+  // поставщики" в src/data/supplierResearch.ts). Поиск заводит карточки
+  // сам, без человека, поэтому правило приходится соблюдать здесь же —
+  // иначе те же федеральные сети будут всплывать дубликатами в каждой
+  // новой категории. То же самое в основном пути очереди —
+  // supabase/functions/process-supplier-jobs/index.ts.
+  const universal = await fetchUniversalOffers(job.request_id);
+  const existingKeys = new Set(
+    [...(existing ?? []), ...universal].map((o) => dedupKey({ name: o.name, website: o.website_url })),
+  );
   const candidates = results
     .filter((r) => !existingKeys.has(dedupKey(r)))
     // Карточка без сайта, телефона и почты закупщице бесполезна: писать

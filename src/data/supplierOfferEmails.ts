@@ -1,4 +1,5 @@
 import type { DocumentFile } from './contractorDocuments';
+import type { EmailSendStatus } from './emailSendStatus';
 
 // Результат распознавания счёта/КП во вложении письма (Claude Haiku 4.5,
 // см. api/_invoiceRecognition.js) — и от автоматического срабатывания на
@@ -18,8 +19,37 @@ export interface EmailExtractionItem {
 // подтверждении прикрепить сам файл счёта к карточке предложения, не
 // только цифры из него) — null у записей, сделанных до 2026-09-03
 // (в момент, когда поле появилось), но новые всегда его заполняют.
+// Снимок того, ЧТО именно автоматическая запись счёта изменила в базе —
+// пишется сервером (api/_invoiceApply.js) в момент записи. Нужен для двух
+// вещей: сверки позиций со сметой уже ПОСЛЕ записи (по itemIds фронт
+// находит в карточке строки именно этого счёта) и отката, если модель
+// приняла за счёт что-то другое — тогда снимок позволяет вернуть ровно то,
+// что было, не задев данные, добавленные человеком.
+export interface EmailExtractionApplied {
+  target: 'offer' | 'order';
+  targetId: string;
+  // Строка supplier_offer_quotes, созданная под этот счёт (у заявок КП не
+  // заводятся — там null, см. _invoiceApply.js).
+  quoteId: string | null;
+  // id позиций (PurchaseItem.id), добавленных в карточку из этого счёта.
+  itemIds: string[];
+  // Файл счёта, если он был ПРИКРЕПЛЁН этой записью (fileAdded=false —
+  // файл в карточке уже лежал, откат его не трогает).
+  fileUrl: string | null;
+  fileAdded: boolean;
+  previous: { price: number | null; currency: string | null; inn: string | null };
+  appliedAt: string;
+}
+
 export interface EmailExtraction {
   status: 'pending' | 'confirmed' | 'dismissed';
+  // Владелец, 2026-09-12: "мне нужно автоматическое распознавание счетов и
+  // запись в базу ещё до открытия письма нами вручную" — true означает, что
+  // status:'confirmed' поставил не человек кнопкой, а сервер при приёме
+  // письма. Отличать нужно: у автозаписи в переписке своя карточка (сверить
+  // позиции / откатить), у ручной — прежняя пометка "Данные в базе".
+  appliedAutomatically?: boolean;
+  applied?: EmailExtractionApplied | null;
   isInvoice: boolean;
   price: number | null;
   currency: string | null;
@@ -74,6 +104,12 @@ export interface SupplierOfferEmail {
   // разобранных бэкфиллом по подписи в теле (см. журнал 2026-09-12).
   sentByProfileId: string | null;
   sentByName: string | null;
+  // Ушло ли письмо на самом деле (см. data/emailSendStatus.ts). У входящих
+  // всегда 'sent' — колонка общая на обе стороны переписки, но смысл имеет
+  // только у исходящих. sendError — причина, по которой письмо ждёт очереди
+  // или не ушло совсем.
+  sendStatus: EmailSendStatus;
+  sendError: string | null;
   createdAt: string;
 }
 
@@ -103,5 +139,7 @@ export interface SupplierOfferEmailRow {
   extraction: EmailExtraction | null;
   sent_by_profile_id: string | null;
   sent_by_name: string | null;
+  send_status: string | null;
+  send_error: string | null;
   created_at: string;
 }

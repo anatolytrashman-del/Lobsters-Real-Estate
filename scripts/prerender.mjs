@@ -48,6 +48,12 @@
 // рендер, не быстрый (чтобы баг в этой логике никогда не стал тихой SEO-
 // регрессией).
 //
+// 2026-09-12 — у полного режима появился ВТОРОЙ автоматический сигнал:
+// правка кода самих публичных страниц (отпечаток их исходников,
+// scripts/public-build-id.mjs, сверяется с живым продом — см.
+// publicCodeChangedSinceLive ниже). Правки админки/API/скриптов отпечаток не
+// меняют и идут быстрым путём.
+//
 // Важное следствие: страницы БЕЗ своего триггера обновления (каталог БЦ,
 // хабы, аналитика — только лендинги объектов дёргают хук) больше не
 // освежаются попутно от каждого пуша кода, как раньше — держать в голове,
@@ -59,8 +65,9 @@
 // даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { computePublicBuildId } from './public-build-id.mjs';
 
 const ROOT_DIR = new URL('..', import.meta.url).pathname;
 const DIST_DIR = join(ROOT_DIR, 'dist');
@@ -328,12 +335,43 @@ function streetOfAddressJs(fullAddress) {
   return parts.length > 1 ? parts.slice(0, -1).join(', ') : short;
 }
 
+// Запрос к Supabase с повторами (2026-09-12). Реальная причина: за один день
+// два прод-деплоя упали красным на ровном месте — Supabase free-tier отдал
+// 504 на обычный select (сборки 05:59 и 11:59, Build Logs: «[prerender] сбой:
+// Error: Supabase вернул 504 при запросе landing_slug»). Одна такая осечка
+// роняла весь билд, и пересборку приходилось заказывать заново — ещё один
+// цикл ожидания поверх и без того долгого пререндера. Та же беда, от которой
+// на фронте защищает src/lib/withRetry.ts («холодный старт» free-tier), здесь
+// защиты не было вовсе. Повторяем до трёх раз с нарастающей паузой; таймаут
+// на попытку — чтобы зависший запрос не съедал минуты сборки молча.
+const SUPABASE_ATTEMPTS = 3;
+
+async function supabaseSelect(query, what) {
+  let lastError;
+  for (let attempt = 1; attempt <= SUPABASE_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${query}`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе ${what}`);
+      return await res.json();
+    } catch (err) {
+      lastError = err;
+      if (attempt < SUPABASE_ATTEMPTS) {
+        const pauseMs = attempt * 2000;
+        console.warn(
+          `[prerender] ${what}: попытка ${attempt} не удалась (${err instanceof Error ? err.message : err}) — повтор через ${pauseMs / 1000}с`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, pauseMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function fetchStreetHubPaths() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=address`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-  });
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_centers.address`);
-  const rows = await res.json();
+  const rows = await supabaseSelect('business_centers?select=address', 'business_centers.address');
   const slugs = new Set();
   for (const r of rows) {
     const slug = STREET_HUB_SLUG_BY_NAME[streetOfAddressJs(r.address)];
@@ -343,12 +381,10 @@ async function fetchStreetHubPaths() {
 }
 
 async function fetchMetroHubStations() {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null`,
-    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } },
+  const rows = await supabaseSelect(
+    'business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null',
+    'nearest_metro_stations',
   );
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе nearest_metro_stations`);
-  const rows = await res.json();
   const slugs = new Set();
   for (const r of rows) {
     for (const s of Array.isArray(r.nearest_metro_stations) ? r.nearest_metro_stations : []) {
@@ -364,11 +400,10 @@ async function fetchMetroHubPaths() {
 }
 
 async function fetchMicrodistrictHubPaths() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=microdistrict&microdistrict=not.is.null`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-  });
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе microdistrict`);
-  const rows = await res.json();
+  const rows = await supabaseSelect(
+    'business_centers?select=microdistrict&microdistrict=not.is.null',
+    'microdistrict',
+  );
   const slugs = new Set();
   for (const r of rows) {
     const slug = MICRODISTRICT_HUB_SLUG_BY_NAME[r.microdistrict];
@@ -378,11 +413,7 @@ async function fetchMicrodistrictHubPaths() {
 }
 
 async function fetchClassDistrictComboPaths() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=business_class,district`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-  });
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_class/district`);
-  const rows = await res.json();
+  const rows = await supabaseSelect('business_centers?select=business_class,district', 'business_class/district');
   const combos = new Set();
   for (const r of rows) {
     const classSlug = CLASS_HUB_SLUG_BY_VALUE[r.business_class];
@@ -393,11 +424,7 @@ async function fetchClassDistrictComboPaths() {
 }
 
 async function fetchLandingPaths() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/objects?select=landing_slug&landing_slug=not.is.null`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-  });
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе landing_slug`);
-  const rows = await res.json();
+  const rows = await supabaseSelect('objects?select=landing_slug&landing_slug=not.is.null', 'landing_slug');
   return rows
     .map((r) => r.landing_slug)
     .filter((slug) => typeof slug === 'string' && slug.trim() !== '')
@@ -409,11 +436,7 @@ async function fetchLandingPaths() {
 // Яндекса контента конкретного БЦ не существует. Список слагов — из той же
 // таблицы, что читает публичная страница (business_centers), не хардкожен.
 async function fetchBusinessCenterPaths() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=slug`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-  });
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_centers.slug`);
-  const rows = await res.json();
+  const rows = await supabaseSelect('business_centers?select=slug', 'business_centers.slug');
   return rows
     .map((r) => r.slug)
     .filter((slug) => typeof slug === 'string' && slug.trim() !== '')
@@ -556,9 +579,71 @@ async function shouldForceFullPrerender() {
     );
     if (!res.ok) return true;
     const rows = await res.json();
-    return rows.length > 0; // забрали флаг первыми — наш билд делает полный рендер
+    if (rows.length > 0) return true; // забрали флаг первыми — наш билд делает полный рендер
   } catch (err) {
     console.warn('[prerender] не удалось проверить/потребить deploy_debounce — полный режим на всякий случай:', err);
+    return true;
+  }
+  // Данные не менялись — остаётся вопрос, не менялся ли КОД публичных страниц.
+  return await publicCodeChangedSinceLive();
+}
+
+// Второй сигнал полного режима (владелец, 2026-09-12: «большинство правок я
+// вношу в админку, а оно рендерит и все маркетинговые страницы; нужен быстрый
+// рендер чисто для админки и полный при правках маркетинговых страниц»).
+//
+// Перенацеливание ассетов выше починило быстрый режим технически: копия с
+// прода снова годится, чем бы ни отличались имена чанков. Но остаётся вторая,
+// содержательная половина вопроса — копия несёт РАЗМЕТКУ прода, а она
+// устаревает, как только правится код самой публичной страницы (боты и
+// соцсети видели бы старый текст до следующего полного прогона; ровно от
+// этого и защищал ALWAYS_FULL_RENDER_PATHS, но вручную и лишь для двух
+// страниц). Отличить «правили админку» от «правили маркетинг» по хэшам
+// чанков нельзя: они пересчитываются каскадом от любой правки.
+//
+// Поэтому отдельный отпечаток исходников публичной части
+// (scripts/public-build-id.mjs — граф СТАТИЧЕСКИХ импортов от src/main.tsx;
+// админ-страницы в него не попадают по построению, они все за lazy() в
+// App.tsx). Сборка кладёт его в dist/public-build-id.txt, здесь сверяем свой
+// с тем, что лежит на живом проде: совпал — правки маркетинга не касались,
+// копии корректны; не совпал — полный рендер.
+//
+// Любая неопределённость (файла на проде ещё нет, сеть подвела, отпечаток не
+// посчитался) — полный режим, как и везде в этой логике: тихая SEO-регрессия
+// дороже лишних минут сборки.
+async function publicCodeChangedSinceLive() {
+  let localId;
+  try {
+    localId = computePublicBuildId().id;
+  } catch (err) {
+    console.warn('[prerender] не удалось посчитать отпечаток публичного кода — полный режим:', err);
+    return true;
+  }
+  try {
+    const res = await fetch(`${SITE_ORIGIN}/public-build-id.txt`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      console.log(`[prerender] /public-build-id.txt на проде недоступен (${res.status}) — полный режим`);
+      return true;
+    }
+    // До первого деплоя с этим шагом сборки файла на проде нет, и SPA-рерайт
+    // vercel.json отдаёт на этот путь index.html с кодом 200 — поэтому
+    // недостаточно проверить res.ok, нужен ещё и формат отпечатка.
+    const liveId = (await res.text()).trim();
+    if (!/^[0-9a-f]{32}$/.test(liveId)) {
+      console.log('[prerender] на проде ещё нет /public-build-id.txt (ответ не похож на отпечаток) — полный режим');
+      return true;
+    }
+    if (liveId === localId) {
+      console.log(`[prerender] публичный код не менялся (отпечаток ${localId}) — правки не касаются маркетинговых страниц`);
+      return false;
+    }
+    console.log(`[prerender] публичный код изменился (${liveId} → ${localId}) — полный режим`);
+    return true;
+  } catch (err) {
+    console.warn('[prerender] не удалось сверить отпечаток публичного кода с продом — полный режим:', err);
     return true;
   }
 }
@@ -570,10 +655,82 @@ async function shouldForceFullPrerender() {
 // вызывающий код делает настоящий рендер именно для этого пути.
 // Имя входного чанка (assets/index-<hash>.js) в переданном HTML. Хэш в имени
 // считается от содержимого бандла, поэтому он меняется при ЛЮБОЙ правке кода
-// фронта — по нему и сверяем, из той ли сборки снапшот.
+// фронта.
 function entryAssetOf(html) {
   const m = html.match(/assets\/index-[A-Za-z0-9_-]+\.js/);
   return m ? m[0] : null;
+}
+
+// 2026-09-12 — ПЕРЕНАЦЕЛИВАНИЕ АССЕТОВ снапшота вместо отказа от него.
+// Предыстория: 2026-09-11 прод лёг после первого же быстрого деплоя с
+// правкой кода. Копия страницы с прода тащит с собой её ссылки на
+// `/assets/<чанк>-<хэш>.js`, а в НОВОЙ сборке хэши пересчитаны и файлов с
+// такими именами физически нет — SPA-рерайт vercel.json отдавал на них
+// index.html, браузер отказывался исполнять HTML как модуль, и все ~285
+// публичных страниц оставались статикой без приложения. Тогдашний фикс
+// («снапшот годится, только если ссылается на входной чанк ЭТОЙ сборки,
+// иначе честный рендер») закрыл симптом ценой самого быстрого режима: хэш
+// входного чанка меняется при ЛЮБОЙ правке фронта, поэтому быстрый путь
+// вырождался в полный практически на каждом деплое. Замеряно по Build Logs
+// сборки 2026-09-12 11:02: 284 из 285 путей отрендерены заново, скопирован
+// ноль, 9 минут пререндера на пуш, не тронувший ни одной публичной страницы
+// (весь остальной билд — 30 секунд). Это и есть «деплой висит по 20 минут».
+//
+// Настоящая разница между старым снапшотом и новой сборкой — ТОЛЬКО имена
+// файлов ассетов: пререндеренная разметка от хэшей не зависит. Поэтому
+// снапшот не выбрасываем, а переписываем в нём ссылки на имена текущей
+// сборки. Имя чанка у Vite — `<стем>-<хэш>.<ext>`, где стем (`index`,
+// `supabase`, `chevron-down`…) между сборками стабилен, меняется только хэш
+// — по стему и сопоставляем. Если хоть одна ссылка не сопоставилась (чанк
+// переименован/исчез, стем неоднозначен, dist/assets не читается) — снапшот
+// не чиним, а честно рендерим ИМЕННО ЭТОТ путь: молча оставить ссылку на
+// несуществующий файл нельзя, это ровно тот баг, от которого защищались.
+const ASSET_NAME_RE = /^(.+)-([A-Za-z0-9_-]+)\.(js|css)$/;
+const ASSET_REF_RE = /\/assets\/[A-Za-z0-9_.$@-]+\.(?:js|css)/g;
+
+// Стем → имя файла в ТЕКУЩЕЙ сборке (строится один раз, лениво — dist/assets
+// к этому моменту уже собран vite). Неоднозначные стемы выбрасываем совсем:
+// лучше лишний честный рендер, чем ссылка на чужой чанк.
+let currentAssetsByStemCache;
+function currentAssetsByStem() {
+  if (currentAssetsByStemCache) return currentAssetsByStemCache;
+  const byStem = new Map();
+  const ambiguous = new Set();
+  try {
+    for (const file of readdirSync(join(DIST_DIR, 'assets'))) {
+      const m = file.match(ASSET_NAME_RE);
+      if (!m) continue;
+      const stem = `${m[1]}.${m[3]}`;
+      if (byStem.has(stem)) ambiguous.add(stem);
+      byStem.set(stem, file);
+    }
+  } catch (err) {
+    console.warn('[prerender] dist/assets не прочитан — копии с прода отключены, рендерю честно:', err);
+  }
+  for (const stem of ambiguous) byStem.delete(stem);
+  currentAssetsByStemCache = byStem;
+  return byStem;
+}
+
+// Переписывает все /assets/... в HTML на имена текущей сборки.
+// html: null — сопоставить удалось не всё, вызывающий делает настоящий рендер.
+function retargetAssets(html) {
+  const byStem = currentAssetsByStem();
+  if (byStem.size === 0) return { html: null, missing: ['dist/assets недоступен'] };
+  const missing = new Set();
+  let changed = 0;
+  const out = html.replace(ASSET_REF_RE, (ref) => {
+    const m = ref.slice('/assets/'.length).match(ASSET_NAME_RE);
+    const current = m ? byStem.get(`${m[1]}.${m[3]}`) : undefined;
+    if (!current) {
+      missing.add(ref);
+      return ref;
+    }
+    if (`/assets/${current}` !== ref) changed++;
+    return `/assets/${current}`;
+  });
+  if (missing.size > 0) return { html: null, missing: [...missing] };
+  return { html: out, changed };
 }
 
 // Входной чанк ТЕКУЩЕЙ сборки (читается один раз, лениво — dist/index.html
@@ -596,26 +753,34 @@ async function fetchPathLive(path) {
     if (!res.ok) return false;
     const html = await res.text();
     if (!/<h1[\s>]/i.test(html)) return false;
-    // 2026-09-11, прод лёг после первого же быстрого деплоя с правкой кода:
-    // копия страницы с прода тащит с собой и её <script src="/assets/
-    // index-<старый хэш>.js">, а в НОВОМ деплое файлов с такими именами нет
-    // (хэш пересчитался) — SPA-рерайт vercel.json отдавал на них index.html,
-    // браузер отказывался исполнять HTML как модуль, и все ~285 публичных
-    // страниц оставались статикой без приложения. Поэтому снапшот с прода
-    // годится, только если он ссылается на входной чанк этой же сборки;
-    // иначе — честный рендер (то есть при любой правке кода фронта быстрый
-    // путь сам собой вырождается в полный, что и требуется).
-    const expected = currentEntryAsset();
-    if (expected && !html.includes(expected)) {
+    // Снапшот с прода ссылается на чанки ПРОШЛОЙ сборки — переписываем их
+    // на имена текущей (см. retargetAssets выше). Не сопоставилось — честный
+    // рендер этого пути.
+    const retargeted = retargetAssets(html);
+    if (!retargeted.html) {
+      const shown = retargeted.missing.slice(0, 3).join(', ');
       console.log(
-        `[prerender] /${path}: живая копия от другой сборки (${entryAssetOf(html) ?? 'чанк не найден'} вместо ${expected}) — рендерю заново`,
+        `[prerender] /${path}: в копии с прода чанки, которых нет в этой сборке (${shown}${retargeted.missing.length > 3 ? ', …' : ''}) — рендерю заново`,
+      );
+      return false;
+    }
+    // Страховка на случай ошибки в самом перенацеливании: после него снапшот
+    // обязан ссылаться на входной чанк ИМЕННО этой сборки, иначе приложение
+    // на странице не запустится (тот самый баг 2026-09-11). Не сошлось —
+    // рендерим честно, то есть откатываемся ровно к прежнему поведению.
+    const expected = currentEntryAsset();
+    if (expected && !retargeted.html.includes(expected)) {
+      console.log(
+        `[prerender] /${path}: после перенацеливания нет входного чанка ${expected} (в копии ${entryAssetOf(html) ?? 'чанк не найден'}) — рендерю заново`,
       );
       return false;
     }
     const dir = join(DIST_DIR, path);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'index.html'), html);
-    console.log(`[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(html.length / 1024)} КБ)`);
+    writeFileSync(join(dir, 'index.html'), retargeted.html);
+    console.log(
+      `[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(retargeted.html.length / 1024)} КБ, ассетов перенацелено: ${retargeted.changed})`,
+    );
     return true;
   } catch (err) {
     console.warn(`[prerender] /${path}: не удалось скачать живую копию (${err instanceof Error ? err.message : err}), рендерю`);

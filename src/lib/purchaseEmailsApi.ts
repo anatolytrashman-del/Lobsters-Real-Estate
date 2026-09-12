@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { withRetry } from './withRetry';
 import { authFetch } from './authFetch';
 import type { PurchaseEmail, PurchaseEmailRow } from '../data/purchaseEmails';
+import { emailSendStatusFromRow } from '../data/emailSendStatus';
 
 function fromRow(row: PurchaseEmailRow): PurchaseEmail {
   return {
@@ -14,6 +15,8 @@ function fromRow(row: PurchaseEmailRow): PurchaseEmail {
     body: row.body ?? '',
     files: row.files ?? [],
     resendMessageId: row.resend_message_id,
+    sendStatus: emailSendStatusFromRow(row.send_status),
+    sendError: row.send_error ?? null,
     createdAt: row.created_at,
   };
 }

@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { withRetry } from './withRetry';
 import type { SupplierQuote, SupplierQuoteRow } from '../data/supplierQuotes';
 import type { Currency } from '../data/transactions';
+import type { PurchaseItem } from '../data/purchases';
 
 function fromRow(row: SupplierQuoteRow): SupplierQuote {
   return {
@@ -74,6 +75,19 @@ export function updateSupplierQuote(id: string, input: Omit<SupplierQuote, 'id' 
       .single();
     if (error) throw error;
     return fromRow(data as SupplierQuoteRow);
+  });
+}
+
+// Точечное обновление только позиций КП — нужно для сверки со сметой уже
+// ПОСЛЕ автоматической записи счёта (владелец, 2026-09-12: запись в базу
+// не должна ждать ручного подтверждения, но сопоставление позиций со
+// сметой по-прежнему делает человек). Целиком КП тут не нужен: в переписке
+// его объекта нет, а тянуть строку ради перезаписи одного поля — лишний
+// запрос и лишний шанс затереть то, что параллельно поправили в карточке.
+export function updateSupplierQuoteItems(id: string, items: PurchaseItem[]): Promise<void> {
+  return withRetry(async () => {
+    const { error } = await supabase.from('supplier_offer_quotes').update({ items }).eq('id', id);
+    if (error) throw error;
   });
 }
 

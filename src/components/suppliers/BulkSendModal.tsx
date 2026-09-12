@@ -6,7 +6,12 @@ import { Input } from '../ui/Input';
 import { Textarea } from '../ui/Textarea';
 import { Select } from '../ui/Select';
 import { ToggleGroup } from '../ui/ToggleGroup';
-import { countryFlag, SUPPLIER_COUNTRIES, type SupplierRequest, type SupplierOffer } from '../../data/supplierResearch';
+import {
+  countryFlag,
+  SUPPLIER_COUNTRIES,
+  type SupplierRequest,
+  type SupplierOffer,
+} from '../../data/supplierResearch';
 import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import type { LegalEntity } from '../../data/legalEntities';
@@ -137,9 +142,10 @@ function formatDay(iso: string): string {
 
 function defaultBulkBody(): string {
   return `Добрый день.
-Прикладываем ведомость материалов. Просьба прислать коммерческое предложение/счёт по позициям, которые можете поставить — на каждую позицию готовы рассмотреть альтернативы.
 
-Планируем оплачивать со счета юрлица.
+Планируем закупку материала согласно ведомости, прикрепленной к письму. Просьба прислать коммерческое предложение/счёт по позициям, которые можете поставить — на каждую позицию готовы рассмотреть альтернативы.
+
+Планируем оплачивать со счета юрлица. Карточку организации и адрес доставки прикрепил к письму.
 
 С уважением,
 ${emailSignature()}`;
@@ -220,18 +226,31 @@ export function BulkSendModal({
   // вкладке "Письма" целиком. Владелец, 2026-09-09: страна теперь ФИЛЬТРУЕТ
   // список — пока страна не выбрана, получателей не показываем вовсе
   // (не смысла демонстрировать список, который может тут же перефильтроваться).
+  // Владелец, 2026-09-12 (утром): "категорию универсальных поставщиков также
+  // добавляй в массовую отправку" — универсальные подмешивались в получателей
+  // ЛЮБОЙ профильной категории отдельной группой, с галочкой и своей
+  // мастер-ведомостью. Он же, тот же день (вечером): "когда я отправляю
+  // рассылку узким поставщикам (например, краска), мне в общем списке в
+  // рассылке не нужны универсальные поставщики вообще. Мы же удаляли дубли.
+  // Универсальную ведомость я буду рассылать отдельно" — подмешивание
+  // убрано целиком. Рассылка по категории = ровно карточки этой категории;
+  // универсальным уходит своя рассылка, для которой в селекте "Категория
+  // поставщиков" выбирается "Универсальные поставщики", а мастер-ведомость
+  // прикладывается на шаге выбора ведомости (MaterialLedgerModal показывает
+  // мастер-ведомости в общем списке, см. Suppliers.tsx). Не возвращать
+  // подмешивание без явной просьбы: для владельца универсальный в списке
+  // профильной категории читается как тот самый дубль, который мы
+  // объединением карточек и убирали.
+
+  const matchesFilters = useMemo(
+    () => (o: SupplierOffer) =>
+      !!o.email && o.verified && (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
+    [selectedCountry],
+  );
+
   const candidates = useMemo(
-    () =>
-      countryChosen
-        ? offers.filter(
-            (o) =>
-              o.requestId === selectedRequestId &&
-              o.email &&
-              o.verified &&
-              (selectedCountry === ALL_COUNTRIES || (o.country || SUPPLIER_COUNTRIES[0]) === selectedCountry),
-            )
-        : [],
-    [offers, countryChosen, selectedRequestId, selectedCountry],
+    () => (countryChosen ? offers.filter((o) => o.requestId === selectedRequestId && matchesFilters(o)) : []),
+    [offers, countryChosen, selectedRequestId, matchesFilters],
   );
 
   // Письма, уже стоящие в очереди рассылки (ещё не отправленные воркером) —
@@ -414,10 +433,10 @@ export function BulkSendModal({
     setQueueError(null);
     try {
       await insertBulkSendJob({
-        requestId: selectedRequestId,
         legalEntityId: legalEntity?.id ?? null,
         subject,
         body,
+        requestId: selectedRequestId,
         attachment,
         offerIds: recipients.map((o) => o.id),
       });
@@ -497,7 +516,7 @@ export function BulkSendModal({
                     показывает размер пополнения категории, чтобы не считать
                     строки глазами. */}
                 <ToggleGroup
-                  label={`Кому пишем — новых в категории: ${newCount} из ${candidates.length}`}
+                  label={`Кому пишем — новых: ${newCount} из ${candidates.length}`}
                   options={FILTERS}
                   value={filter}
                   onChange={setFilter}
@@ -609,7 +628,9 @@ export function BulkSendModal({
                 <div className="flex flex-col gap-1.5 rounded-control border border-border-strong bg-surface-muted p-3 text-xs text-ink-muted">
                   <div className="flex items-center gap-2">
                     <Paperclip className="h-4 w-4 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate">{attachment.fileName} — уйдёт вложением каждому получателю</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {attachment.fileName} — уйдёт вложением каждому получателю
+                    </span>
                   </div>
                   {/* Владелец, 2026-09-09: "в прикреплённых файлах вижу только
                       ведомость материала, но не реквизиты" — карточка

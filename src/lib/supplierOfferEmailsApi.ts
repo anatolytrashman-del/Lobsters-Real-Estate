@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { withRetry } from './withRetry';
 import { authFetch } from './authFetch';
 import type { EmailExtraction, SupplierOfferEmail, SupplierOfferEmailRow } from '../data/supplierOfferEmails';
+import { emailSendStatusFromRow } from '../data/emailSendStatus';
 
 function fromRow(row: SupplierOfferEmailRow): SupplierOfferEmail {
   return {
@@ -19,6 +20,8 @@ function fromRow(row: SupplierOfferEmailRow): SupplierOfferEmail {
     extraction: row.extraction ?? null,
     sentByProfileId: row.sent_by_profile_id ?? null,
     sentByName: row.sent_by_name ?? null,
+    sendStatus: emailSendStatusFromRow(row.send_status),
+    sendError: row.send_error ?? null,
     createdAt: row.created_at,
   };
 }
@@ -44,6 +47,34 @@ export function fetchAllSupplierOfferEmails(): Promise<SupplierOfferEmail[]> {
     const { data, error } = await supabase.from('supplier_offer_emails').select('*').order('created_at', { ascending: true });
     if (error) throw error;
     return (data as SupplierOfferEmailRow[]).map(fromRow);
+  });
+}
+
+// Облегчённый срез исходящих писем для страницы метрик (/admin/metrics) —
+// только те три поля, по которым там считаются плитки. Отдельная функция, а не
+// fetchAllSupplierOfferEmails, именно из-за автообновления: метрики
+// перезапрашиваются раз в минуту в фоне, а `select('*')` тянет ещё и body
+// каждого письма (полный HTML со всей цитируемой перепиской) — на такой
+// частоте это мегабайты трафика впустую.
+export interface OutgoingEmailMetric {
+  createdAt: string;
+  sentByName: string | null;
+  toAddress: string;
+}
+
+export function fetchOutgoingEmailMetrics(): Promise<OutgoingEmailMetric[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase
+      .from('supplier_offer_emails')
+      .select('created_at, sent_by_name, to_address')
+      .eq('direction', 'out')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data as Pick<SupplierOfferEmailRow, 'created_at' | 'sent_by_name' | 'to_address'>[]).map((row) => ({
+      createdAt: row.created_at,
+      sentByName: row.sent_by_name ?? null,
+      toAddress: row.to_address,
+    }));
   });
 }
 

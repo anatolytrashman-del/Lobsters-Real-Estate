@@ -22,6 +22,7 @@
 // вложение не по теме) не считается счётом, ничего не подставляется.
 import { proxyApiKeyProblem } from './_proxyapi.js';
 import { extractDocxText } from './_docxText.js';
+import { extractXlsxText } from './_xlsxText.js';
 import { invalidInnReason } from './_checko.js';
 
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -89,16 +90,18 @@ function blockTypeForFileName(fileName) {
 
 // Владелец, 2026-09-09: реальный счёт (ЗАО "Волок", с разбивкой на позиции)
 // пришёл файлом .docx — recognizeInvoice его не видела вовсе, ни ошибки, ни
-// попытки. У Anthropic API нет content-блока под .docx (document — только
-// PDF), поэтому вместо пересылки файла модели передаём уже извлечённый
-// текст (см. _docxText.js) обычным text-блоком — для счёта-таблицы этого
-// достаточно, реальной картинки/вёрстки документа знать не нужно.
-async function buildDocxContent(fileUrl, fileName) {
+// попытки. 2026-09-12 то же самое повторилось с .xlsx ("Грильято.xlsx" от
+// поставщика, лежит в переписке нераспознанным). У Anthropic API нет
+// content-блока ни под .docx, ни под .xlsx (document — только PDF), поэтому
+// вместо пересылки файла модели передаём уже извлечённый текст (см.
+// _docxText.js / _xlsxText.js) обычным text-блоком — для счёта-таблицы
+// этого достаточно, реальной картинки/вёрстки документа знать не нужно.
+async function buildOfficeContent(fileUrl, fileName, ext) {
   const fileResp = await fetch(fileUrl);
-  if (!fileResp.ok) throw new Error(`Не удалось скачать .docx для распознавания (${fileResp.status})`);
+  if (!fileResp.ok) throw new Error(`Не удалось скачать .${ext} для распознавания (${fileResp.status})`);
   const buffer = Buffer.from(await fileResp.arrayBuffer());
-  const text = await extractDocxText(buffer);
-  if (!text.trim()) throw new Error('Не удалось извлечь текст из .docx — файл повреждён или пуст');
+  const text = ext === 'xlsx' ? await extractXlsxText(buffer) : await extractDocxText(buffer);
+  if (!text.trim()) throw new Error(`Не удалось извлечь текст из .${ext} — файл повреждён или пуст`);
   return [
     {
       type: 'text',
@@ -117,11 +120,11 @@ export async function recognizeInvoice(fileUrl, fileName) {
 
   const ext = String(fileName || '').split('.').pop()?.toLowerCase();
   let content;
-  if (ext === 'docx') {
-    content = await buildDocxContent(fileUrl, fileName);
+  if (ext === 'docx' || ext === 'xlsx') {
+    content = await buildOfficeContent(fileUrl, fileName, ext);
   } else {
     const blockType = blockTypeForFileName(fileName);
-    if (!blockType) throw new Error('Неподдерживаемый тип файла для распознавания — нужен PDF, картинка (png/jpg/webp/gif) или .docx');
+    if (!blockType) throw new Error('Неподдерживаемый тип файла для распознавания — нужен PDF, картинка (png/jpg/webp/gif), .docx или .xlsx');
     content = [
       { type: blockType, source: { type: 'url', url: fileUrl } },
       { type: 'text', text: 'Определи, счёт/КП ли это, и если да — извлеки данные строго по формату из системной инструкции.' },
@@ -193,4 +196,75 @@ export async function recognizeInvoice(fileUrl, fileName) {
           }))
       : [],
   };
+}
+
+
+// ─── Выбор вложения, которое имеет смысл распознавать ────────────────────
+//
+// Владелец, 2026-09-12: "мне нужно автоматическое распознавание счетов и
+// запись в базу ещё до открытия письма нами вручную". Первое, что мешало
+// этому на живых данных: кандидат выбирался как ПЕРВОЕ подходящее вложение
+// письма. Реальное письмо от 2026-09-12 ("RE: Краска интерьерная") пришло с
+// четырьмя вложениями — image001.jpg, image002.jpg (картинки из подписи
+// отправителя), "Счет на оплату № 84664 от 12.09.2026.pdf" и "Заказ клиента
+// № 84664.pdf". Кандидатом становилась картинка подписи, модель честно
+// отвечала isInvoice:false — и настоящий счёт из того же письма не
+// распознавался вовсе (extraction оставался null).
+//
+// Отсюда два правила: (1) заведомо служебные картинки отсеиваются ещё до
+// модели (имя вида image001.jpg / mailrusigimg_*.png / logo.png, а также
+// любая картинка меньше SIGNATURE_IMAGE_MAX_BYTES — подпись/логотип весит
+// единицы килобайт, фотография или скан счёта — сотни); (2) оставшиеся
+// сортируются по правдоподобию (имя со словом "счёт"/"инвойс"/"КП" вперёд,
+// документы перед картинками) и пробуются ПО ОЧЕРЕДИ, пока одно не окажется
+// счётом. Перебор ограничен MAX_CANDIDATES — при цене в доли цента за
+// документ три попытки ничего не стоят, но и бесконечно перебирать
+// двадцативложенную рассылку незачем.
+const SIGNATURE_IMAGE_MAX_BYTES = 60 * 1024;
+const SERVICE_IMAGE_NAME = /^(image|img|oledata|logo|signature|sig|footer|banner|mailrusigimg|outlook-)[-_a-z0-9]*\.(png|jpe?g|gif|webp)$/i;
+const INVOICE_NAME_HINT = /(сч[её]т|invoice|inv[-_ ]?\d|\bкп\b|коммерч|оферт|предложен|quote|proposal|прайс|price)/i;
+const RECOGNIZABLE_EXT = /\.(pdf|png|jpe?g|webp|gif|docx|xlsx)$/i;
+export const MAX_CANDIDATES = 3;
+
+function isServiceImage(attachment) {
+  if (!/\.(png|jpe?g|gif|webp)$/i.test(attachment.fileName)) return false;
+  if (SERVICE_IMAGE_NAME.test(attachment.fileName)) return true;
+  return typeof attachment.size === 'number' && attachment.size > 0 && attachment.size < SIGNATURE_IMAGE_MAX_BYTES;
+}
+
+// attachments — то, что вернул extractEmailAttachments (url/fileName/
+// pageCount/size). Возвращает отсортированный список кандидатов, не более
+// MAX_CANDIDATES.
+export function pickInvoiceCandidates(attachments) {
+  const suitable = (Array.isArray(attachments) ? attachments : []).filter((a) => {
+    if (!a || !a.url || !RECOGNIZABLE_EXT.test(a.fileName || '')) return false;
+    // pageCount у не-PDF всегда 1 (см. _attachments.js); null — PDF, число
+    // страниц которого не удалось определить: лучше пропустить настоящий
+    // счёт, чем прогонять через модель неизвестного размера каталог.
+    if (a.pageCount == null || a.pageCount > INVOICE_MAX_PAGES) return false;
+    return !isServiceImage(a);
+  });
+
+  const rank = (a) => {
+    const hinted = INVOICE_NAME_HINT.test(a.fileName) ? 0 : 1;
+    const isDocument = /\.(pdf|docx|xlsx)$/i.test(a.fileName) ? 0 : 1;
+    return hinted * 2 + isDocument;
+  };
+  return [...suitable].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_CANDIDATES);
+}
+
+// Пробует кандидатов по очереди и возвращает ПЕРВЫЙ, признанный счётом:
+// { recognized, candidate }. null — ни одно вложение счётом не оказалось
+// (или распознавать было нечего). Ошибка на одном кандидате не прекращает
+// перебор: битый .docx в письме не должен прятать нормальный PDF рядом.
+export async function recognizeInvoiceFromAttachments(attachments) {
+  for (const candidate of pickInvoiceCandidates(attachments)) {
+    try {
+      const recognized = await recognizeInvoice(candidate.url, candidate.fileName);
+      if (recognized.isInvoice) return { recognized, candidate };
+    } catch (err) {
+      console.error('Не удалось распознать вложение как счёт:', candidate.fileName, err);
+    }
+  }
+  return null;
 }

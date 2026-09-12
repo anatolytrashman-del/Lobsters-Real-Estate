@@ -381,3 +381,110 @@ export const OFFER_COMMUNICATION_STATUS_LABEL: Record<OfferCommunicationStatus, 
   sent: 'Отправили, ждём ответ',
   confirmed: 'Получили КП, цены в базе',
 };
+
+// ---------------------------------------------------------------------------
+// Универсальные поставщики
+// ---------------------------------------------------------------------------
+// Владелец, 2026-09-12: "если поставщик добавляется в универсальный, то его
+// не должно быть в профильных... а если он уже был ранее добавлен, то его
+// надо оставить только в универсальных поставщиках, а из других категорий
+// удалить, при этом не потерять присланные КП, данные карточки, всю
+// переписку".
+//
+// Универсальный поставщик (Лемана Про, Петрович, Сатурн) продаёт всё сразу,
+// поэтому заводить его отдельной карточкой в каждой профильной категории —
+// это N карточек одной и той же компании: переписка, счета и заявки
+// растекаются по категориям, и ни в одной из них не видно полной картины по
+// поставщику. Одна карточка на компанию, живущая в категории
+// "Универсальные поставщики", — единственное место, где всё это сходится.
+//
+// Признак универсальности — НЕ отдельная колонка в базе, а сама категория
+// (её название): так владелец о ней и думает ("Универсальные — все в
+// категории Универсальные поставщики"), а переименование этой категории
+// — событие ровно такое же редкое, как и правка этой константы.
+export const UNIVERSAL_SUPPLIERS_TITLE = 'Универсальные поставщики';
+
+export function isUniversalRequest(request: Pick<SupplierRequest, 'title'>): boolean {
+  return request.title.trim().toLowerCase() === UNIVERSAL_SUPPLIERS_TITLE.toLowerCase();
+}
+
+// Маркетплейсы/каталоги: у двух РАЗНЫХ поставщиков сайтом может быть
+// указана одна и та же площадка (карточка продавца на Авито, витрина на
+// TIU/Deal.by), поэтому совпадение по такому домену — не признак одной и
+// той же компании, в отличие от собственного сайта.
+const MARKETPLACE_HOSTS = new Set([
+  'avito.ru',
+  'ozon.ru',
+  'wildberries.ru',
+  'market.yandex.ru',
+  'tiu.ru',
+  'deal.by',
+  'prom.by',
+  'kufar.by',
+  '2gis.ru',
+  'yandex.ru',
+]);
+
+// Название компании в том виде, в каком его можно сравнивать: регистр, ё/е,
+// кавычки-скобки-точки и организационно-правовая форма ("ООО Петрович" и
+// «Петрович» — одна компания) отбрасываются.
+export function normalizeSupplierName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"'`]/g, ' ')
+    .replace(/[.,]/g, ' ')
+    .replace(/\b(ооо|оао|зао|пао|ао|ип|одо|уп|чуп|тоо|iooo|llc)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Домен сайта без протокола, www и пути. Пустая строка — сайта нет или
+// это не разбираемый адрес (сравнивать нечего).
+export function supplierWebsiteHost(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  const host = trimmed
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .split(/[/?#]/)[0]
+    .toLowerCase();
+  return host.includes('.') ? host : '';
+}
+
+export type SupplierIdentityFields = Pick<SupplierOffer, 'name' | 'email' | 'websiteUrl' | 'inn' | 'country'>;
+
+// Одна и та же компания в двух карточках? Полноценного идентификатора
+// поставщика в данных нет (ИНН появляется только после первого счёта),
+// поэтому сравниваем по четырём признакам, любого совпадения достаточно.
+// Ложное срабатывание здесь не страшно: решение об объединении в любом
+// случае принимает человек — это подсказка, а не автоматика.
+export function isSameSupplier(a: SupplierIdentityFields, b: SupplierIdentityFields): boolean {
+  const innA = (a.inn ?? '').trim();
+  const innB = (b.inn ?? '').trim();
+  if (innA && innA === innB) return true;
+
+  const emailA = a.email.trim().toLowerCase();
+  const emailB = b.email.trim().toLowerCase();
+  if (emailA && emailA === emailB) return true;
+
+  const hostA = supplierWebsiteHost(a.websiteUrl);
+  const hostB = supplierWebsiteHost(b.websiteUrl);
+  if (hostA && hostA === hostB && !MARKETPLACE_HOSTS.has(hostA)) return true;
+
+  // Совпадение ТОЛЬКО по названию — самый слабый признак, и на разных
+  // рынках он регулярно врёт: "ТЕХНОстрой" из Беларуси (tehnostroy.by,
+  // +375) и "ТехноСтрой" из России (tekno-stroy.ru, +7) — разные компании
+  // с одним названием, поймано на разборе живой базы 2026-09-12. Страна у
+  // поставщика — не косметика, по ней ведётся отдельная закупка, поэтому
+  // при разных странах одно название компанию не отождествляет. Пустая
+  // страна хотя бы у одной из карточек — не противоречие, сравниваем как
+  // раньше.
+  const countryA = a.country.trim();
+  const countryB = b.country.trim();
+  if (countryA && countryB && countryA !== countryB) return false;
+
+  const nameA = normalizeSupplierName(a.name);
+  const nameB = normalizeSupplierName(b.name);
+  return nameA.length > 0 && nameA === nameB;
+}

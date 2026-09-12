@@ -48,3 +48,16 @@ export function isPageAllowed(profile: AccessProfile, page: PageKey): boolean {
 export function isSuperAdminAllowed(profile: AccessProfile): boolean {
   return profile.isSuperAdmin;
 }
+
+// Видимость задач: сотрудник видит в разделе «Задачи» только те, где он сам
+// стоит в ответственных, владелец (isSuperAdmin) — весь список целиком.
+// Сопоставление идёт по displayName профиля против assignees задачи: и там,
+// и там лежит одно и то же имя из таблицы people («Светлана», «Татьяна
+// Гаврис»...), id человека в задаче не хранится (см. data/tasks.ts). Поэтому
+// профиль, у которого displayName разошёлся с именем в people, перестанет
+// видеть свои задачи — держать эти две строки одинаковыми (LOGIN_ACCOUNTS /
+// access_profiles / people).
+export function isTaskVisible(profile: AccessProfile, assignees: string[]): boolean {
+  if (profile.isSuperAdmin) return true;
+  return assignees.includes(profile.displayName);
+}
