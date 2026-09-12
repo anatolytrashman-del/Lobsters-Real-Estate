@@ -2646,7 +2646,10 @@ export function Suppliers() {
 
   return (
     <>
-      <PageHeader title="Поставщики" action={supplierAddButton} />
+      {/* Заголовок совпадает с пунктом меню (data/pages.ts, 'purchases').
+          Владелец, 2026-09-12: раздел снова называется "Закупки"; вкладка
+          "Поставщики" — первая внутри него, это разные уровни. */}
+      <PageHeader title="Закупки" action={supplierAddButton} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <ToggleGroup

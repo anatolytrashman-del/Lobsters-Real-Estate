@@ -336,7 +336,7 @@ export function Metrics() {
               <StatTile
                 label="Запущено веб-поисков"
                 value={p.supplierSearchesStarted}
-                hint="Кнопка «Найти в сети» в категории Ресерча"
+                hint="Кнопка «Найти в сети» в категории на вкладке «Поставщики»"
               />
               <StatTile
                 label="Добавлено поставщиков поиском"
