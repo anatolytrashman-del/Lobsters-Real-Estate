@@ -827,6 +827,17 @@ function MaterialPriceComparisonCard({
   );
 }
 
+// Владелец, 2026-09-12: "Убери кнопку «Найти в сети», а функционал ИИ-поиска
+// оставь". Сам поиск остаётся полностью рабочим — очередь
+// supplier_web_search_jobs, обработчик (supabase/functions/process-supplier-jobs),
+// автосоздание предложений, обогащение контактов и уведомления в колокольчик
+// не тронуты; из интерфейса убрана только ручная точка запуска на карточке
+// категории. Плашки хода/результата задания на карточке специально оставлены
+// видимыми: задание может появиться и не из этой кнопки (крон, ручной
+// workflow_dispatch, прямая постановка в базу), и тогда закупщица должна
+// видеть, что поиск идёт. Вернуть кнопку — переключить флаг в true.
+const WEB_SEARCH_BUTTON_VISIBLE: boolean = false;
+
 // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
 // Беларуси и для России... в идеале переключение списков прямо внутри
 // самого блока, чем делать две отдельные таблицы". Переключатель — локальный
@@ -903,15 +914,17 @@ function RequestCard({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={searching || searchJob?.status === 'pending' || searchJob?.status === 'processing'}
-            icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            onClick={() => onWebSearch(request, country)}
-          >
-            {searching ? 'Ставим в очередь...' : 'Найти в сети'}
-          </Button>
+          {WEB_SEARCH_BUTTON_VISIBLE && (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={searching || searchJob?.status === 'pending' || searchJob?.status === 'processing'}
+              icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              onClick={() => onWebSearch(request, country)}
+            >
+              {searching ? 'Ставим в очередь...' : 'Найти в сети'}
+            </Button>
+          )}
           <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
             Добавить предложение
           </Button>
@@ -984,9 +997,11 @@ function RequestCard({
         </div>
       )}
 
-      {/* Переключатель страны остаётся видимым и в свёрнутом виде: он общий
-          с кнопкой "Найти в сети" выше, и если спрятать его вместе со
-          списком, поиск уходил бы в невыбранную на глазах страну. */}
+      {/* Переключатель страны остаётся видимым и в свёрнутом виде: он
+          фильтрует список поставщиков этой категории (а при включённом
+          WEB_SEARCH_BUTTON_VISIBLE — ещё и задаёт страну поиска, поэтому
+          прятать его вместе со списком нельзя: поиск уходил бы в
+          невыбранную на глазах страну). */}
       <div className="flex flex-wrap items-center gap-3">
         <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
         <button
