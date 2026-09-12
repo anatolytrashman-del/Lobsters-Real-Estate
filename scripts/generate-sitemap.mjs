@@ -23,13 +23,38 @@ const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_
 const SITE = 'https://redevelopment.pro';
 const SITEMAP_PATH = resolve(process.cwd(), 'dist/sitemap.xml');
 
+// Запрос к Supabase с повторами (2026-09-12) — та же защита, что в
+// scripts/prerender.mjs: free-tier отдаёт разовые 504 на обычный select, и
+// без повтора карточки БЦ (198 из 285 <loc>) молча выпадали из sitemap на
+// весь следующий деплой (реальный случай — Build Logs сборки 11:59).
+const SUPABASE_ATTEMPTS = 3;
+
+async function supabaseSelect(query, what) {
+  let lastError;
+  for (let attempt = 1; attempt <= SUPABASE_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${query}`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе ${what}`);
+      return await res.json();
+    } catch (err) {
+      lastError = err;
+      if (attempt < SUPABASE_ATTEMPTS) {
+        const pauseMs = attempt * 2000;
+        console.warn(
+          `[generate-sitemap] ${what}: попытка ${attempt} не удалась (${err instanceof Error ? err.message : err}) — повтор через ${pauseMs / 1000}с`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, pauseMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function fetchBusinessCenterSlugs() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=slug&order=slug.asc`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_centers.slug`);
-  const rows = await res.json();
+  const rows = await supabaseSelect('business_centers?select=slug&order=slug.asc', 'business_centers.slug');
   return rows.map((r) => r.slug).filter((slug) => typeof slug === 'string' && /^[a-z0-9-]+$/.test(slug));
 }
 
@@ -123,11 +148,7 @@ function streetOfAddressJs(fullAddress) {
 }
 
 async function fetchStreetHubSlugs() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/business_centers?select=address`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-  });
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе business_centers.address`);
-  const rows = await res.json();
+  const rows = await supabaseSelect('business_centers?select=address', 'business_centers.address');
   const slugs = new Set();
   for (const r of rows) {
     const slug = STREET_HUB_SLUG_BY_NAME[streetOfAddressJs(r.address)];
@@ -137,12 +158,10 @@ async function fetchStreetHubSlugs() {
 }
 
 async function fetchMetroHubStations() {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null`,
-    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } },
+  const rows = await supabaseSelect(
+    'business_centers?select=nearest_metro_stations&nearest_metro_stations=not.is.null',
+    'nearest_metro_stations',
   );
-  if (!res.ok) throw new Error(`Supabase вернул ${res.status} при запросе nearest_metro_stations`);
-  const rows = await res.json();
   const slugs = new Set();
   for (const r of rows) {
     for (const s of Array.isArray(r.nearest_metro_stations) ? r.nearest_metro_stations : []) {
