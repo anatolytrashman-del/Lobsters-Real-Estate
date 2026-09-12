@@ -205,7 +205,22 @@ async function sendLedgerCopy(job: any, request: any, offer: any, recipientsCoun
   }
 }
 
-async function sendOneEmail(offer: any, request: any, legalEntity: any, job: any) {
+async function sendOneEmail(offer: any, request: any, legalEntity: any, job: any, item: any) {
+  // Второй рубеж против дубля (первый — атомарный захват строки задания
+  // ниже, в основном цикле): по каждой строке задания в переписке может
+  // быть только одно письмо. Та же проверка есть в ручном запасном воркере
+  // scripts/process-bulk-send-jobs.mjs, а в базе — уникальный индекс
+  // supplier_offer_emails_bulk_job_item_uniq по bulk_job_item_id.
+  const { data: alreadySent } = await supabase
+    .from('supplier_offer_emails')
+    .select('id')
+    .eq('bulk_job_item_id', item.id)
+    .limit(1);
+  if ((alreadySent ?? []).length > 0) {
+    console.log(`  письмо по строке задания ${item.id} уже отправлено, повтор не шлём`);
+    return;
+  }
+
   const subject = renderTemplate(job.subject, offer, request).trim();
   const body = renderTemplate(job.body, offer, request);
 
@@ -277,6 +292,10 @@ async function sendOneEmail(offer: any, request: any, legalEntity: any, job: any
     body,
     files: storedFiles,
     resend_message_id: resendJson?.id ?? null,
+    // Строка задания, по которой ушло письмо — под уникальным индексом,
+    // то есть повторная вставка по той же строке физически невозможна
+    // (последняя страховка от дубля, см. начало функции).
+    bulk_job_item_id: item.id,
     // Автор рассылки переносится в каждое её письмо (владелец, 2026-09-12 —
     // учёт работы с письмами по сотрудникам, см. Metrics.tsx): в момент
     // фоновой отправки вошедшего пользователя уже нет, единственный
@@ -365,7 +384,7 @@ Deno.serve(async () => {
       if (summary.sent + summary.failed > 0) await sleep(randomDelay());
 
       try {
-        await sendOneEmail(offer, { title: request.title, items: request.items ?? [] }, legalEntity, job);
+        await sendOneEmail(offer, { title: request.title, items: request.items ?? [] }, legalEntity, job, item);
         await supabase
           .from('bulk_send_job_items')
           .update({ status: 'sent', sent_at: new Date().toISOString() })
