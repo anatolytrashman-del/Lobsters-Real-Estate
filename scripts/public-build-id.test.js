@@ -11,6 +11,9 @@ describe('отпечаток публичного кода', () => {
     expect(files).toContain('index.html');
     expect(files).toContain('src/main.tsx');
     expect(files).toContain('src/App.tsx');
+    // дизайн OG-обложек — тоже публичный вывод (быстрый режим копирует PNG с прода)
+    expect(files).toContain('scripts/generate-og-cards.mjs');
+    expect(files).toContain('public/fonts/Montserrat-SemiBold.woff2');
     for (const page of [
       'src/pages/MinskHub.tsx',
       'src/pages/ObjectLandingPage.tsx',

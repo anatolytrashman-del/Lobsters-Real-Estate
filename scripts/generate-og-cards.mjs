@@ -28,7 +28,7 @@
 // Сбой рендера конкретной карточки не роняет сборку: у страницы просто
 // остаётся прежний og:image (заглушка или фото объекта) — не хуже, чем было.
 import { chromium } from 'playwright-core';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const DIST_DIR = 'dist';
@@ -178,12 +178,56 @@ async function launchBrowser() {
   return chromium.launch({ executablePath: '/opt/pw-browsers/chromium', headless: true });
 }
 
+// 2026-09-12 — обложки в быстром режиме пререндера берём с прода, а не
+// рисуем заново. Раньше этот шаг рендерил все ~290 PNG браузером на КАЖДОЙ
+// сборке (~45 секунд — половина всего быстрого билда, см. Build Logs деплоя
+// d337cd6: пререндер 6с, обложки 46с). Пререндер оставляет в корне
+// репозитория .prerender-result.json со списком путей, чей HTML скопирован с
+// прода как есть (см. PRERENDER_RESULT_PATH в scripts/prerender.mjs). У такой
+// страницы og:title тот же, что на проде, а рисунок — чистая функция от
+// title/kicker и ЭТОГО скрипта (он входит в отпечаток публичного кода,
+// scripts/public-build-id.mjs, поэтому в быстром режиме гарантированно не
+// менялся) — значит, PNG на проде ровно тот, что мы бы нарисовали. Скачиваем.
+// Файл читаем один раз и удаляем, чтобы он не пережил сборку; нет файла или
+// не читается (полный режим, PRERENDER_SKIP=1, локальный прогон без
+// пререндера) — рисуем всё, как раньше. Не скачалось/не PNG — рисуем эту
+// страницу браузером, как раньше.
+const PRERENDER_RESULT_PATH = '.prerender-result.json';
+const COPY_WORKER_COUNT = 16;
+const PNG_MAGIC = 0x89504e47;
+
+function readCopiedFromProd() {
+  try {
+    const raw = readFileSync(PRERENDER_RESULT_PATH, 'utf8');
+    rmSync(PRERENDER_RESULT_PATH, { force: true });
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed.copiedFromProd) ? parsed.copiedFromProd : []);
+  } catch {
+    return new Set();
+  }
+}
+
+async function copyCardFromLive(slug) {
+  try {
+    const res = await fetch(`${SITE_ORIGIN}/og/${slug}.png`, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return false;
+    const buf = Buffer.from(await res.arrayBuffer());
+    // SPA-рерайт vercel.json отдаёт на несуществующий путь index.html с кодом
+    // 200 — проверяем сигнатуру PNG, а не только статус.
+    if (buf.length < 8 || buf.readUInt32BE(0) !== PNG_MAGIC) return false;
+    writeFileSync(join(CARDS_DIR, `${slug}.png`), buf);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   if (!existsSync(DIST_DIR)) {
     console.warn('[og-cards] нет каталога dist — нечего обрабатывать');
     return;
   }
-
+  const copiedFromProd = readCopiedFromProd();
   const pages = [];
   for (const file of collectHtmlFiles(DIST_DIR)) {
     const rel = relative(DIST_DIR, file);
@@ -194,73 +238,94 @@ async function main() {
       console.warn(`[og-cards] ${rel}: не нашёл og:title/<title> — оставляю прежнюю обложку`);
       continue;
     }
-    // dist/minsk/one/index.html → minsk/one; dist/tz.html → tz
     const path = rel.endsWith('/index.html') ? rel.slice(0, -'/index.html'.length) : rel.slice(0, -'.html'.length);
     pages.push({ file, html, path, title: trimTitle(title) });
   }
-
   if (pages.length === 0) {
     console.warn('[og-cards] публичных страниц в dist не нашлось — пропускаю');
     return;
   }
-
   mkdirSync(CARDS_DIR, { recursive: true });
 
-  let browser = await launchBrowser();
-  let page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
-  const failed = [];
-  let done = 0;
-
-  for (const entry of pages) {
-    const slug = cardSlug(entry.path);
-    let rendered = false;
-    for (let attempt = 1; attempt <= 2 && !rendered; attempt++) {
-      try {
-        await page.setContent(cardHtml(entry.title, kickerFor(entry.path, entry.title)), { waitUntil: 'load' });
-        await page.evaluate(() => document.fonts.ready);
-        await page.evaluate(FIT_SCRIPT);
-        await page.locator('.card').screenshot({ path: join(CARDS_DIR, `${slug}.png`) });
-        rendered = true;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (attempt === 2) {
-          failed.push(`${entry.path} (${message})`);
-          break;
-        }
-        // Единственный известный способ, которым этот шаг реально падает на
-        // Vercel, — смерть single-process Chromium (та же болячка, что
-        // описана в prerender.mjs у WORKER_COUNT): поднимаем заново и
-        // повторяем именно эту карточку.
-        console.warn(`[og-cards] /${entry.path}: ${message} — перезапускаю браузер`);
-        try {
-          await browser.close();
-        } catch {
-          // мог уже умереть — не мешает
-        }
-        browser = await launchBrowser();
-        page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
-      }
-    }
-    if (!rendered) continue;
-
-    const cardUrl = `${SITE_ORIGIN}/og/${slug}.png`;
+  // Прописать в HTML страницы абсолютный URL её обложки (у копии с прода он
+  // уже такой — запись идемпотентна).
+  const finishPage = (entry) => {
+    const cardUrl = `${SITE_ORIGIN}/og/${cardSlug(entry.path)}.png`;
     const html = entry.html
       .replace(/(<meta property="og:image" content=")[^"]*(")/, `$1${cardUrl}$2`)
       .replace(/(<meta name="twitter:image" content=")[^"]*(")/, `$1${cardUrl}$2`);
     writeFileSync(entry.file, html);
-    done += 1;
+  };
+
+  // 1) Страницы, скопированные с прода — обложку тоже с прода, параллельно.
+  const toCopy = pages.filter((p) => copiedFromProd.has(p.path));
+  const toRender = pages.filter((p) => !copiedFromProd.has(p.path));
+  let copied = 0;
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: COPY_WORKER_COUNT }, async () => {
+      while (cursor < toCopy.length) {
+        const entry = toCopy[cursor++];
+        if (await copyCardFromLive(cardSlug(entry.path))) {
+          finishPage(entry);
+          copied += 1;
+        } else {
+          console.warn(`[og-cards] /${entry.path}: обложка с прода не скачалась — рисую`);
+          toRender.push(entry);
+        }
+      }
+    }),
+  );
+
+  // 2) Остальное — рисуем браузером, как и раньше. Браузер поднимаем, только
+  //    если есть что рисовать (в быстром режиме — обычно ничего).
+  const failed = [];
+  let rendered = 0;
+  if (toRender.length > 0) {
+    let browser = await launchBrowser();
+    let page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
+    for (const entry of toRender) {
+      const slug = cardSlug(entry.path);
+      let ok = false;
+      for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+        try {
+          await page.setContent(cardHtml(entry.title, kickerFor(entry.path, entry.title)), { waitUntil: 'load' });
+          await page.evaluate(() => document.fonts.ready);
+          await page.evaluate(FIT_SCRIPT);
+          await page.locator('.card').screenshot({ path: join(CARDS_DIR, `${slug}.png`) });
+          ok = true;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (attempt === 2) {
+            failed.push(`${entry.path} (${message})`);
+            break;
+          }
+          console.warn(`[og-cards] /${entry.path}: ${message} — перезапускаю браузер`);
+          try {
+            await browser.close();
+          } catch {
+            // уже мёртв — не мешает
+          }
+          browser = await launchBrowser();
+          page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
+        }
+      }
+      if (!ok) continue;
+      finishPage(entry);
+      rendered += 1;
+    }
+    await browser.close().catch(() => {});
   }
-
-  await browser.close().catch(() => {});
-
-  console.log(`[og-cards] готово: ${done} страниц со своей обложкой (dist/og/*.png)`);
+  console.log(
+    `[og-cards] готово: ${copied + rendered} страниц со своей обложкой (dist/og/*.png; скопировано с прода ${copied}, отрендерено ${rendered})`,
+  );
   if (failed.length > 0) {
     console.warn(`[og-cards] ${failed.length} страниц остались с прежним og:image:\n  - ${failed.join('\n  - ')}`);
   }
 }
 
 main().catch((err) => {
-  // Обложки — украшение превью, а не контент: уронить из-за них весь деплой
-  // хуже, чем оставить прежний og:image.
+  // Обложки — не повод ронять деплой: без них страницы просто остаются с
+  // прежним og:image.
   console.error('[og-cards] сбой, оставляю прежние обложки:', err);
 });
