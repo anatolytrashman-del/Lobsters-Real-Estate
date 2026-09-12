@@ -1940,7 +1940,7 @@ export function DistrictGuidePage() {
           </div>
           <img
             src="/images/district/audience-target-audience.svg"
-            alt=""
+            alt="Целевая аудитория района"
             loading="lazy"
             className="hidden h-auto w-36 shrink-0 self-center sm:block"
           />
@@ -2955,7 +2955,7 @@ export function DistrictGuidePage() {
               <span className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs font-semibold text-ink-muted">
                 <img
                   src="/icons/minsk-metro-line3.webp"
-                  alt=""
+                  alt="Линия метро 3"
                   width={68}
                   height={32}
                   loading="lazy"

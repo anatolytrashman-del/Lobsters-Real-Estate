@@ -29,7 +29,7 @@ import { FaqAccordion } from '../components/ui/FaqAccordion';
 const RATING_THRESHOLD = 4.5;
 const DATE_PUBLISHED = '2026-09-07';
 const PAGE_URL = 'https://redevelopment.pro/minsk/bcminsk/reyting';
-const TITLE = `Лучшие бизнес-центры Минска — класс A с рейтингом от ${RATING_THRESHOLD} на Яндекс.Картах`;
+const TITLE = `Лучшие бизнес-центры Минска класса A с рейтингом от ${RATING_THRESHOLD}`;
 const DESCRIPTION =
   'Рейтинг бизнес-центров Минска: только класс A с рейтингом на Яндекс.Картах не ниже 4,5 из 5. Открытая методика, дата обновления, ссылки на карточки каждого БЦ.';
 const PAGE_H1 = 'Лучшие бизнес-центры Минска';

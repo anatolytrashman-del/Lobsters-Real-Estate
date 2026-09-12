@@ -14,7 +14,7 @@ import { districtHubUrl } from '../lib/businessCenterHubs';
 import { fetchLatestMarketSnapshots } from '../lib/marketSnapshotsApi';
 import { MIN_RELIABLE_N, type MarketSnapshot } from '../data/marketSnapshots';
 
-const TITLE = 'Где дороже и дешевле: районы Минска по аренде коммерческой недвижимости';
+const TITLE = 'Где дороже и дешевле: районы Минска по аренде недвижимости';
 const DESCRIPTION =
   'Сравнение медианной ставки аренды офисов, торговых помещений и складов по административным районам Минска.';
 const URL = 'https://redevelopment.pro/minsk/analytics/rajony';
