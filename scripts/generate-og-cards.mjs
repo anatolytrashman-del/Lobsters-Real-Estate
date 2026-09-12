@@ -30,6 +30,7 @@
 import { chromium } from 'playwright-core';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import os from 'node:os';
 
 const DIST_DIR = 'dist';
 const FONTS_DIR = 'public/fonts';
@@ -164,13 +165,20 @@ function trimTitle(title) {
   return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).replace(/[\s,—-]+$/, '')}…`;
 }
 
+// Тот же бинарник, что в scripts/prerender.mjs: на Vercel — @sparticuz/chromium,
+// локально — браузер из окружения. И та же правка 2026-09-12: без
+// `--single-process` (флаг под AWS Lambda; в контейнере сборки Vercel он
+// только мешал — крах одной вкладки валил весь браузер, из-за чего карточки
+// рисовались строго по одной). Многопроцессный Chromium позволяет рисовать
+// в нескольких вкладках параллельно. PRERENDER_SINGLE_PROCESS=1 — вернуть
+// старый режим (одна вкладка, --single-process), если вдруг понадобится.
+const SINGLE_PROCESS = process.env.PRERENDER_SINGLE_PROCESS === '1';
+
 async function launchBrowser() {
-  // Тот же выбор бинарника, что в scripts/prerender.mjs (см. комментарий там):
-  // на Vercel — @sparticuz/chromium, локально — браузер из окружения.
   if (process.env.VERCEL) {
     const sparticuzChromium = (await import('@sparticuz/chromium')).default;
     return chromium.launch({
-      args: sparticuzChromium.args,
+      args: SINGLE_PROCESS ? sparticuzChromium.args : sparticuzChromium.args.filter((a) => a !== '--single-process'),
       executablePath: await sparticuzChromium.executablePath(),
       headless: true,
     });
@@ -277,44 +285,87 @@ async function main() {
     }),
   );
 
-  // 2) Остальное — рисуем браузером, как и раньше. Браузер поднимаем, только
-  //    если есть что рисовать (в быстром режиме — обычно ничего).
+  // 2) Остальное — рисуем браузером. Один браузер, несколько вкладок
+  //    параллельно (скриншот 1200×630 + PNG-кодирование — это CPU, поэтому по
+  //    вкладке на ядро, не больше 6; RENDER_WORKERS — ручная настройка). До
+  //    2026-09-12 рисовали строго по одной карточке — 291 штука занимала ~46с
+  //    на каждой сборке. Браузер поднимаем, только если есть что рисовать
+  //    (в быстром режиме — обычно ничего). В режиме --single-process
+  //    параллелить нельзя — там одна вкладка, как раньше.
   const failed = [];
   let rendered = 0;
   if (toRender.length > 0) {
-    let browser = await launchBrowser();
-    let page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
-    for (const entry of toRender) {
-      const slug = cardSlug(entry.path);
-      let ok = false;
-      for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
-        try {
-          await page.setContent(cardHtml(entry.title, kickerFor(entry.path, entry.title)), { waitUntil: 'load' });
-          await page.evaluate(() => document.fonts.ready);
-          await page.evaluate(FIT_SCRIPT);
-          await page.locator('.card').screenshot({ path: join(CARDS_DIR, `${slug}.png`) });
-          ok = true;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (attempt === 2) {
-            failed.push(`${entry.path} (${message})`);
-            break;
-          }
-          console.warn(`[og-cards] /${entry.path}: ${message} — перезапускаю браузер`);
-          try {
-            await browser.close();
-          } catch {
-            // уже мёртв — не мешает
-          }
-          browser = await launchBrowser();
-          page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
-        }
+    const cpuCount = os.cpus().length || 2;
+    const RENDER_WORKERS = SINGLE_PROCESS ? 1 : Number(process.env.RENDER_WORKERS) || Math.min(6, Math.max(2, cpuCount));
+    let browserPromise = launchBrowser();
+    browserPromise.catch(() => {}); // отказ получит await ниже, не unhandledRejection
+    // Перезапуск общего браузера после падения — один раз на падение, а не
+    // по разу от каждой вкладки, которая его заметила.
+    const relaunch = async (used) => {
+      if (browserPromise !== used) return;
+      browserPromise = launchBrowser();
+      browserPromise.catch(() => {});
+      try {
+        await (await used).close();
+      } catch {
+        // уже мёртв
       }
-      if (!ok) continue;
-      finishPage(entry);
-      rendered += 1;
+    };
+    let cursor = 0;
+    const worker = async () => {
+      let page = null;
+      let used = null;
+      while (cursor < toRender.length) {
+        const entry = toRender[cursor++];
+        const slug = cardSlug(entry.path);
+        let ok = false;
+        for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+          try {
+            if (!page) {
+              used = browserPromise;
+              page = await (await used).newPage({ viewport: { width: 1200, height: 630 } });
+            }
+            await page.setContent(cardHtml(entry.title, kickerFor(entry.path, entry.title)), { waitUntil: 'load' });
+            await page.evaluate(() => document.fonts.ready);
+            await page.evaluate(FIT_SCRIPT);
+            await page.locator('.card').screenshot({ path: join(CARDS_DIR, `${slug}.png`) });
+            ok = true;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const browser = used ? await used.catch(() => null) : null;
+            if (!browser || !browser.isConnected() || /has been closed|Target closed|crashed/i.test(message)) {
+              await relaunch(used);
+            } else {
+              try {
+                await page?.close();
+              } catch {
+                // не мешает
+              }
+            }
+            page = null;
+            if (attempt === 2) {
+              failed.push(`${entry.path} (${message})`);
+              break;
+            }
+            console.warn(`[og-cards] /${entry.path}: ${message} — повтор`);
+          }
+        }
+        if (!ok) continue;
+        finishPage(entry);
+        rendered += 1;
+      }
+      try {
+        await page?.close();
+      } catch {
+        // не мешает
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(RENDER_WORKERS, toRender.length) }, worker));
+    try {
+      await (await browserPromise).close();
+    } catch {
+      // уже закрыт
     }
-    await browser.close().catch(() => {});
   }
   console.log(
     `[og-cards] готово: ${copied + rendered} страниц со своей обложкой (dist/og/*.png; скопировано с прода ${copied}, отрендерено ${rendered})`,

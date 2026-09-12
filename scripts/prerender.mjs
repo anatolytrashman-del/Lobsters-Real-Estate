@@ -73,6 +73,7 @@
 // даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { computePublicBuildId } from './public-build-id.mjs';
@@ -458,7 +459,12 @@ async function fetchBusinessCenterPaths() {
 // без точного MIME для .js/.css рискует сломать загрузку ES-модулей в
 // headless-браузере (Chromium требует text/javascript у <script type="module">).
 function startPreviewServer() {
-  const proc = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], {
+  // Vite запускается напрямую (node + bin из node_modules), а не через npx:
+  // `proc.kill()` убивает только сам npx, а его дочерний vite оставался
+  // сиротой и держал открытыми свои stdio-пайпы — node не мог завершиться
+  // после последней страницы (локально проверено 2026-09-12: процесс висел
+  // до таймаута с уже записанным результатом).
+  const proc = spawn(process.execPath, [join(ROOT_DIR, 'node_modules', 'vite', 'bin', 'vite.js'), 'preview', '--port', String(PORT), '--strictPort'], {
     cwd: ROOT_DIR,
     stdio: 'pipe',
   });
@@ -500,28 +506,90 @@ async function waitForServer(timeoutMs = 20_000) {
 // WORKER_COUNT ниже — переиспользование браузера между страницами в этой
 // сборке не работает), так что без этого кэша распаковка гонялась бы не
 // 4 раза, а сотни.
-let launchOptionsPromise = null;
-function resolveLaunchOptions() {
-  if (!launchOptionsPromise) {
-    launchOptionsPromise = (async () => {
-      if (process.env.VERCEL) {
-        const sparticuzChromium = (await import('@sparticuz/chromium')).default;
-        return {
-          args: sparticuzChromium.args,
-          executablePath: await sparticuzChromium.executablePath(),
-          headless: true,
-        };
-      }
-      return { executablePath: '/opt/pw-browsers/chromium', headless: true };
+//
+// 2026-09-12 (вечер) — ОБЩИЙ МНОГОПРОЦЕССНЫЙ БРАУЗЕР вместо отдельного на
+// каждую страницу. Вся история выше (п.2–5 у WORKER_COUNT в main) упиралась
+// в одно: @sparticuz/chromium запускает Chromium с `--single-process` — это
+// флаг под AWS Lambda, где нет места под процессы-рендереры; в нём крах или
+// закрытие ОДНОЙ вкладки валит весь процесс вместе с чужими вкладками,
+// поэтому и пришлось запускать браузер заново на каждый путь (~7с на
+// страницу при 4 воркерах, ~8.5 минут на 286 путей — Build Logs 3d750e2).
+// Сборка Vercel — не Lambda, а обычный контейнер (несколько vCPU, гигабайты
+// памяти): убираем `--single-process` из аргументов sparticuz, и Chromium
+// работает как везде — по процессу на вкладку, вкладки изолированы, ОДИН
+// браузер на всю сборку, страницы открываются/закрываются в нём, JS-бандл и
+// скомпилированный код кешируются между страницами. Остальные аргументы
+// sparticuz (`--no-zygote`, `--disable-dev-shm-usage`-подобные, swiftshader)
+// с многопроцессным режимом совместимы.
+//
+// Страховка на случай, если многопроцессный Chromium в контейнере сборки всё
+// же нестабилен: падение общего браузера считается; после
+// MAX_SHARED_BROWSER_CRASHES падений оставшиеся пути рендерятся по-старому —
+// отдельный `--single-process`-браузер на страницу (медленно, но надёжно,
+// ровно как до этой правки). Ручной выключатель — PRERENDER_SINGLE_PROCESS=1.
+//
+// `sparticuzChromium.executablePath()` при первом вызове РАСПАКОВЫВАЕТ
+// бинарник во временный файл — это запись, не чтение: параллельные вызовы
+// ловили `spawn ETXTBSY` (PAGESPEED_PLAN.md, Э0-3). Кешируем ПРОМИС, чтобы
+// распаковка шла ровно один раз на сборку.
+const MAX_SHARED_BROWSER_CRASHES = 3;
+let legacyPerPageBrowser = process.env.PRERENDER_SINGLE_PROCESS === '1';
+
+let executablePathPromise = null;
+async function chromiumExecutable() {
+  if (!executablePathPromise) {
+    executablePathPromise = (async () => {
+      if (!process.env.VERCEL) return { executablePath: '/opt/pw-browsers/chromium', args: [] };
+      const sparticuzChromium = (await import('@sparticuz/chromium')).default;
+      return { executablePath: await sparticuzChromium.executablePath(), args: sparticuzChromium.args };
     })();
   }
-  return launchOptionsPromise;
+  return executablePathPromise;
 }
 
-async function launchBrowser() {
-  const options = await resolveLaunchOptions();
-  return chromium.launch(options);
+async function launchBrowser({ singleProcess }) {
+  const { executablePath, args } = await chromiumExecutable();
+  return chromium.launch({
+    executablePath,
+    args: singleProcess ? args : args.filter((a) => a !== '--single-process'),
+    headless: true,
+  });
 }
+
+let sharedBrowserPromise = null;
+let sharedBrowserCrashes = 0;
+function sharedBrowser() {
+  if (!sharedBrowserPromise) {
+    sharedBrowserPromise = launchBrowser({ singleProcess: false });
+    // Пустой обработчик: отказ запуска получит тот, кто ждёт промис через
+    // await; без обработчика он стал бы unhandledRejection и убил процесс.
+    sharedBrowserPromise.catch(() => {});
+  }
+  return sharedBrowserPromise;
+}
+// Перезапуск общего браузера после его падения. `used` — промис, с которым
+// работал упавший воркер: если другой воркер уже перезапустил браузер, второй
+// раз не трогаем (иначе несколько воркеров, упавших разом от одного краха,
+// перезапускали бы его по кругу и накрутили бы счётчик).
+async function resetSharedBrowser(used, reason) {
+  if (sharedBrowserPromise !== used) return;
+  sharedBrowserPromise = null;
+  sharedBrowserCrashes++;
+  console.warn(`[prerender] общий браузер потерян (${reason}) — падение №${sharedBrowserCrashes}, перезапускаю`);
+  try {
+    await (await used).close();
+  } catch {
+    // уже мёртв
+  }
+  if (sharedBrowserCrashes >= MAX_SHARED_BROWSER_CRASHES && !legacyPerPageBrowser) {
+    legacyPerPageBrowser = true;
+    console.warn(
+      `[prerender] общий браузер падал ${sharedBrowserCrashes} раз — дальше по-старому: отдельный --single-process браузер на каждую страницу`,
+    );
+  }
+}
+const isBrowserGone = (browser, message) =>
+  !browser || !browser.isConnected() || /has been closed|Target closed|crashed|Browser closed|Connection closed/i.test(message);
 
 // true — полный рендер headless-браузером (см. комментарий про быстрый/
 // полный режим в шапке файла), false — быстрое скачивание с живого прода.
@@ -736,6 +804,16 @@ async function main() {
     console.warn('[prerender] пререндерить нечего — нет ни объектов с landing_slug, ни статических страниц');
     return;
   }
+  // PRERENDER_ONLY=префикс[,префикс…] — только для локальных замеров/отладки:
+  // оставить пути, начинающиеся с одного из префиксов (например
+  // `PRERENDER_ONLY=minsk/minsk-mir,minsk/bcminsk/raion`). На Vercel намеренно
+  // игнорируется, чтобы случайно не уехал частичный прод.
+  if (!process.env.VERCEL && process.env.PRERENDER_ONLY) {
+    const prefixes = process.env.PRERENDER_ONLY.split(',').map((p) => p.trim()).filter(Boolean);
+    const kept = paths.filter((p) => prefixes.some((prefix) => p.startsWith(prefix)));
+    paths.splice(0, paths.length, ...kept);
+    console.log(`[prerender] PRERENDER_ONLY — ограничиваюсь ${paths.length} путями по префиксам: ${prefixes.join(', ')}`);
+  }
 
   // Пути, без снапшота которых сборка не должна тихо проезжать (PAGESPEED_PLAN.md,
   // Э0-2) — лендинги объектов (деньги) и все статические контентные страницы
@@ -765,7 +843,7 @@ async function main() {
   //    но увеличил время пререндера примерно в 4 раза — неприемлемо долго.
   // 4) Второй фикс — свой процесс браузера на каждый воркер (переиспользуем
   //    его между страницами ОДНОГО воркера). Ловил `spawn ETXTBSY` при
-  //    параллельной распаковке (см. ниже, resolveLaunchOptions), но и
+  //    параллельной распаковке (см. выше, chromiumExecutable), но и
   //    после фикса ETXTBSY на реальном деплое (Build Logs) вскрылось: у
   //    ЭТОЙ СБОРКИ `--single-process`-браузер надёжно переживает ровно
   //    ОДНУ страницу — на второй же `newPage()` того же процесса стабильно
@@ -779,7 +857,16 @@ async function main() {
   //    страницами — это и есть исходная схема (п.1), просто с сохранённым
   //    параллелизмом (WORKER_COUNT воркеров, каждый в своём цикле). Не
   //    красивее, зато без единой лишней проваленной попытки на страницу.
-  const WORKER_COUNT = 4;
+  // 2026-09-12 (вечер): один общий многопроцессный браузер (см. launchBrowser
+  // выше), поэтому параллелизм ограничен уже не «сколько отдельных Chromium
+  // выдержит контейнер», а CPU: по две вкладки на ядро, в пределах 4..8;
+  // PRERENDER_WORKERS — ручная настройка без правки кода.
+  const cpuCount = os.cpus().length || 2;
+  const WORKER_COUNT = Number(process.env.PRERENDER_WORKERS) || Math.min(8, Math.max(4, cpuCount * 2));
+  console.log(
+    `[prerender] машина сборки: ${cpuCount} vCPU, ${Math.round(os.totalmem() / 2 ** 30)} ГБ; воркеров полного режима: ${WORKER_COUNT}` +
+      (legacyPerPageBrowser ? ' (PRERENDER_SINGLE_PROCESS=1 — отдельный браузер на страницу)' : ''),
+  );
   // Быстрый режим — просто HTTP GET, без единого браузера: constraint выше
   // (single-process Chromium) тут ни при чём, можно куда больше параллелизма.
   const FAST_WORKER_COUNT = 16;
@@ -822,10 +909,23 @@ async function main() {
   async function renderPath(path) {
     for (let attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++) {
       let browser;
+      let context;
       let page;
+      let ownBrowser = false;
+      let usedShared = null;
       try {
-        browser = await launchBrowser();
-        page = await browser.newPage();
+        if (legacyPerPageBrowser) {
+          browser = await launchBrowser({ singleProcess: true });
+          ownBrowser = true;
+        } else {
+          usedShared = sharedBrowser();
+          browser = await usedShared;
+        }
+        // Свой BrowserContext на каждую страницу: localStorage/куки/кеш не
+        // текут между путями — ровно та же «чистая» среда, что давал прежний
+        // отдельный браузер на страницу, только без его запуска (~секунда+).
+        context = await browser.newContext();
+        page = await context.newPage();
         // ?prerender=1 — сигнал для инлайн-скрипта Яндекс.Метрики в
         // index.html не считать этот заход реальным визитом (см.
         // комментарий там же). В сохранённый HTML параметр не попадает —
@@ -843,9 +943,10 @@ async function main() {
         // сохранённом HTML). Дожидаемся, пока на странице не останется ни
         // одного «Загрузка…» (данные пришли ИЛИ отрисовался терминальный
         // «Данные пока не собраны»). Не фатально: по таймауту снимаем как
-        // есть — хуже прежнего поведения не станет.
+        // есть — хуже прежнего поведения не станет. Опрос раз в 200мс, а не
+        // каждый кадр: innerText большой страницы — это полный layout.
         await page
-          .waitForFunction(() => !document.body.innerText.includes('Загрузка…'), { timeout: 15_000 })
+          .waitForFunction(() => !document.body.innerText.includes('Загрузка…'), { timeout: 15_000, polling: 200 })
           .catch(() => console.warn(`[prerender] /${path}: «Загрузка…» не исчезла за 15с — снапшот с плейсхолдером`));
         // scripts/defer-entry-script.mjs подключает главный JS не из <head>,
         // а инлайн-лоадером после первого кадра — в живом DOM к этому
@@ -869,6 +970,7 @@ async function main() {
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        if (usedShared && isBrowserGone(browser, message)) await resetSharedBrowser(usedShared, message);
         if (attempt === RENDER_ATTEMPTS) {
           // Одна проблемная страница не должна ронять сборку остальных —
           // без снапшота роут просто останется на клиентском рендере, как
@@ -881,14 +983,14 @@ async function main() {
           await new Promise((r) => setTimeout(r, 300 * attempt));
         }
       } finally {
-        if (page) {
+        if (context) {
           try {
-            await page.close();
+            await context.close(); // закрывает и страницу
           } catch {
-            // страница могла умереть вместе с браузером — не роняем сборку
+            // контекст мог умереть вместе с браузером — не роняем сборку
           }
         }
-        if (browser) {
+        if (ownBrowser && browser) {
           try {
             await browser.close();
           } catch {
@@ -937,6 +1039,13 @@ async function main() {
     await Promise.all(Array.from({ length: fullMode ? WORKER_COUNT : FAST_WORKER_COUNT }, worker));
   } finally {
     serverProc.kill();
+    if (sharedBrowserPromise) {
+      try {
+        await (await sharedBrowserPromise).close();
+      } catch {
+        // уже закрыт
+      }
+    }
   }
 
   writeFileSync(PRERENDER_RESULT_PATH, JSON.stringify({ fullMode, copiedFromProd }));
@@ -982,7 +1091,14 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('[prerender] сбой:', err);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // Явный выход: после main() не должно оставаться ни живых хендлов
+    // (браузер закрыт, preview-сервер убит), но если что-то всё же держит
+    // event loop — сборка не должна висеть до таймаута Vercel.
+    process.exit(process.exitCode ?? 0);
+  })
+  .catch((err) => {
+    console.error('[prerender] сбой:', err);
+    process.exit(1);
+  });
