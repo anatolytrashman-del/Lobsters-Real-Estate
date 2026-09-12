@@ -35,16 +35,26 @@ const BASE_URL = 'https://api.checko.ru/v2';
 // чтобы закупщице было на что посмотреть, а счёт берём из агрегата.
 const LEGAL_CASES_LIMIT = 20;
 
+// Имя переменной с ключом. На Vercel она заведена как CHEKO_API_KEY — с
+// опечаткой, потерянной "C" (2026-09-12, при первом подключении). Принимаем
+// оба написания вместо того, чтобы переименовывать боевую переменную:
+// переименование — это удаление и создание заново, то есть окно, в котором
+// прод остаётся без ключа, ради косметики имени. Если когда-нибудь
+// переименуете в кабинете — код продолжит работать, ничего не сломается.
+export function checkoApiKey() {
+  return process.env.CHECKO_API_KEY || process.env.CHEKO_API_KEY || '';
+}
+
 export function checkoKeyProblem() {
-  const key = process.env.CHECKO_API_KEY;
+  const key = checkoApiKey();
   if (!key) {
-    return 'CHECKO_API_KEY не настроен в переменных окружения Vercel';
+    return 'Ключ Checko не настроен в переменных окружения Vercel (ожидается CHECKO_API_KEY или CHEKO_API_KEY)';
   }
   // Та же защита, что и у PROXYAPI_KEY (см. _proxyapi.js): ключ,
   // скопированный из личного кабинета в замаскированном виде, роняет fetch
   // невнятной ошибкой при сборке URL — ловим до запроса.
   if (/[^\x21-\x7e]/.test(key)) {
-    return 'CHECKO_API_KEY на Vercel повреждён: в значении есть посторонние символы (похоже, ключ скопирован в замаскированном виде). Вставьте полный ключ заново и передеплойте.';
+    return 'Ключ Checko на Vercel повреждён: в значении есть посторонние символы (похоже, ключ скопирован в замаскированном виде). Вставьте полный ключ заново и передеплойте.';
   }
   return null;
 }
@@ -78,7 +88,7 @@ export function invalidInnReason(inn) {
 
 async function checkoGet(path, params) {
   const url = new URL(`${BASE_URL}/${path}`);
-  url.searchParams.set('key', process.env.CHECKO_API_KEY);
+  url.searchParams.set('key', checkoApiKey());
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
