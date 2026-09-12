@@ -60,6 +60,7 @@
 // обрабатывает (см. .github/workflows/process-supplier-web-search-jobs.yml),
 // поэтому дёргать отдельный воркфлоу из админки незачем.
 import { requireStaffAuth } from './_auth.js';
+import { mergeScope, normalizeScope } from './_rebuildScope.js';
 
 const DEBOUNCE_MS = 5 * 60_000;
 
@@ -99,16 +100,39 @@ async function dispatchWorkflow(res, workflowFile) {
   }
 }
 
-async function getLastTriggeredAt() {
-  const resp = await fetch(`${process.env.SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&select=triggered_at`, {
+// Строка debounce целиком: когда дёргали, потреблена ли уже сборкой и ЧТО
+// менялось (scope, см. ./_rebuildScope.js) — scripts/prerender.mjs по scope
+// решает, рендерить ли все ~286 страниц или только лендинги объектов.
+async function getDebounceRow() {
+  const resp = await fetch(
+    `${process.env.SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&select=triggered_at,consumed_at,scope`,
+    {
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+    },
+  );
+  if (!resp.ok) return null;
+  const rows = await resp.json();
+  return rows[0] ?? null;
+}
+
+// Срабатывание в окне debounce новую сборку не запускает, но его scope не
+// должен потеряться: если предыдущий флаг ещё не потреблён сборкой —
+// расширяем его (objects + business_centers → всё), чтобы та сборка, что
+// его заберёт, отрендерила всё нужное. Уже потреблённый флаг не трогаем —
+// ровно как раньше (5-минутный debounce принят владельцем).
+async function widenPendingScope(scope) {
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/deploy_debounce?id=eq.default&consumed_at=is.null`, {
+    method: 'PATCH',
     headers: {
       apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
       Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({ scope }),
   });
-  if (!resp.ok) return null;
-  const rows = await resp.json();
-  return rows[0]?.triggered_at ?? null;
 }
 
 // consumed_at сбрасывается на null ЯВНО каждый раз — merge-duplicates upsert
@@ -118,7 +142,7 @@ async function getLastTriggeredAt() {
 // считался бы «уже обработан» первым же атомарным consume в prerender.mjs
 // (см. его же комментарий) — полный рендер для реального изменения данных
 // не сработал бы вообще ни разу.
-async function setLastTriggeredAt(iso) {
+async function setLastTriggeredAt(iso, scope) {
   await fetch(`${process.env.SUPABASE_URL}/rest/v1/deploy_debounce`, {
     method: 'POST',
     headers: {
@@ -127,7 +151,7 @@ async function setLastTriggeredAt(iso) {
       'Content-Type': 'application/json',
       Prefer: 'resolution=merge-duplicates',
     },
-    body: JSON.stringify({ id: 'default', triggered_at: iso, consumed_at: null }),
+    body: JSON.stringify({ id: 'default', triggered_at: iso, consumed_at: null, scope }),
   });
 }
 
@@ -139,7 +163,10 @@ export default async function handler(req, res) {
   const user = await requireStaffAuth(req, res);
   if (!user) return;
 
-  const { action } = req.body ?? {};
+  const { action, scope: rawScope } = req.body ?? {};
+  // Что менялось (см. ./_rebuildScope.js). Старый фронт scope не шлёт → 'all',
+  // то есть полный рендер, как и до этой правки.
+  const scope = normalizeScope(rawScope);
   if (action === 'dispatch-bulk-send') {
     await dispatchWorkflow(res, 'process-bulk-send-jobs.yml');
     return;
@@ -156,15 +183,19 @@ export default async function handler(req, res) {
     return;
   }
 
-  const lastTriggeredAt = await getLastTriggeredAt();
-  if (lastTriggeredAt && Date.now() - new Date(lastTriggeredAt).getTime() < DEBOUNCE_MS) {
+  const last = await getDebounceRow();
+  const pending = Boolean(last && !last.consumed_at); // флаг ещё не забрала ни одна сборка
+  if (last?.triggered_at && Date.now() - new Date(last.triggered_at).getTime() < DEBOUNCE_MS) {
+    if (pending) await widenPendingScope(mergeScope(last.scope, scope));
     res.status(200).json({ triggered: false, reason: 'debounced' });
     return;
   }
   // Отметку ставим до самого вызова хука — минимизирует (не гарантирует
   // абсолютно, тут не транзакция) окно, в котором два почти одновременных
   // сохранения объекта обе проскочат проверку выше.
-  await setLastTriggeredAt(new Date().toISOString());
+  // Непотреблённый флаг старше окна (сборка так и не случилась) — его scope
+  // объединяем с новым, чтобы не потерять то, что он должен был отрендерить.
+  await setLastTriggeredAt(new Date().toISOString(), pending ? mergeScope(last.scope, scope) : scope);
 
   try {
     const hookRes = await fetch(hookUrl, { method: 'POST' });
