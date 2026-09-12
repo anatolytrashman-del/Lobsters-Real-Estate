@@ -58,6 +58,7 @@ import { EmailThread, SupplierCorrespondenceTab, countUnreadSupplierEmails } fro
 import { MaterialLedgerModal } from '../components/suppliers/MaterialLedgerModal';
 import { BulkSendModal } from '../components/suppliers/BulkSendModal';
 import { SupplierMergeModal, type SupplierMergePlan } from '../components/suppliers/SupplierMergeModal';
+import { buildMasterLedgers } from '../lib/masterLedger';
 import type { LedgerAttachment } from '../lib/materialLedgerXlsx';
 import type { EmailTemplate } from '../data/emailTemplates';
 import { fetchEmailTemplates } from '../lib/emailTemplatesApi';
@@ -2258,6 +2259,21 @@ export function Suppliers() {
       .filter((plan) => plan.sources.length > 0);
   }, [offers, requests, universalOffers, universalRequest]);
 
+  // Мастер-ведомости (сводная ведомость на смету, lib/masterLedger.ts) —
+  // нужны массовой рассылке: универсальным поставщикам уходит именно она, а
+  // не ведомость категории (владелец, 2026-09-12). Считаются, а не хранятся,
+  // поэтому просто пересобираются на рендере из уже загруженных ведомостей.
+  const bulkMasterLedgers = useMemo(
+    () =>
+      buildMasterLedgers(materialLedgers, (estimateId) => {
+        const e = estimates.find((x) => x.id === estimateId);
+        if (!e) return undefined;
+        return (e.objectId ? objectLabel(e.objectId) : e.title) || undefined;
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [materialLedgers, estimates, objects],
+  );
+
   function handleOffersMerged(merged: SupplierOffer[], removedOfferIds: string[]) {
     const removed = new Set(removedOfferIds);
     const byId = new Map(merged.map((m) => [m.id, m]));
@@ -3857,6 +3873,7 @@ export function Suppliers() {
           request={bulkSendConfig.request}
           requests={requests}
           attachment={bulkSendConfig.attachment}
+          masterLedgers={bulkMasterLedgers}
           offers={offers}
           emails={supplierEmails}
           templates={emailTemplates}
