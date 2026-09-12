@@ -240,7 +240,7 @@ export function Metrics() {
             <StatTile label="Верифицировано объявлений" value={svetlanaVerifiedCount} />
           </PersonSection>
 
-          <PersonSection name="Альмира" subtitle="Работа с поставщиками (раздел «Поставщики» → «Ресерч»/«Письма»)">
+          <PersonSection name="Альмира" subtitle="Работа с поставщиками (раздел «Закупки» → «Поставщики»/«Письма»)">
             <StatTile
               label="Верифицировано поставщиков"
               value={almiraVerifiedCount}
