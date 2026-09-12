@@ -837,6 +837,11 @@ function decodeBytes(bytes: Uint8Array, contentType: string): string {
   return utf8;
 }
 
+// Почему не открылась последняя запрошенная страница — иначе на все случаи
+// (403 от защиты, битый сертификат, мёртвый домен) в базе лежит одинаковое
+// «сайт не открылся», и непонятно, чинить это или списывать.
+let lastFetchFailure = '';
+
 async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string | null> {
   try {
     const resp = await fetch(url, {
@@ -844,11 +849,18 @@ async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string
       signal: AbortSignal.timeout(timeoutMs),
       redirect: 'follow',
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      lastFetchFailure = `HTTP ${resp.status}`;
+      return null;
+    }
     const type = resp.headers.get('content-type') ?? '';
-    if (type && !/html|xml|text/i.test(type)) return null;
+    if (type && !/html|xml|text/i.test(type)) {
+      lastFetchFailure = `не страница (${type.slice(0, 40)})`;
+      return null;
+    }
     return decodeBytes(new Uint8Array(await resp.arrayBuffer()), type);
-  } catch {
+  } catch (err) {
+    lastFetchFailure = err instanceof Error ? err.message.slice(0, 80) : 'сеть';
     return null;
   }
 }
@@ -861,12 +873,16 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
   const startedAt = Date.now();
   const withinBudget = () => Date.now() - startedAt < SNAPSHOT_TIME_BUDGET_MS;
 
-  // Главная: сначала как записано в карточке, потом https://host, потом
-  // http://host — сайты с битым TLS так хоть как-то читаются.
+  // Главная: как записано в карточке, потом https://host, https://www.host
+  // (у части сайтов apex без сертификата или без A-записи вовсе), потом то же
+  // по http — сайты с битым TLS так хоть как-то читаются.
   const candidates = new Set<string>();
   if (/^https?:\/\//i.test(websiteUrl)) candidates.add(websiteUrl.trim());
   candidates.add(`https://${host}/`);
+  candidates.add(`https://www.${host}/`);
   candidates.add(`http://${host}/`);
+  candidates.add(`http://www.${host}/`);
+  lastFetchFailure = '';
   let home: string | null = null;
   let base: URL | null = null;
   for (const url of candidates) {
@@ -876,7 +892,7 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
       break;
     }
   }
-  if (!home || !base) throw new Error('сайт не открылся напрямую');
+  if (!home || !base) throw new Error(`сайт не открылся напрямую: ${lastFetchFailure || 'причина неизвестна'}`);
 
   let pagesFetched = 1;
   const byPath = new Map<string, SiteSection>();
