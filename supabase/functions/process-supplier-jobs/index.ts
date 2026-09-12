@@ -780,6 +780,15 @@ function titleFromSlug(url: URL): string {
   return cleanTitle(decoded.replace(/\.html?$/i, '').replace(/[-_+]+/g, ' '));
 }
 
+// Архивная ссылка → исходная: https://web.archive.org/web/20240101/https://x.ru/catalog/
+// превращается в https://x.ru/catalog/. Без этого все разделы архивной копии
+// отсеялись бы как «чужой хост».
+const WAYBACK_PREFIX_RE = /^https?:\/\/web\.archive\.org\/web\/[^/]+\/(https?:\/\/.+)$/i;
+function unwrapWayback(url: string): string {
+  const m = WAYBACK_PREFIX_RE.exec(url);
+  return m ? m[1] : url;
+}
+
 function extractLinks(html: string, base: URL, host: string): SiteSection[] {
   const out: SiteSection[] = [];
   for (const m of html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
@@ -790,7 +799,7 @@ function extractLinks(html: string, base: URL, host: string): SiteSection[] {
     if (!href || /^(javascript:|mailto:|tel:|#)/i.test(href)) continue;
     let url: URL;
     try {
-      url = new URL(href, base);
+      url = new URL(unwrapWayback(new URL(href, base).toString()));
     } catch {
       continue;
     }
@@ -851,15 +860,52 @@ function decodeBytes(bytes: Uint8Array, contentType: string): string {
 // «сайт не открылся», и непонятно, чинить это или списывать.
 let lastFetchFailure = '';
 
-async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string | null> {
+// Российский IP для сайтов, которые режут иностранные адреса. Функция живёт
+// в eu-west-3 (Париж), и часть российских доменов с парижского адреса просто
+// молчит до таймаута или отдаёт 403 — владелец, 2026-09-12: «сайты могли не
+// открыться из-за того, что они не открываются из-за vpn... попробуй открыть
+// из-под россии». Секрет SNAPSHOT_PROXY_URL вида
+// http://логин:пароль@хост:порт (или socks5://...). Если секрета нет — всё
+// работает как раньше, напрямую.
+const SNAPSHOT_PROXY_URL = Deno.env.get('SNAPSHOT_PROXY_URL') ?? '';
+
+// Клиент создаётся один раз на вызов функции: каждый createHttpClient — это
+// свой пул соединений, плодить их на каждую страницу незачем.
+let proxyClientCache: unknown | null | undefined;
+function proxyClient(): unknown | null {
+  if (proxyClientCache !== undefined) return proxyClientCache;
+  proxyClientCache = null;
+  if (!SNAPSHOT_PROXY_URL) return null;
+  try {
+    const u = new URL(SNAPSHOT_PROXY_URL);
+    const username = decodeURIComponent(u.username);
+    const password = decodeURIComponent(u.password);
+    u.username = '';
+    u.password = '';
+    const create = (Deno as unknown as { createHttpClient?: (o: unknown) => unknown }).createHttpClient;
+    if (!create) return null;
+    proxyClientCache = create({
+      proxy: username ? { url: u.toString(), basicAuth: { username, password } } : { url: u.toString() },
+    });
+  } catch (err) {
+    console.error('SNAPSHOT_PROXY_URL не разобрался:', err instanceof Error ? err.message : err);
+    proxyClientCache = null;
+  }
+  return proxyClientCache;
+}
+
+async function fetchOnce(url: string, timeoutMs: number, viaProxy: boolean): Promise<string | null> {
+  const client = viaProxy ? proxyClient() : null;
+  if (viaProxy && !client) return null;
   try {
     const resp = await fetch(url, {
       headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ru-RU,ru;q=0.9', Accept: 'text/html,application/xml;q=0.9,*/*;q=0.8' },
       signal: AbortSignal.timeout(timeoutMs),
       redirect: 'follow',
-    });
+      ...(client ? { client } : {}),
+    } as RequestInit);
     if (!resp.ok) {
-      lastFetchFailure = `HTTP ${resp.status}`;
+      lastFetchFailure = `HTTP ${resp.status}${viaProxy ? ' (через прокси)' : ''}`;
       return null;
     }
     const type = resp.headers.get('content-type') ?? '';
@@ -869,13 +915,45 @@ async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string
     }
     return decodeBytes(new Uint8Array(await resp.arrayBuffer()), type);
   } catch (err) {
-    lastFetchFailure = err instanceof Error ? err.message.slice(0, 80) : 'сеть';
+    lastFetchFailure = `${err instanceof Error ? err.message.slice(0, 80) : 'сеть'}${viaProxy ? ' (через прокси)' : ''}`;
     return null;
   }
 }
 
+// Сначала напрямую (быстро и не тратит трафик прокси), и только если не
+// вышло — через российский IP. Обратный порядок гонял бы через прокси все
+// 259 доменов, хотя мешает он меньшинству.
+async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string | null> {
+  const direct = await fetchOnce(url, timeoutMs, false);
+  if (direct !== null) return direct;
+  if (!SNAPSHOT_PROXY_URL) return null;
+  return await fetchOnce(url, timeoutMs, true);
+}
+
 function sitemapLocs(xml: string): string[] {
   return [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1].trim());
+}
+
+// Последняя сохранённая копия сайта в Wayback Machine. Ключей не требует,
+// бесплатна; если копии нет — null, и домен останется ошибкой.
+async function fetchWaybackHome(host: string): Promise<{ url: string; html: string } | null> {
+  try {
+    const resp = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(host)}`, {
+      headers: { 'User-Agent': BROWSER_UA },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const snap = data?.archived_snapshots?.closest;
+    if (!snap?.available || typeof snap.url !== 'string') return null;
+    // id_ отдаёт исходный HTML без панели и скриптов архива.
+    const raw = snap.url.replace(/^http:/, 'https:').replace(/\/web\/(\d+)\//, '/web/$1id_/');
+    const html = await fetchOnce(raw, 20000, false);
+    if (!html) return null;
+    return { url: snap.url.replace(/^http:/, 'https:'), html };
+  } catch {
+    return null;
+  }
 }
 
 async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<SiteSnapshot> {
@@ -907,9 +985,28 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
       break;
     }
   }
+  // Сайт не открылся вовсе — берём архивную копию. Владелец, 2026-09-12:
+  // «сайты могли не открыться из-за того, что они не открываются из-за vpn...
+  // попробуй открыть из-под россии» — причина обычно именно такая (функция
+  // живёт в eu-west-3, часть российских доменов режет иностранные адреса), но
+  // чужой IP для этого не нужен: разделы каталога годичной давности для
+  // определения товарных групп ничем не хуже сегодняшних, а веб-архив
+  // бесплатен и ключей не требует. Помечаем такой снимок в page_title, чтобы
+  // было видно, что данные не свежие.
+  let fromArchive = false;
+  let pagesFetchedExtra = 0;
+  if (!home || !base) {
+    const archived = await fetchWaybackHome(host);
+    if (archived) {
+      home = archived.html;
+      base = new URL(archived.url);
+      fromArchive = true;
+      pagesFetchedExtra++;
+    }
+  }
   if (!home || !base) throw new Error(`сайт не открылся напрямую: ${lastFetchFailure || 'причина неизвестна'}`);
 
-  let pagesFetched = 1;
+  let pagesFetched = 1 + pagesFetchedExtra;
   const byPath = new Map<string, SiteSection>();
   const add = (section: SiteSection) => {
     const key = pathKey(new URL(section.url));
@@ -931,7 +1028,9 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
   }
   let rootsFetched = 0;
   for (const rootUrl of roots) {
-    if (rootsFetched >= 2 || !withinBudget()) break;
+    // По архивной копии вглубь не ходим: у архива свои адреса и своя
+    // задержка, а разделов с главной для товарных групп достаточно.
+    if (fromArchive || rootsFetched >= 2 || !withinBudget()) break;
     const html = await fetchSnapshotPage(rootUrl, 10000);
     if (!html) continue;
     rootsFetched++;
@@ -941,7 +1040,7 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
 
   // sitemap.xml — единственный источник для сайтов, где меню рисует скрипт.
   // Из индекса берём до двух вложенных карт, предпочитая каталожные.
-  if (withinBudget()) {
+  if (withinBudget() && !fromArchive) {
     const xml = await fetchSnapshotPage(new URL('/sitemap.xml', base).toString(), 10000);
     if (xml) {
       pagesFetched++;
@@ -988,7 +1087,7 @@ async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<Site
   const pageTitle = cleanTitle(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(home)?.[1] ?? '') ||
     (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(home)?.[1] ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
   return {
-    pageTitle,
+    pageTitle: fromArchive ? `[архивная копия] ${pageTitle}`.slice(0, 200) : pageTitle,
     metaDescription: extractMeta(home, 'description') || extractMeta(home, 'og:description'),
     homeText: htmlToText(home).slice(0, 3000),
     sections,
@@ -1063,7 +1162,33 @@ async function processSnapshotQueue(summary: { snapshots: number; errors: string
   }
 }
 
-Deno.serve(async () => {
+Deno.serve(async (req: Request) => {
+  // Диагностика окружения рантайма (умеет ли он ходить через прокси) — нужна
+  // была, чтобы понять, можно ли читать российские сайты с российского IP:
+  // сама функция живёт в eu-west-3, и часть доменов режет иностранные адреса.
+  if (new URL(req.url).searchParams.get('probe') === 'runtime') {
+    let proxyOk = false;
+    let proxyError = '';
+    try {
+      const client = (Deno as unknown as { createHttpClient?: (o: unknown) => unknown }).createHttpClient?.({
+        proxy: { url: 'http://127.0.0.1:1' },
+      });
+      proxyOk = !!client;
+      (client as { close?: () => void } | undefined)?.close?.();
+    } catch (err) {
+      proxyError = err instanceof Error ? err.message.slice(0, 160) : String(err);
+    }
+    return new Response(
+      JSON.stringify({
+        hasCreateHttpClient: typeof (Deno as unknown as { createHttpClient?: unknown }).createHttpClient,
+        proxyOk,
+        proxyError,
+        snapshotProxySet: !!Deno.env.get('SNAPSHOT_PROXY_URL'),
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
   if (!PROXYAPI_KEY) {
     return new Response(JSON.stringify({ error: 'PROXYAPI_KEY не задан в секретах функции' }), {
       status: 500,
