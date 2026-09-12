@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Send, Loader2, TriangleAlert, Paperclip, FileText, Plus } from 'lucide-react';
+import { Send, Loader2, TriangleAlert, Paperclip, FileText, Plus, History } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -16,7 +16,13 @@ import type { SupplierOfferEmail } from '../../data/supplierOfferEmails';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import type { LegalEntity } from '../../data/legalEntities';
 import type { EmailTemplate } from '../../data/emailTemplates';
-import { insertBulkSendJob, fetchQueuedBulkSendOfferIds } from '../../lib/bulkSendJobsApi';
+import {
+  insertBulkSendJob,
+  fetchQueuedBulkSendOfferIds,
+  fetchPastBulkSends,
+  cancelQueuedBulkSendItems,
+  type PastBulkSend,
+} from '../../lib/bulkSendJobsApi';
 import { emailSignature } from './SupplierCorrespondenceTab';
 import { TemplateFormModal } from './EmailTemplates';
 
@@ -138,6 +144,35 @@ function hasQuote(offer: SupplierOffer): boolean {
 function formatDay(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+}
+
+// "1 письмо / 2 письма / 5 писем" — подпись прошлой рассылки читается
+// закупщицей как обычный текст, а не как лог.
+function lettersWord(n: number): string {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return 'писем';
+  if (mod10 === 1) return 'письмо';
+  if (mod10 >= 2 && mod10 <= 4) return 'письма';
+  return 'писем';
+}
+
+function formatDayTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+// Подпись прошлой рассылки в селекте повтора. Главное в ней — имя ведомости:
+// владелец опознаёт "ту самую, неправильную" именно по файлу, а не по теме
+// письма (тема у рассылок по одной категории обычно одинаковая).
+function pastSendLabel(job: PastBulkSend): string {
+  const parts = [`${formatDayTime(job.createdAt)} — ${job.sentOfferIds.length} ${lettersWord(job.sentOfferIds.length)}`];
+  parts.push(job.ledgerName || job.subject || 'без темы');
+  if (job.pendingOfferIds.length > 0) parts.push(`ещё ${job.pendingOfferIds.length} в очереди`);
+  if (job.createdByName) parts.push(job.createdByName);
+  return parts.join(' · ');
 }
 
 function defaultBulkBody(): string {
@@ -355,13 +390,84 @@ export function BulkSendModal({
     [offers, countryChosen, selectedRequestId, selectedCountry],
   );
 
+  // Повтор прошлой рассылки — владелец, 2026-09-12: "я отправил неправильную
+  // ведомость по керамограниту. При массовой рассылке я хочу иметь
+  // возможность написать всем, кому я ошибно написал ранее. То есть не новые
+  // добавленные, а только те, кому уже отправлено письмо". Фильтр "Кому уже
+  // писали" для этого не годится: он шире (туда попадают и те, у кого просто
+  // лежит КП, и карточки, связанные общим доменом почты) и не знает, в какой
+  // именно рассылке ушёл испорченный файл — а написать нужно ровно тем, кто
+  // его получил. Здесь выбирается конкретная прошлая рассылка этой категории
+  // (селект ниже), и список получателей становится её адресатами.
+  const [pastSends, setPastSends] = useState<PastBulkSend[]>([]);
+  const [repeatJobId, setRepeatJobId] = useState('');
+  // Письма этой же рассылки, которые мы сняли с очереди прямо сейчас (см.
+  // handleCancelPending): их адресаты старый файл не получили, но правильный
+  // им нужен — держим их в списке получателей повтора.
+  const [cancelledOfferIds, setCancelledOfferIds] = useState<string[]>([]);
+  // Итог последнего снятия с очереди: сколько писем сняли и сколько просили.
+  // Разойтись они могут на письма, которые воркер уже взял в работу
+  // (status='sending') — их не отменить, они уходят прямо сейчас.
+  const [cancelResult, setCancelResult] = useState<{ cancelled: number; requested: number } | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setPastSends([]);
+    setRepeatJobId('');
+    setCancelledOfferIds([]);
+    setCancelResult(null);
+    fetchPastBulkSends(selectedRequestId)
+      .then((jobs) => {
+        if (!cancelled) setPastSends(jobs);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRequestId]);
+  const repeatJob = pastSends.find((j) => j.id === repeatJobId) ?? null;
+
+  const offersById = useMemo(() => new Map(offers.map((o) => [o.id, o])), [offers]);
+
+  // Получатели повтора: адресаты той рассылки — кому письмо уже ушло, кто
+  // ещё стоит в её очереди и кого мы с этой очереди сняли. Страна,
+  // верификация и даже текущая категория карточки здесь НЕ фильтруют: факт
+  // "этому человеку ушёл не тот файл" уже случился, даже если карточку с тех
+  // пор сняли с верификации или перенесли в другую категорию. Отпадают
+  // только удалённые карточки и оставшиеся без email — писать некуда.
+  const repeatRecipients = useMemo(() => {
+    if (!repeatJob) return [] as SupplierOffer[];
+    const seen = new Set<string>();
+    const list: SupplierOffer[] = [];
+    for (const id of [...repeatJob.sentOfferIds, ...repeatJob.pendingOfferIds, ...cancelledOfferIds]) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const offer = offersById.get(id);
+      if (offer?.email) list.push(offer);
+    }
+    return list;
+  }, [repeatJob, offersById, cancelledOfferIds]);
+
+  // Галочки по умолчанию в режиме повтора: те, кому письмо реально ушло,
+  // плюс снятые с очереди. Оставшиеся в очереди — без галочки: пока старое
+  // письмо не снято, повтор придёт РАНЬШЕ него, и правильную ведомость
+  // перекроет неправильная.
+  const repeatDefaultIds = useMemo(
+    () => (repeatJob ? new Set([...repeatJob.sentOfferIds, ...cancelledOfferIds]) : new Set<string>()),
+    [repeatJob, cancelledOfferIds],
+  );
+
   const [filter, setFilter] = useState(FILTER_NEW);
   const newCount = useMemo(() => candidates.filter((o) => statusOf(o).kind === 'none').length, [candidates, statusOf]);
   const visible = useMemo(() => {
+    // Повтор задаёт список получателей целиком, фильтры "новые/все/уже
+    // писали" к нему не применяются — они про текущий состав категории, а
+    // повтор про состав конкретной прошлой рассылки.
+    if (repeatJob) return repeatRecipients;
     if (filter === FILTER_ALL) return candidates;
     const wantNew = filter === FILTER_NEW;
     return candidates.filter((o) => (statusOf(o).kind === 'none') === wantNew);
-  }, [candidates, filter, statusOf]);
+  }, [candidates, filter, statusOf, repeatJob, repeatRecipients]);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Пересобираем список отмеченных получателей при смене категории/страны/
@@ -370,12 +476,20 @@ export function BulkSendModal({
   // значит пустой выбор, повторное письмо нужно отметить руками, случайным
   // "Выбрать всех" дубль не уедет.
   useEffect(() => {
+    if (repeatJob) {
+      setSelected(new Set(repeatRecipients.filter((o) => repeatDefaultIds.has(o.id)).map((o) => o.id)));
+      return;
+    }
     setSelected(new Set(visible.filter((o) => statusOf(o).kind === 'none').map((o) => o.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRequestId, selectedCountry, filter, queuedOfferIds]);
+  }, [selectedRequestId, selectedCountry, filter, queuedOfferIds, repeatJobId, cancelledOfferIds]);
 
   const [subject, setSubject] = useState(() => request.title || 'Поставка материалов');
-  const [body, setBody] = useState(() => defaultBulkBody());
+  const [body, setBody] = useState(defaultBulkBody);
+  // Текст, который подставили мы сами (дефолт, шаблон, повторяемая рассылка) —
+  // пока владелец его не трогал, подстановка при выборе прошлой рассылки
+  // молча заменяет его; набранный руками текст без подтверждения не теряем.
+  const [pristineBody, setPristineBody] = useState(body);
   const [queuing, setQueuing] = useState(false);
   const [queuedCount, setQueuedCount] = useState<number | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
@@ -401,6 +515,60 @@ export function BulkSendModal({
     if (body.trim() && !window.confirm('Заменить уже введённый текст письма шаблоном?')) return;
     setSubject(template.subject);
     setBody(template.body);
+    setPristineBody(template.body);
+  }
+
+  // Выбор прошлой рассылки для повтора. Кроме списка получателей подставляет
+  // её тему и текст: повторное письмо — почти всегда то же самое письмо,
+  // меняется только вложенная ведомость (её выбрали на шаге до этой модалки).
+  function handlePickPastSend(jobId: string) {
+    setRepeatJobId(jobId);
+    setCancelledOfferIds([]);
+    setCancelResult(null);
+    const job = pastSends.find((j) => j.id === jobId);
+    if (!job) return;
+    // Юрлицо и страна в режиме повтора список уже не фильтруют, но остаются
+    // обязательными полями формы (юрлицо уходит в задание и определяет, чьи
+    // карточка с реквизитами и условия доставки приложатся первым письмам) —
+    // подставляем их из повторяемой рассылки, чтобы не выбирать заново.
+    // Страна — "все": получатели заданы поимённо, сужать их незачем.
+    setSelectedCountry(ALL_COUNTRIES);
+    setSelectedLegalEntityId(
+      job.legalEntityId && legalEntities.some((e) => e.id === job.legalEntityId) ? job.legalEntityId : 'none',
+    );
+    if (body !== pristineBody && !window.confirm('Подставить тему и текст из повторяемой рассылки? Введённый текст будет заменён.')) {
+      return;
+    }
+    setSubject(job.subject);
+    setBody(job.body);
+    setPristineBody(job.body);
+  }
+
+  // Снять с очереди ещё не ушедшие письма повторяемой рассылки — если
+  // ошибку заметили на середине (20 получателей × 25-35с — это минут
+  // десять), остаток рассылки прямо сейчас продолжает разносить старый файл.
+  async function handleCancelPending() {
+    if (!repeatJob || cancelling) return;
+    const pending = repeatJob.pendingOfferIds;
+    setCancelling(true);
+    setQueueError(null);
+    try {
+      const count = await cancelQueuedBulkSendItems(repeatJob.id);
+      setCancelResult({ cancelled: count, requested: pending.length });
+      setCancelledOfferIds((prev) => [...prev, ...pending]);
+      setPastSends((prev) => prev.map((j) => (j.id === repeatJob.id ? { ...j, pendingOfferIds: [] } : j)));
+      // Эти карточки больше не "письмо в очереди" — иначе в списке они так и
+      // висели бы с предупреждением, которого уже нет.
+      setQueuedOfferIds((prev) => {
+        const next = new Set(prev);
+        for (const id of pending) next.delete(id);
+        return next;
+      });
+    } catch (err) {
+      setQueueError(errorMessage(err, 'Не удалось снять письма с очереди'));
+    } finally {
+      setCancelling(false);
+    }
   }
 
   function toggle(id: string) {
@@ -469,6 +637,36 @@ export function BulkSendModal({
               }}
             />
 
+            {/* Владелец, 2026-09-12: "я отправил неправильную ведомость по
+                керамограниту... хочу написать всем, кому я ошибно написал
+                ранее" — повтор по получателям конкретной прошлой рассылки.
+                Селект появляется, только если по этой категории рассылки
+                вообще были. */}
+            {pastSends.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm text-ink-muted">Повторить прошлую рассылку</span>
+                <div className="flex items-center gap-2">
+                  <History className="h-4 w-4 shrink-0 text-ink-faint" />
+                  <select
+                    value={repeatJobId}
+                    onChange={(e) => handlePickPastSend(e.target.value)}
+                    className="flex-1 rounded-control border border-transparent bg-surface-muted px-4 py-2.5 text-sm text-ink outline-none focus:border-primary"
+                  >
+                    <option value="">Новая рассылка — получателей выбираю сам</option>
+                    {pastSends.map((j) => (
+                      <option key={j.id} value={j.id}>
+                        {pastSendLabel(j)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-xs text-ink-faint">
+                  Ушла не та ведомость? Выберите рассылку — получателями станут ровно те, кому письмо из неё уже
+                  отправлено. Новые поставщики категории в список не попадут.
+                </p>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Select
                 label="Юрлицо"
@@ -503,7 +701,7 @@ export function BulkSendModal({
 
             {!legalEntityChosen || !countryChosen ? (
               <p className="text-sm text-ink-faint">Выберите юрлицо и страну получателей, чтобы увидеть список поставщиков.</p>
-            ) : candidates.length === 0 ? (
+            ) : candidates.length === 0 && !repeatJob ? (
               <p className="text-sm text-ink-faint">
                 В категории «{selectedRequest.title}»
                 {selectedCountry !== ALL_COUNTRIES ? ` и стране «${selectedCountry}»` : ''} нет верифицированных поставщиков
@@ -515,25 +713,72 @@ export function BulkSendModal({
                     но только тем, кому не писал ранее" — счётчик в подписи
                     показывает размер пополнения категории, чтобы не считать
                     строки глазами. */}
-                <ToggleGroup
-                  label={`Кому пишем — новых: ${newCount} из ${candidates.length}`}
-                  options={FILTERS}
-                  value={filter}
-                  onChange={setFilter}
-                />
+                {repeatJob ? (
+                  <div className="flex flex-col gap-2 rounded-control border border-border-strong bg-surface-muted p-3 text-xs text-ink-muted">
+                    <span>
+                      Повтор рассылки от {formatDayTime(repeatJob.createdAt)}
+                      {repeatJob.ledgerName ? `, ведомость «${repeatJob.ledgerName}»` : ''}
+                      {repeatJob.createdByName ? `, поставил(а) ${repeatJob.createdByName}` : ''}. В списке — только её
+                      получатели, фильтр по стране и новые поставщики категории на него не влияют.
+                    </span>
+                    {repeatRecipients.length < repeatJob.sentOfferIds.length + repeatJob.pendingOfferIds.length && (
+                      <span>
+                        {repeatJob.sentOfferIds.length + repeatJob.pendingOfferIds.length - repeatRecipients.length} из
+                        получателей той рассылки сейчас недоступны — карточка удалена или осталась без email.
+                      </span>
+                    )}
+                    {repeatJob.pendingOfferIds.length > 0 && (
+                      <div className="flex flex-col gap-2 text-warning">
+                        <div className="flex items-start gap-2">
+                          <TriangleAlert className="h-4 w-4 shrink-0 translate-y-0.5" />
+                          <span className="min-w-0 flex-1">
+                            У этой рассылки ещё {repeatJob.pendingOfferIds.length}{' '}
+                            {lettersWord(repeatJob.pendingOfferIds.length)} в очереди — они уйдут со старой ведомостью,
+                            причём уже после повторного. Снимите их с очереди: для повтора эти поставщики отметятся сразу
+                            после снятия.
+                          </span>
+                        </div>
+                        <div>
+                          <Button type="button" variant="secondary" disabled={cancelling} onClick={handleCancelPending}>
+                            {cancelling ? 'Снимаем...' : `Снять с очереди (${repeatJob.pendingOfferIds.length})`}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {cancelResult !== null && (
+                      <span className="text-success">
+                        Снято с очереди: {cancelResult.cancelled}.
+                        {cancelResult.cancelled < cancelResult.requested
+                          ? ` Остальные ${cancelResult.requested - cancelResult.cancelled} воркер уже взял в работу — эти письма уйдут со старой ведомостью.`
+                          : ''}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <ToggleGroup
+                      label={`Кому пишем — новых: ${newCount} из ${candidates.length}`}
+                      options={FILTERS}
+                      value={filter}
+                      onChange={setFilter}
+                    />
 
-                {unverifiedCount > 0 && (
-                  <p className="-mt-1 text-xs text-ink-faint">
-                    Ещё {unverifiedCount} с email в этой категории не прошли верификацию — в рассылку они не попадают.
-                    Откройте карточку, проверьте поля и сохраните, тогда появятся здесь.
-                  </p>
+                    {unverifiedCount > 0 && (
+                      <p className="-mt-1 text-xs text-ink-faint">
+                        Ещё {unverifiedCount} с email в этой категории не прошли верификацию — в рассылку они не попадают.
+                        Откройте карточку, проверьте поля и сохраните, тогда появятся здесь.
+                      </p>
+                    )}
+                  </>
                 )}
 
                 {visible.length === 0 ? (
                   <p className="text-sm text-ink-faint">
-                    {filter === FILTER_NEW
-                      ? 'В этой категории всем подходящим поставщикам уже писали — новых нет. Переключите на «Все», если нужно написать повторно.'
-                      : 'Здесь пусто: этой категории ещё не писали ни одному поставщику.'}
+                    {repeatJob
+                      ? 'У получателей этой рассылки не осталось доступных карточек с email — повторить некому.'
+                      : filter === FILTER_NEW
+                        ? 'В этой категории всем подходящим поставщикам уже писали — новых нет. Переключите на «Все», если нужно написать повторно.'
+                        : 'Здесь пусто: этой категории ещё не писали ни одному поставщику.'}
                   </p>
                 ) : (
                   <>
@@ -546,11 +791,21 @@ export function BulkSendModal({
                 <div className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-control bg-surface-muted p-2">
                   {visible.map((o) => {
                     const status = statusOf(o);
+                    // В режиме повтора состояние строки берём из самой
+                    // рассылки, а не из общего списка очереди
+                    // (fetchQueuedBulkSendOfferIds): нужно показать, что в
+                    // очереди стоит письмо именно ЭТОЙ рассылки — того, что
+                    // мы повторяем.
+                    const repeatPending = !!repeatJob && repeatJob.pendingOfferIds.includes(o.id);
+                    const repeatCancelled = !!repeatJob && cancelledOfferIds.includes(o.id);
                     // Строка обрезается по ширине модалки, поэтому подпись
                     // про предыдущий контакт дублируется в title — на узком
                     // экране её иначе не прочитать.
-                    const statusHint =
-                      status.kind === 'sent'
+                    const statusHint = repeatPending
+                      ? 'Письмо этой рассылки ещё стоит в очереди — снимите его, иначе старая ведомость придёт после новой'
+                      : repeatCancelled
+                        ? 'Письмо этой рассылки снято с очереди — старую ведомость этот поставщик не получил'
+                        : status.kind === 'sent'
                         ? `Писали ${formatDay(status.at)}`
                         : status.kind === 'queued'
                           ? 'Письмо этому поставщику уже стоит в очереди рассылки'
@@ -575,8 +830,17 @@ export function BulkSendModal({
                         />
                         <span className="min-w-0 flex-1 truncate text-ink">
                           <span title={o.country || SUPPLIER_COUNTRIES[0]}>{countryFlag(o.country || SUPPLIER_COUNTRIES[0])}</span> {o.name}
-                          {status.kind === 'sent' && <span className="text-ink-faint"> · писали {formatDay(status.at)}</span>}
-                          {status.kind === 'queued' && <span className="text-warning"> · письмо уже в очереди</span>}
+                          {repeatPending ? (
+                            <span className="text-warning"> · письмо этой рассылки ещё в очереди</span>
+                          ) : repeatCancelled ? (
+                            <span className="text-success"> · снято с очереди, старую ведомость не получил</span>
+                          ) : null}
+                          {!repeatPending && !repeatCancelled && status.kind === 'sent' && (
+                            <span className="text-ink-faint"> · писали {formatDay(status.at)}</span>
+                          )}
+                          {!repeatPending && !repeatCancelled && status.kind === 'queued' && (
+                            <span className="text-warning"> · письмо уже в очереди</span>
+                          )}
                           {status.kind === 'quoted' && <span className="text-ink-faint"> · есть КП, уже работаем</span>}
                           {status.kind === 'sameEmail' && (
                             <span className="text-ink-faint"> · на этот адрес уже писали</span>
@@ -686,7 +950,7 @@ export function BulkSendModal({
           <Button type="button" variant="secondary" onClick={onClose}>
             {queuedCount !== null ? 'Закрыть' : 'Отмена'}
           </Button>
-          {legalEntityChosen && countryChosen && candidates.length > 0 && queuedCount === null && (
+          {legalEntityChosen && countryChosen && (candidates.length > 0 || repeatJob) && queuedCount === null && (
             <Button
               type="button"
               icon={queuing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}

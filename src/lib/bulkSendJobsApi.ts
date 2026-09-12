@@ -92,3 +92,119 @@ export function fetchQueuedBulkSendOfferIds(): Promise<string[]> {
     return (data as { offer_id: string }[]).map((r) => r.offer_id);
   });
 }
+
+// Повторная рассылка по получателям прошлой — владелец, 2026-09-12: "я
+// отправил неправильную ведомость по керамограниту... хочу написать всем,
+// кому я ошибно написал ранее. То есть не новые добавленные, а только те,
+// кому уже отправлено письмо". Фильтр "Кому уже писали" в BulkSendModal для
+// этого не годится: он показывает всех, с кем мы как-то контактировали
+// (включая тех, у кого просто лежит КП или совпал домен почты), и не знает,
+// в какой именно рассылке ушёл испорченный файл. Здесь — точный список:
+// строки конкретного задания, по которым письмо РЕАЛЬНО ушло.
+export interface PastBulkSend {
+  id: string;
+  requestId: string;
+  subject: string;
+  body: string;
+  legalEntityId: string | null;
+  // Имя файла ведомости, которая ушла в той рассылке — по нему владелец и
+  // опознаёт "ту самую, неправильную". Тянем только имя (attachment->>fileName),
+  // а не всю jsonb-колонку: в ней лежит base64 самого xlsx, на десяток
+  // заданий это мегабайты в браузер.
+  ledgerName: string | null;
+  createdAt: string;
+  createdByName: string | null;
+  // Кому письмо уже ушло (status='sent') — это и есть аудитория повтора.
+  sentOfferIds: string[];
+  // Кому ещё не ушло, но уйдёт (status='pending'/'sending'): если рассылка
+  // с ошибочной ведомостью не доехала до конца, эти письма прямо сейчас
+  // продолжают уходить со старым файлом — см. cancelQueuedBulkSendItems.
+  // Строки со status='error' сюда не идут: письмо не ушло и не уйдёт.
+  pendingOfferIds: string[];
+}
+
+interface PastJobRow {
+  id: string;
+  request_id: string;
+  subject: string;
+  body: string;
+  legal_entity_id: string | null;
+  created_at: string;
+  created_by_name: string | null;
+  ledgerName: string | null;
+}
+
+// Прошлые рассылки по одной категории поставщиков, свежие первыми. Задания,
+// по которым не ушло ни одного письма и ничего не осталось в очереди
+// (например, всё упало с ошибкой), в список не попадают — повторять там
+// нечего.
+export function fetchPastBulkSends(requestId: string, limit = 20): Promise<PastBulkSend[]> {
+  return withRetry(async () => {
+    const { data: jobData, error: jobError } = await supabase
+      .from('bulk_send_jobs')
+      .select('id, request_id, subject, body, legal_entity_id, created_at, created_by_name, ledgerName:attachment->>fileName')
+      .eq('request_id', requestId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (jobError) throw jobError;
+    const jobs = (jobData ?? []) as unknown as PastJobRow[];
+    if (jobs.length === 0) return [];
+
+    const { data: itemData, error: itemError } = await supabase
+      .from('bulk_send_job_items')
+      .select('job_id, offer_id, status')
+      .in(
+        'job_id',
+        jobs.map((j) => j.id),
+      );
+    if (itemError) throw itemError;
+
+    const sent = new Map<string, string[]>();
+    const pending = new Map<string, string[]>();
+    for (const item of (itemData ?? []) as { job_id: string; offer_id: string; status: string }[]) {
+      const bucket = item.status === 'sent' ? sent : item.status === 'pending' || item.status === 'sending' ? pending : null;
+      if (!bucket) continue;
+      const list = bucket.get(item.job_id);
+      if (list) list.push(item.offer_id);
+      else bucket.set(item.job_id, [item.offer_id]);
+    }
+
+    return jobs
+      .map((job) => ({
+        id: job.id,
+        requestId: job.request_id,
+        subject: job.subject,
+        body: job.body,
+        legalEntityId: job.legal_entity_id,
+        ledgerName: job.ledgerName,
+        createdAt: job.created_at,
+        createdByName: job.created_by_name ?? null,
+        sentOfferIds: sent.get(job.id) ?? [],
+        pendingOfferIds: pending.get(job.id) ?? [],
+      }))
+      .filter((job) => job.sentOfferIds.length > 0 || job.pendingOfferIds.length > 0);
+  });
+}
+
+// Снять с очереди ещё не ушедшие письма рассылки. Нужно ровно в том же
+// сценарии, что и повтор: ведомость оказалась неправильной, а рассылка на
+// 20 поставщиков идёт по 25-35 секунд на письмо — пока владелец заметил
+// ошибку, половина адресатов ещё в очереди, и без отмены они получат
+// старый файл уже ПОСЛЕ повторного письма с правильным.
+// Статус 'cancelled' воркеры (supabase/functions/process-bulk-send-jobs,
+// scripts/process-bulk-send-jobs.mjs) не разбирают — они берут только
+// 'pending', — а closeFinishedJobs закроет задание на следующем тике.
+// Возвращает, сколько писем реально сняли: строку, которую воркер уже взял
+// в работу ('sending'), не трогаем — письмо либо уже ушло, либо уходит.
+export function cancelQueuedBulkSendItems(jobId: string): Promise<number> {
+  return withRetry(async () => {
+    const { data, error } = await supabase
+      .from('bulk_send_job_items')
+      .update({ status: 'cancelled' })
+      .eq('job_id', jobId)
+      .eq('status', 'pending')
+      .select('id');
+    if (error) throw error;
+    return (data ?? []).length;
+  });
+}
