@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { authFetch } from './authFetch';
+import { getCurrentProfile } from './accessProfile';
 
 export interface SupplierSearchResult {
   name: string;
@@ -105,6 +106,13 @@ export interface SupplierWebSearchJob {
   // если часть найденного уже была в этой категории. null — задание из
   // времён ручного добавления (колонки тогда не было).
   addedCount: number | null;
+  // Кто запустил поиск (владелец, 2026-09-12 — учёт добавления новых
+  // поставщиков по сотрудникам, см. Metrics.tsx). Именно через задание, а не
+  // через activity_log: только здесь рядом лежит addedCount, то есть сколько
+  // поставщиков реально появилось на платформе по запросу этого человека.
+  // null — задание из времён до появления колонок.
+  createdByProfileId: string | null;
+  createdByName: string | null;
   error: string;
   createdAt: string;
   completedAt: string | null;
@@ -121,6 +129,8 @@ interface SupplierWebSearchJobRow {
   status: string;
   results: SupplierSearchResult[] | null;
   added_count: number | null;
+  created_by_profile_id: string | null;
+  created_by_name: string | null;
   error: string | null;
   created_at: string;
   completed_at: string | null;
@@ -138,6 +148,8 @@ function fromRow(row: SupplierWebSearchJobRow): SupplierWebSearchJob {
     status: (row.status as SupplierWebSearchJobStatus) || 'pending',
     results: Array.isArray(row.results) ? row.results : [],
     addedCount: row.added_count,
+    createdByProfileId: row.created_by_profile_id,
+    createdByName: row.created_by_name,
     error: row.error ?? '',
     createdAt: row.created_at,
     completedAt: row.completed_at,
@@ -167,6 +179,7 @@ export async function queueSupplierWebSearch(params: {
   region: string;
   excludeCompanies?: SupplierExcludeEntry[];
 }): Promise<SupplierWebSearchJob> {
+  const profile = getCurrentProfile();
   const { data, error } = await supabase
     .from('supplier_web_search_jobs')
     .insert({
@@ -176,6 +189,8 @@ export async function queueSupplierWebSearch(params: {
       extra: params.extra,
       country: params.region,
       exclude_companies: params.excludeCompanies ?? [],
+      created_by_profile_id: profile.id,
+      created_by_name: profile.displayName,
     })
     .select()
     .single();

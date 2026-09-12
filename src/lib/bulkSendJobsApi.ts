@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { withRetry } from './withRetry';
 import { authFetch } from './authFetch';
+import { getCurrentProfile } from './accessProfile';
 import type { BulkSendJob, BulkSendJobRow } from '../data/bulkSendJobs';
 
 // Владелец, 2026-09-09: "при каждой отправке письма запускай костыль, после
@@ -29,6 +30,8 @@ function fromRow(row: BulkSendJobRow): BulkSendJob {
     body: row.body,
     attachment: row.attachment,
     status: row.status === 'done' ? 'done' : 'queued',
+    createdByProfileId: row.created_by_profile_id ?? null,
+    createdByName: row.created_by_name ?? null,
     createdAt: row.created_at,
   };
 }
@@ -46,6 +49,7 @@ export function insertBulkSendJob(input: {
   offerIds: string[];
 }): Promise<BulkSendJob> {
   return withRetry(async () => {
+    const profile = getCurrentProfile();
     const { data: jobData, error: jobError } = await supabase
       .from('bulk_send_jobs')
       .insert({
@@ -54,6 +58,8 @@ export function insertBulkSendJob(input: {
         subject: input.subject,
         body: input.body,
         attachment: input.attachment,
+        created_by_profile_id: profile.id,
+        created_by_name: profile.displayName,
       })
       .select()
       .single();
