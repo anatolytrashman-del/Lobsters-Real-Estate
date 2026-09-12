@@ -2974,14 +2974,28 @@ export function Suppliers() {
             Первые два — SupplierRequest.group (см. data/supplierResearch.ts),
             третий — полностью самостоятельный компонент ContractorsResearch
             (перенесён сюда раньше со страницы "Команда"), без общих данных с
-            первыми двумя. */}
+            первыми двумя.
+            2026-09-12, после каталога поставщиков (хабы → категории выше):
+            владелец на старые карточки-категории (Плинтус, Краска
+            интерьерная, Керамогранит...) — "вот этот весь список теперь тоже
+            не актуален". Список остаётся: это единственное место добавить/
+            изменить/удалить категорию закупки, добавить предложение, запустить
+            веб-поиск и объединить дубли универсальных — каталог выше только
+            просматривает те же данные, ничего из этого не умеет. Но дублировать
+            каталог визуально не нужно — свёрнуто по умолчанию (<details>, без
+            JS-стейта, как в FaqAccordion). */}
         {!loading && !loadError && (
           <>
             {(['materials', 'services'] as const).map((group) => {
               const groupRequests = requests.filter((r) => r.group === group);
               return (
-                <div key={group} className="flex flex-col gap-6">
-                  <div className="text-lg font-bold text-ink">{SUPPLIER_REQUEST_GROUP_LABELS[group]}</div>
+                <details key={group} className="flex flex-col gap-6">
+                  <summary className="cursor-pointer text-lg font-bold text-ink">
+                    {SUPPLIER_REQUEST_GROUP_LABELS[group]}
+                    <span className="ml-2 text-sm font-normal text-ink-faint">
+                      управление категориями закупки — добавить/изменить/удалить, веб-поиск
+                    </span>
+                  </summary>
 
                   {groupRequests.length === 0 && (
                     <Card className="py-10 text-center text-sm text-ink-muted">Пока нет запросов — нажмите «Новый запрос»</Card>
@@ -3025,7 +3039,7 @@ export function Suppliers() {
                   >
                     Новый запрос
                   </Button>
-                </div>
+                </details>
               );
             })}
           </>
