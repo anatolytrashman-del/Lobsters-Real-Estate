@@ -9,6 +9,11 @@ import { insertMaterialLedger, updateMaterialLedger, deleteMaterialLedger } from
 import type { PurchaseItem } from '../../data/purchases';
 import { buildMaterialLedgerXlsx, type LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import { isMasterLedgerId } from '../../lib/masterLedger';
+import {
+  isLedgerFieldOverridden,
+  markLedgerFieldOverridden,
+  restoreLedgerItemFromSource,
+} from '../../lib/ledgerSync';
 
 // Ключ, по которому чекбокс чек-листа связывается с уже добавленной позицией
 // ведомости. Раньше сравнивали по name — владелец, 2026-09-11: "если две
@@ -159,6 +164,17 @@ export function MaterialLedgerModal({
     return groups;
   }, [requestItems, allMaterials]);
 
+  // Живые данные сметы по id материала — для кнопки "Вернуть из сметы" у
+  // позиции, правленной руками. allMaterials уже собран из смет в
+  // Suppliers.tsx, отдельный источник заводить не нужно.
+  const sourceByMaterialId = useMemo(() => {
+    const map = new Map<string, PurchaseItem>();
+    for (const { item } of allMaterials) {
+      if (item.sourceMaterialId) map.set(item.sourceMaterialId, item);
+    }
+    return map;
+  }, [allMaterials]);
+
   if (!open) return null;
 
   function pickLedger(id: string) {
@@ -193,15 +209,34 @@ export function MaterialLedgerModal({
     setManualName('');
   }
 
+  // Ручная правка объёма/параметров помечает поле как "правленное руками"
+  // (PurchaseItem.ledgerOverrides) — владелец, 2026-09-12: ведомость теперь
+  // зеркалится из сметы на каждом рендере (см. lib/ledgerSync.ts), и без этой
+  // метки правка под конкретного поставщика ("объём в 2 слоя", своя
+  // формулировка параметров) молча вернулась бы к сметной при следующем
+  // открытии. Метка ставится только позициям, привязанным к смете: у ручных
+  // позиций источника нет и синхронизировать их не с чем.
   function updateItemQuantity(id: string, quantity: number | null) {
-    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, quantity } : i)));
+    setItems((prev) => prev.map((i) => (i.id === id ? markLedgerFieldOverridden({ ...i, quantity }, 'quantity') : i)));
+  }
+
+  // Снять правку и вернуть позицию к данным сметы — обратный ход к метке
+  // выше, чтобы "не обновляется из сметы" не превращалось в тупик.
+  function restoreItemFromEstimate(id: string) {
+    setItems((prev) =>
+      prev.map((i) => {
+        if (i.id !== id) return i;
+        const source = i.sourceMaterialId ? sourceByMaterialId.get(i.sourceMaterialId) : undefined;
+        return source ? restoreLedgerItemFromSource(i, source) : i;
+      }),
+    );
   }
 
   // Владелец, 2026-09-09: "важно не только объём, но и ряд параметров" —
   // редактируемое поле-примечание прямо в ведомости (попадает в итоговый
   // .xlsx, см. lib/materialLedgerXlsx.ts).
   function updateItemNote(id: string, note: string) {
-    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, note } : i)));
+    setItems((prev) => prev.map((i) => (i.id === id ? markLedgerFieldOverridden({ ...i, note }, 'note') : i)));
   }
 
   function removeItem(id: string) {
@@ -390,6 +425,25 @@ export function MaterialLedgerModal({
                       onChange={(e) => updateItemNote(item.id, e.target.value)}
                       className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-primary"
                     />
+                    {/* Позиция следует за сметой сама (lib/ledgerSync.ts) —
+                        кроме полей, которые правили руками. Про такие честно
+                        говорим, что смета их больше не обновляет, и даём
+                        вернуть: иначе владелец снова получит "поправил смету,
+                        а в письме старое" и не поймёт, почему. */}
+                    {(isLedgerFieldOverridden(item, 'quantity') || isLedgerFieldOverridden(item, 'note')) &&
+                      item.sourceMaterialId &&
+                      sourceByMaterialId.has(item.sourceMaterialId) && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-faint">
+                          <span>Изменено вручную — из сметы больше не обновляется</span>
+                          <button
+                            type="button"
+                            onClick={() => restoreItemFromEstimate(item.id)}
+                            className="rounded-full px-2 py-0.5 text-primary hover:bg-surface-muted"
+                          >
+                            Вернуть из сметы
+                          </button>
+                        </div>
+                      )}
                   </div>
                 ),
               )}
