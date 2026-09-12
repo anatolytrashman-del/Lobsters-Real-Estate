@@ -58,6 +58,29 @@ function offerGroups(o: SupplierOffer, snapshotByHost: Map<string, SupplierSiteS
   return snapshotByHost.get(supplierWebsiteHost(o.websiteUrl))?.categories ?? [];
 }
 
+// Списки компаний всегда разбиты по стране — владелец, 2026-09-12: «раздели
+// списки на два — Россию и Беларусь, сейчас у нас единый список, это
+// неудобно и неправильно». Россия и Беларусь — первыми и в этом порядке
+// (SUPPLIER_COUNTRIES), остальное (пустая страна у старых карточек) — общей
+// группой в конце.
+function byCountry(offers: SupplierOffer[]): { country: string; offers: SupplierOffer[] }[] {
+  const order = ['Россия', 'Беларусь'];
+  const groups = new Map<string, SupplierOffer[]>();
+  for (const o of offers) {
+    const key = o.country.trim() || 'Без страны';
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(o);
+  }
+  const keys = [...groups.keys()].sort((a, b) => {
+    const ia = order.indexOf(a);
+    const ib = order.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b, 'ru');
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  return keys.map((country) => ({ country, offers: groups.get(country)! }));
+}
+
 export function SupplierCatalog({
   offers,
   requests,
@@ -222,7 +245,6 @@ export function SupplierCatalog({
           universalOffers={universalOffers}
           groupFilter={groupFilter}
           onGroupFilter={setGroupFilter}
-          requestTitleById={requestTitleById}
           snapshotByHost={snapshotByHost}
           onOpenDetail={onOpenDetail}
         />
@@ -237,7 +259,6 @@ function CategoryView({
   universalOffers,
   groupFilter,
   onGroupFilter,
-  requestTitleById,
   snapshotByHost,
   onOpenDetail,
 }: {
@@ -246,7 +267,6 @@ function CategoryView({
   universalOffers: SupplierOffer[];
   groupFilter: string | null;
   onGroupFilter: (g: string | null) => void;
-  requestTitleById: Map<string, string>;
   snapshotByHost: Map<string, SupplierSiteSnapshot>;
   onOpenDetail: (o: SupplierOffer) => void;
 }) {
@@ -255,30 +275,31 @@ function CategoryView({
   const groupCount = (g: string) =>
     stats.suppliers.filter((o) => offerGroups(o, snapshotByHost).includes(g)).length;
 
-  const row = (o: SupplierOffer) => {
-    const filedAs = requestTitleById.get(o.requestId) ?? '';
-    const sameName = filedAs.trim().toLowerCase() === category.name.trim().toLowerCase();
-    return (
-      <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="truncate font-medium text-ink">{o.name}</span>
-          <span className="text-xs text-ink-faint">
-            {countryFlag(o.country)}
-            {!sameName && filedAs ? ` заведён как «${filedAs}»` : ''}
-          </span>
+  const row = (o: SupplierOffer) => (
+    <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-2">
+      <span className="truncate font-medium text-ink">{o.name}</span>
+      <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
+        Подробнее
+      </Button>
+    </div>
+  );
+
+  const countryGroups = (list: SupplierOffer[]) => (
+    <div className="flex flex-col gap-3">
+      {byCountry(list).map(({ country, offers: group }) => (
+        <div key={country} className="flex flex-col gap-2">
+          <span className="text-xs font-medium text-ink-muted">{country === 'Без страны' ? country : `${countryFlag(country)} ${country}`} · {group.length}</span>
+          <div className="flex flex-col gap-2">{group.map((o) => row(o))}</div>
         </div>
-        <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
-          Подробнее
-        </Button>
-      </div>
-    );
-  };
+      ))}
+    </div>
+  );
 
   if (universal) {
     return (
       <div className="flex flex-col gap-2">
         <p className="text-sm text-ink-muted">Базы и гипермаркеты, которые закрывают много групп сразу. В рассылку по категории подключаются отдельно.</p>
-        {universalOffers.length === 0 ? <p className="text-sm text-ink-faint">Пока никого.</p> : universalOffers.map((o) => row(o))}
+        {universalOffers.length === 0 ? <p className="text-sm text-ink-faint">Пока никого.</p> : countryGroups(universalOffers)}
       </div>
     );
   }
@@ -323,12 +344,12 @@ function CategoryView({
 
       {suppliers.length > 0 && (
         <Section title={`Поставщики (${suppliers.length})`} hint="По названию строки закупки или по товарной группе со снимка сайта — оба признака дают полноценное присвоение категории.">
-          {suppliers.map((o) => row(o))}
+          {countryGroups(suppliers)}
         </Section>
       )}
       {bases.length > 0 && (
         <Section title={`Базы и гипермаркеты (${bases.length})`} hint="Универсальные поставщики с этим товаром в каталоге.">
-          {bases.map((o) => row(o))}
+          {countryGroups(bases)}
         </Section>
       )}
     </div>
