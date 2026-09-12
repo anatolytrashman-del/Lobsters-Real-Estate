@@ -58,12 +58,12 @@ import { EmailThread, SupplierCorrespondenceTab, countUnreadSupplierEmails } fro
 import { MaterialLedgerModal } from '../components/suppliers/MaterialLedgerModal';
 import { BulkSendModal } from '../components/suppliers/BulkSendModal';
 import { SupplierMergeModal, type SupplierMergePlan } from '../components/suppliers/SupplierMergeModal';
-import { buildMasterLedgers } from '../lib/masterLedger';
 import type { LedgerAttachment } from '../lib/materialLedgerXlsx';
 import type { EmailTemplate } from '../data/emailTemplates';
 import { fetchEmailTemplates } from '../lib/emailTemplatesApi';
 import type { MaterialLedger } from '../data/materialLedgers';
 import { fetchMaterialLedgers, deleteMaterialLedger } from '../lib/materialLedgersApi';
+import { buildMasterLedgers, isMasterLedgerId } from '../lib/masterLedger';
 import type { SupplierOrder } from '../data/supplierOrders';
 import { fetchSupplierOrders } from '../lib/supplierOrdersApi';
 import type { SupplierQuote } from '../data/supplierQuotes';
@@ -1998,6 +1998,27 @@ export function Suppliers() {
     [materialLedgers, ledgerEstimateId],
   );
 
+  // Мастер-ведомость (владелец, 2026-09-12: "нужна еще одна общая
+  // мастер-ведомость, в которую будет добавлено вообще все, что в других
+  // ведомостях... как только в отдельных ведомостях будет что-то меняться или
+  // их будет становиться больше/меньше, мастер-ведомость тоже должна
+  // обновляться") — считается из materialLedgers, а не хранится (см.
+  // lib/masterLedger.ts): пересчёт на каждом рендере И ЕСТЬ то самое
+  // автообновление, отдельной синхронизации не существует.
+  //
+  // Одна мастер-ведомость на смету — ведомости привязаны к смете, и смешивать
+  // Red One с Зелёным в файле, который уходит поставщику, нельзя.
+  const materialLedgersWithMasters = useMemo(() => {
+    const masters = buildMasterLedgers(materialLedgers, (estimateId) => {
+      const e = estimates.find((x) => x.id === estimateId);
+      if (!e) return undefined;
+      return (e.objectId ? objectLabel(e.objectId) : e.title) || undefined;
+    });
+    // Мастера первыми — в пикерах письма/рассылки это самый частый выбор.
+    return [...masters, ...materialLedgers];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [materialLedgers, estimates, objects]);
+
   const materialGroupOptions = useMemo(() => {
     const set = new Set<string>();
     (ledgerEstimate?.sections ?? []).forEach((s) => s.materials.forEach((m) => m.group && set.add(m.group)));
@@ -2258,21 +2279,6 @@ export function Suppliers() {
       }))
       .filter((plan) => plan.sources.length > 0);
   }, [offers, requests, universalOffers, universalRequest]);
-
-  // Мастер-ведомости (сводная ведомость на смету, lib/masterLedger.ts) —
-  // нужны массовой рассылке: универсальным поставщикам уходит именно она, а
-  // не ведомость категории (владелец, 2026-09-12). Считаются, а не хранятся,
-  // поэтому просто пересобираются на рендере из уже загруженных ведомостей.
-  const bulkMasterLedgers = useMemo(
-    () =>
-      buildMasterLedgers(materialLedgers, (estimateId) => {
-        const e = estimates.find((x) => x.id === estimateId);
-        if (!e) return undefined;
-        return (e.objectId ? objectLabel(e.objectId) : e.title) || undefined;
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [materialLedgers, estimates, objects],
-  );
 
   function handleOffersMerged(merged: SupplierOffer[], removedOfferIds: string[]) {
     const removed = new Set(removedOfferIds);
@@ -3873,7 +3879,7 @@ export function Suppliers() {
           request={bulkSendConfig.request}
           requests={requests}
           attachment={bulkSendConfig.attachment}
-          masterLedgers={bulkMasterLedgers}
+          masterLedgers={materialLedgersWithMasters.filter((l) => isMasterLedgerId(l.id))}
           offers={offers}
           emails={supplierEmails}
           templates={emailTemplates}
