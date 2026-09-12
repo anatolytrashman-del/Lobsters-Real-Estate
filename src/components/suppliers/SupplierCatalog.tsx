@@ -14,10 +14,8 @@ import {
 } from '../../data/supplierCatalog';
 import {
   countryFlag,
-  isUniversalRequest,
   supplierWebsiteHost,
   SUPPLIER_COUNTRIES,
-  UNIVERSAL_SUPPLIERS_TITLE,
   type SupplierOffer,
   type SupplierRequest,
 } from '../../data/supplierResearch';
@@ -37,13 +35,16 @@ import type { SupplierSiteSnapshot } from '../../data/supplierSiteSnapshots';
 // поставщика есть хотя бы одна товарная группа плитки. Один и тот же
 // поставщик так может оказаться сразу в нескольких плитках — это ожидаемо,
 // плитка отвечает «кто это реально возит», а не «в какую строку его завели».
-// «Баз +K» — тот же принцип, четвёртая правка того же дня (владелец нашёл,
-// что известные гипермаркеты вроде «Бауцентр»/«TM.by» — они прямо названы
-// примерами в описании этого хаба — заведены в узкие категории и поэтому
-// нигде не видны как базы, а треть тех, кто заведён как «Универсальные»,
-// не подтверждается сайтом вовсе): «база» — это тоже ЛЮБОЙ из двух
-// признаков, название строки «Универсальные поставщики» ИЛИ группа
-// «Строительный гипермаркет» на снимке сайта, а не только название строки.
+//
+// Пятая правка того же дня: убрана отдельная сущность «универсальный
+// поставщик»/«база». Раньше гипермаркет с группой «Строительный гипермаркет»
+// на снимке сайта уходил в отдельный хаб-резервуар вместо профильных плиток
+// (владелец: «если у поставщика есть керамогранит — выводим его в категории
+// керамогранита, если есть электрика — в электрике, и по аналогии»). Теперь
+// никакого отдельного «универсального» узла нет и не было: гипермаркет —
+// просто поставщик, который матчится сразу во МНОГИЕ плитки правилом №2
+// выше (у него на снимке много групп), это не отдельная сущность, а
+// естественное следствие того же правила.
 //
 // Страна — не отдельный список внутри плитки (третья правка того же дня:
 // «не друг под другом выводить категории, а в целом вверху каталога выбор
@@ -59,9 +60,10 @@ interface CategoryStats {
   // со снимка сайта, в одном списке: владелец, 2026-09-12 («сделай категории
   // с сайта сущностью по умолчанию — если по сайту поняли, что поставщик
   // поставляет категорию, значит мы её ему присваиваем») отменил разделение
-  // на «подтверждённых вручную» и «найденных по сайту».
+  // на «подтверждённых вручную» и «найденных по сайту». Гипермаркеты и базы
+  // здесь не отдельный бакет (пятая правка того же дня) — они просто
+  // попадают в этот же список каждой плитки, чью товарную группу везут.
   suppliers: SupplierOffer[];
-  bases: SupplierOffer[];
 }
 
 interface HubStats {
@@ -73,23 +75,6 @@ interface HubStats {
 
 function offerGroups(o: SupplierOffer, snapshotByHost: Map<string, SupplierSiteSnapshot>): string[] {
   return snapshotByHost.get(supplierWebsiteHost(o.websiteUrl))?.categories ?? [];
-}
-
-// Товарная группа справочника, которой в SUPPLIER_CATALOG помечена сама
-// категория «Универсальные поставщики» — читаем из данных, а не дублируем
-// строкой, чтобы название группы не могло разъехаться в двух местах.
-const HYPERMARKET_GROUP = SUPPLIER_CATALOG.find((h) => isUniversalRequest({ title: h.name }))?.categories[0]?.supplyGroups[0] ?? '';
-
-function isUniversalOffer(
-  o: SupplierOffer,
-  requestTitleById: Map<string, string>,
-  snapshotByHost: Map<string, SupplierSiteSnapshot>,
-  universalRequest: SupplierRequest | null,
-): boolean {
-  const title = requestTitleById.get(o.requestId) ?? '';
-  const filedAsUniversal = universalRequest ? o.requestId === universalRequest.id : title.trim().toLowerCase() === UNIVERSAL_SUPPLIERS_TITLE.toLowerCase();
-  if (filedAsUniversal) return true;
-  return offerGroups(o, snapshotByHost).includes(HYPERMARKET_GROUP);
 }
 
 // Ярлык категории для строки поиска — «домашняя» (по названию строки
@@ -130,11 +115,6 @@ export function SupplierCatalog({
   );
 
   const requestTitleById = useMemo(() => new Map(requests.map((r) => [r.id, r.title])), [requests]);
-  const universalRequest = useMemo(() => requests.find((r) => isUniversalRequest(r)) ?? null, [requests]);
-  const universalOffers = useMemo(
-    () => countryOffers.filter((o) => isUniversalOffer(o, requestTitleById, snapshotByHost, universalRequest)),
-    [countryOffers, requestTitleById, snapshotByHost, universalRequest],
-  );
 
   const hubs = useMemo<HubStats[]>(() => {
     return SUPPLIER_CATALOG.map((hub) => {
@@ -142,33 +122,28 @@ export function SupplierCatalog({
       const categories = hub.categories.map((category) => {
         const groups = new Set(category.supplyGroups);
         const suppliers: SupplierOffer[] = [];
-        const bases: SupplierOffer[] = [];
         for (const o of countryOffers) {
           const title = requestTitleById.get(o.requestId) ?? '';
-          const isUniversal = isUniversalOffer(o, requestTitleById, snapshotByHost, universalRequest);
           // Категория присваивается по ЛЮБОМУ из двух признаков — по новому
           // или старому названию строки закупки (LEGACY_REQUEST_TITLES) ИЛИ
           // по товарной группе со снимка сайта. Оба источника равноправны.
+          // Гипермаркеты не исключение — у них просто обычно много групп
+          // сразу, поэтому они естественно попадают в несколько плиток.
           const titleMatch = findCatalogCategory(title) === category;
           const hasGroup = offerGroups(o, snapshotByHost).some((g) => groups.has(g));
           if (!titleMatch && !hasGroup) continue;
-          if (isUniversal) {
-            bases.push(o);
-            continue;
-          }
           suppliers.push(o);
           seen.add(o.id);
         }
         const byName = (a: SupplierOffer, b: SupplierOffer) => a.name.localeCompare(b.name, 'ru');
-        return { category, suppliers: suppliers.sort(byName), bases: bases.sort(byName) };
+        return { category, suppliers: suppliers.sort(byName) };
       });
       return { hub, categories, total: seen.size };
     });
-  }, [countryOffers, requestTitleById, snapshotByHost, universalRequest]);
+  }, [countryOffers, requestTitleById, snapshotByHost]);
 
   const currentHub = hubs.find((h) => h.hub.name === hubName) ?? null;
   const currentCategory = currentHub?.categories.find((c) => c.category.name === categoryName) ?? null;
-  const isUniversalHub = currentHub?.hub.categories.length === 1 && isUniversalRequest({ title: currentHub.hub.categories[0].name });
 
   // Поиск по имени поставщика — плоский результат по всему каталогу (в
   // рамках выбранной страны), поверх навигации по хабам/категориям, а не
@@ -198,7 +173,7 @@ export function SupplierCatalog({
       {currentHub && (
         <>
           <ChevronRight className="h-3.5 w-3.5 text-ink-faint" />
-          {currentCategory && !isUniversalHub ? (
+          {currentCategory ? (
             <button type="button" className="text-primary-hover hover:underline" onClick={() => { setCategoryName(null); setGroupFilter(null); }}>
               {currentHub.hub.name}
             </button>
@@ -207,7 +182,7 @@ export function SupplierCatalog({
           )}
         </>
       )}
-      {currentCategory && !isUniversalHub && (
+      {currentCategory && (
         <>
           <ChevronRight className="h-3.5 w-3.5 text-ink-faint" />
           <span className="text-ink">{currentCategory.category.name}</span>
@@ -272,27 +247,23 @@ export function SupplierCatalog({
       {/* Уровень 0: хабы */}
       {!currentHub && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {hubs.map((h) => {
-            const universal = h.hub.categories.length === 1 && isUniversalRequest({ title: h.hub.categories[0].name });
-            const count = universal ? universalOffers.length : h.total;
-            return (
-              <button
-                key={h.hub.name}
-                type="button"
-                onClick={() => openHub(h)}
-                className="flex min-h-[132px] flex-col justify-between gap-3 rounded-control border border-border bg-white/50 p-4 text-left transition hover:border-primary hover:bg-white/80"
-              >
-                <div className="flex flex-col gap-1">
-                  <span className="font-semibold text-ink">{h.hub.name}</span>
-                  <span className="line-clamp-2 text-xs text-ink-faint">{h.hub.description}</span>
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-semibold tabular-nums text-ink">{count}</span>
-                  <span className="text-xs text-ink-faint">{universal ? 'баз и гипермаркетов' : `${plural(count, 'компания', 'компании', 'компаний')} · ${h.hub.categories.length} ${plural(h.hub.categories.length, 'категория', 'категории', 'категорий')}`}</span>
-                </div>
-              </button>
-            );
-          })}
+          {hubs.map((h) => (
+            <button
+              key={h.hub.name}
+              type="button"
+              onClick={() => openHub(h)}
+              className="flex min-h-[132px] flex-col justify-between gap-3 rounded-control border border-border bg-white/50 p-4 text-left transition hover:border-primary hover:bg-white/80"
+            >
+              <div className="flex flex-col gap-1">
+                <span className="font-semibold text-ink">{h.hub.name}</span>
+                <span className="line-clamp-2 text-xs text-ink-faint">{h.hub.description}</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-semibold tabular-nums text-ink">{h.total}</span>
+                <span className="text-xs text-ink-faint">{plural(h.total, 'компания', 'компании', 'компаний')} · {h.hub.categories.length} {plural(h.hub.categories.length, 'категория', 'категории', 'категорий')}</span>
+              </div>
+            </button>
+          ))}
         </div>
       )}
 
@@ -320,7 +291,6 @@ export function SupplierCatalog({
                 </div>
                 <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm tabular-nums">
                   <span className="text-ink"><span className="text-xl font-semibold">{c.suppliers.length}</span> {plural(c.suppliers.length, 'поставщик', 'поставщика', 'поставщиков')}</span>
-                  <span className="text-ink-faint">баз +{c.bases.length}</span>
                   {c.suppliers.length === 0 && <Badge tone="warning">базу набирать</Badge>}
                 </div>
               </button>
@@ -333,8 +303,6 @@ export function SupplierCatalog({
       {currentCategory && (
         <CategoryView
           stats={currentCategory}
-          universal={!!isUniversalHub}
-          universalOffers={universalOffers}
           groupFilter={groupFilter}
           onGroupFilter={setGroupFilter}
           snapshotByHost={snapshotByHost}
@@ -349,16 +317,12 @@ export function SupplierCatalog({
 
 function CategoryView({
   stats,
-  universal,
-  universalOffers,
   groupFilter,
   onGroupFilter,
   snapshotByHost,
   onOpenDetail,
 }: {
   stats: CategoryStats;
-  universal: boolean;
-  universalOffers: SupplierOffer[];
   groupFilter: string | null;
   onGroupFilter: (g: string | null) => void;
   snapshotByHost: Map<string, SupplierSiteSnapshot>;
@@ -381,18 +345,8 @@ function CategoryView({
     </div>
   );
 
-  if (universal) {
-    return (
-      <div className="flex flex-col gap-2">
-        <p className="text-sm text-ink-muted">Базы и гипермаркеты, которые закрывают много групп сразу. В рассылку по категории подключаются отдельно.</p>
-        {universalOffers.length === 0 ? <p className="text-sm text-ink-faint">Пока никого.</p> : universalOffers.map((o) => row(o))}
-      </div>
-    );
-  }
-
   const suppliers = stats.suppliers.filter(matchesFilter);
-  const bases = stats.bases.filter(matchesFilter);
-  const empty = suppliers.length + bases.length === 0;
+  const empty = suppliers.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -429,13 +383,8 @@ function CategoryView({
       )}
 
       {suppliers.length > 0 && (
-        <Section title={`Поставщики (${suppliers.length})`} hint="По названию строки закупки или по товарной группе со снимка сайта — оба признака дают полноценное присвоение категории.">
+        <Section title={`Поставщики (${suppliers.length})`} hint="По названию строки закупки или по товарной группе со снимка сайта — оба признака дают полноценное присвоение категории. Гипермаркеты и базы не выделены отдельно — если везут эту группу, они здесь наравне с профильными.">
           {suppliers.map((o) => row(o))}
-        </Section>
-      )}
-      {bases.length > 0 && (
-        <Section title={`Базы и гипермаркеты (${bases.length})`} hint="Универсальные поставщики с этим товаром в каталоге.">
-          {bases.map((o) => row(o))}
         </Section>
       )}
     </div>
