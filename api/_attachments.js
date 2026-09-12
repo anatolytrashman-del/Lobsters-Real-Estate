@@ -162,9 +162,28 @@ function sanitizeFileName(name) {
 // имя остаётся только в поле fileName (то, что видит пользователь и что
 // уходит в заголовок скачивания) — так путь никогда не зависит от того, что
 // прислал отправитель письма.
-function fileExtension(fileName) {
+// 2026-09-12: у части писем Resend отдаёт вложение вообще без имени — в
+// базе такие лежат как файл "attachment" с расширением .bin (реальный
+// случай: письмо "HA: Счет по запросу грильято 100х100" — счёт есть,
+// распознаванию не достался, потому что по .bin непонятно, чем его
+// открывать). content_type в метаданных при этом приходит нормальный,
+// поэтому расширение достраиваем из него.
+const EXT_BY_CONTENT_TYPE = {
+  'application/pdf': 'pdf',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+};
+
+function fileExtension(fileName, contentType) {
   const match = /\.([a-z0-9]+)$/i.exec(String(fileName || ''));
-  return match ? match[1].toLowerCase() : 'bin';
+  if (match) return match[1].toLowerCase();
+  const byType = EXT_BY_CONTENT_TYPE[String(contentType || '').split(';')[0].trim().toLowerCase()];
+  return byType ?? 'bin';
 }
 
 // Экспортирована — переиспользуется purchase-send-email.js для вложений
@@ -173,7 +192,8 @@ function fileExtension(fileName) {
 // входящих: тот же бакет, та же схема имени объекта (uuid+расширение,
 // человекочитаемое имя — только в fileName).
 export async function uploadAttachment(bytes, contentType, fileName) {
-  const path = `purchase-email-attachments/${randomUUID()}.${fileExtension(fileName)}`;
+  const ext = fileExtension(fileName, contentType);
+  const path = `purchase-email-attachments/${randomUUID()}.${ext}`;
   const resp = await fetch(`${process.env.SUPABASE_URL}/storage/v1/object/${ATTACHMENTS_BUCKET}/${path}`, {
     method: 'POST',
     headers: {
@@ -187,9 +207,13 @@ export async function uploadAttachment(bytes, contentType, fileName) {
     const text = await resp.text();
     throw new Error(`Не удалось загрузить вложение: ${text}`);
   }
+  // Имя, которое увидит человек, тоже дополняем расширением — иначе в
+  // переписке висит файл "attachment" без всякого намёка на то, что внутри,
+  // и распознавание по имени тоже ничего не решит.
+  const safeName = sanitizeFileName(fileName);
   return {
     url: `${process.env.SUPABASE_URL}/storage/v1/object/public/${ATTACHMENTS_BUCKET}/${path}`,
-    fileName: sanitizeFileName(fileName),
+    fileName: /\.[a-z0-9]+$/i.test(safeName) || ext === 'bin' ? safeName : `${safeName}.${ext}`,
   };
 }
 
@@ -246,9 +270,12 @@ export async function extractEmailAttachments(data) {
       // счёт" (см. api/_invoiceRecognition.js), не часть DocumentFile —
       // вызывающий код (purchase-email-webhook.js) сам решает, класть ли
       // это поле в files (там оно не нужно) или использовать отдельно.
-      const ext = uploaded.fileName.split('.').pop()?.toLowerCase();
-      const pageCount = ext === 'pdf' ? estimatePdfPageCount(bytes) : 1;
-      files.push({ ...uploaded, pageCount });
+      const uploadedExt = uploaded.fileName.split('.').pop()?.toLowerCase();
+      const pageCount = uploadedExt === 'pdf' ? estimatePdfPageCount(bytes) : 1;
+      // size — тоже только для выбора кандидата на распознавание (отсечь
+      // картинки из подписи отправителя, см. pickInvoiceCandidates), в
+      // DocumentFile письма не попадает.
+      files.push({ ...uploaded, pageCount, size: bytes.length });
     } catch (err) {
       console.error('Не удалось обработать вложение письма:', err);
     }

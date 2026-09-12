@@ -40,7 +40,8 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { extractEmailAttachments, fetchReceivedEmailBody } from './_attachments.js';
-import { recognizeInvoice, INVOICE_MAX_PAGES } from './_invoiceRecognition.js';
+import { recognizeInvoiceFromAttachments } from './_invoiceRecognition.js';
+import { applyRecognizedInvoice } from './_invoiceApply.js';
 import { saveReliabilityIfNew } from './_checko.js';
 
 export const config = {
@@ -251,6 +252,22 @@ async function insertEmailRow(table, payload) {
   return rows[0];
 }
 
+async function updateEmailExtraction(table, emailId, extraction) {
+  const resp = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${table}?id=eq.${emailId}`, {
+    method: 'PATCH',
+    headers: {
+      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify({ extraction }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Не удалось обновить распознавание письма: ${await resp.text()}`);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -338,33 +355,30 @@ export default async function handler(req, res) {
     // (offerId), не закупок. Владелец, 2026-09-03: "система [должна]
     // понимать, что перед ней счёт, а не каталог на 40 страниц, и
     // распознавала данные сама... Альмира только сверяла и подтверждала".
-    // Берём первое вложение, похожее на счёт (PDF/картинка, разумное число
-    // страниц) — многостраничные каталоги до модели не долетают вовсе,
-    // деньги не тратятся. Сбой распознавания не должен ронять сохранение
-    // самого письма — оборачиваем в try/catch, extraction просто остаётся
-    // null (Альмира всегда может распознать вручную кнопкой в предпросмотре).
+    //
+    // 2026-09-12: раньше здесь брался ПЕРВЫЙ подходящий файл письма — на
+    // живых письмах этим файлом регулярно оказывалась картинка из подписи
+    // отправителя, и настоящий счёт рядом не распознавался вовсе. Теперь
+    // выбор и перебор кандидатов внутри recognizeInvoiceFromAttachments
+    // (см. pickInvoiceCandidates) — служебные картинки отсеиваются, счёт
+    // ищется по всем вложениям. Многостраничные каталоги до модели
+    // по-прежнему не долетают, деньги не тратятся.
+    //
+    // Сбой распознавания не должен ронять сохранение самого письма —
+    // оборачиваем в try/catch, extraction просто остаётся null.
     let extraction = null;
+    let recognizedInvoice = null;
     if (offerId) {
-      // Владелец, 2026-09-09: реальный счёт (.docx с разбивкой на позиции)
-      // раньше не подходил под этот фильтр вовсе — .docx не имеет
-      // "страниц" в том смысле, что PDF (нет байтового способа их
-      // посчитать), но и не бывает 40-страничным каталогом в том же
-      // смысле — pageCount у него всегда 1 (см. _attachments.js), поэтому
-      // порог INVOICE_MAX_PAGES ему не грозит.
-      const candidate = attachments.find(
-        (a) => /\.(pdf|png|jpe?g|webp|gif|docx)$/i.test(a.fileName) && a.pageCount != null && a.pageCount <= INVOICE_MAX_PAGES,
-      );
-      if (candidate) {
-        try {
-          const recognized = await recognizeInvoice(candidate.url, candidate.fileName);
-          if (recognized.isInvoice) {
-            extraction = {
-              status: 'pending',
-              ...recognized,
-              sourceFile: { url: candidate.url, fileName: candidate.fileName },
-              recognizedAt: new Date().toISOString(),
-            };
-          }
+      try {
+        recognizedInvoice = await recognizeInvoiceFromAttachments(attachments);
+        if (recognizedInvoice) {
+          const { recognized, candidate } = recognizedInvoice;
+          extraction = {
+            status: 'pending',
+            ...recognized,
+            sourceFile: { url: candidate.url, fileName: candidate.fileName },
+            recognizedAt: new Date().toISOString(),
+          };
           // Владелец, 2026-09-12: "как только поставщик присылает счет в
           // первый раз с новым ИНН, проверка должна автоматически
           // запускаться и выводить на карточке поставщика" — запускаем
@@ -377,12 +391,10 @@ export default async function handler(req, res) {
           // сохранять ещё до того, как закупщица примет счёт: строка в
           // supplier_reliability ни на что не влияет, пока у предложения не
           // появится тот же inn.
-          if (recognized.isInvoice) {
-            await saveReliabilityIfNew(recognized.supplierInn);
-          }
-        } catch (err) {
-          console.error('Не удалось автораспознать вложение как счёт (не критично, письмо всё равно сохранится):', err);
+          await saveReliabilityIfNew(recognized.supplierInn);
         }
+      } catch (err) {
+        console.error('Не удалось автораспознать вложение как счёт (не критично, письмо всё равно сохранится):', err);
       }
     }
 
@@ -409,6 +421,40 @@ export default async function handler(req, res) {
           extraction,
           resend_message_id: data.email_id ?? data.id ?? null,
         });
+
+    // Запись распознанного счёта в карточку поставщика/заявку — СРАЗУ, не
+    // дожидаясь, пока закупщица откроет письмо и нажмёт "Подтвердить"
+    // (владелец, 2026-09-12: "мне нужно автоматическое распознавание счетов
+    // и запись в базу ещё до открытия письма нами вручную"). Делается уже
+    // ПОСЛЕ вставки письма — строке КП нужен его id (source_email_id), да и
+    // порядок такой безопаснее: если запись в карточку сорвётся, письмо со
+    // своим распознаванием всё равно на месте и останется старый ручной
+    // путь (extraction.status:'pending' — кнопка в переписке).
+    if (recognizedInvoice && row?.id) {
+      try {
+        const applied = await applyRecognizedInvoice({
+          emailId: row.id,
+          offerId,
+          orderId,
+          subject,
+          recognized: recognizedInvoice.recognized,
+          sourceFile: extraction.sourceFile,
+        });
+        // status:'confirmed' — данные реально в базе, ровно то же состояние,
+        // что после ручного подтверждения (старый фронт, пока релиз не
+        // опубликован, поймёт его правильно и покажет "Данные в базе").
+        // appliedAutomatically отличает автозапись от ручной: только для неё
+        // в переписке показывается карточка "записано автоматически" с
+        // возможностью сверить позиции и откатить.
+        extraction = { ...extraction, status: 'confirmed', appliedAutomatically: true, applied };
+        // Только supplier_offer_emails: распознавание запускается лишь при
+        // offerId (см. выше), в переписке по закупкам счетов не разбираем.
+        await updateEmailExtraction('supplier_offer_emails', row.id, extraction);
+        row.extraction = extraction;
+      } catch (err) {
+        console.error('Не удалось записать распознанный счёт в карточку (письмо сохранено, останется ручное подтверждение):', err);
+      }
+    }
 
     if (offerId) {
       try {

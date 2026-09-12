@@ -3032,7 +3032,7 @@ export function Suppliers() {
             onReliabilityChecked={(r) => setReliability((prev) => [...prev.filter((x) => x.inn !== r.inn), r])}
             reliabilityByInn={reliabilityByInn}
             onOrdersChange={setSupplierOrders}
-            onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
+            onQuotesChange={setSupplierQuotes}
             onEmailUpdated={handleSupplierEmailUpdated}
           />
         </div>
@@ -3515,7 +3515,7 @@ export function Suppliers() {
               onLedgersChange={setMaterialLedgers}
               onOfferUpdated={handleSupplierOfferUpdated}
               onEmailUpdated={handleSupplierEmailUpdated}
-              onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
+              onQuotesChange={setSupplierQuotes}
               onClose={() => setEmailOfferId(null)}
             />
           );
@@ -3706,7 +3706,7 @@ function OfferEmailModal({
   onReliabilityChecked,
   reliabilityByInn,
   onEmailUpdated,
-  onQuoteAdded,
+  onQuotesChange,
   onClose,
 }: {
   offer: SupplierOffer;
@@ -3725,7 +3725,7 @@ function OfferEmailModal({
   onReliabilityChecked: (r: SupplierReliability) => void;
   reliabilityByInn: Map<string, SupplierReliability>;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
-  onQuoteAdded: (quote: SupplierQuote) => void;
+  onQuotesChange: (update: (prev: SupplierQuote[]) => SupplierQuote[]) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -3761,7 +3761,7 @@ function OfferEmailModal({
         reliabilityByInn={reliabilityByInn}
         onOrderUpdated={() => {}}
         onEmailUpdated={onEmailUpdated}
-        onQuoteAdded={onQuoteAdded}
+        onQuotesChange={onQuotesChange}
       />
     </Modal>
   );
