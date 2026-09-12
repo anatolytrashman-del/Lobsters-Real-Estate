@@ -239,8 +239,19 @@ export function riskLevelOf(risks) {
 // скорее о том, что он взыскивает свои деньги, и в светофор их тащить
 // нельзя (иначе активный взыскатель выглядел бы хуже пассивной пустышки).
 export async function checkReliability(inn) {
+  // ИП живут в ОТДЕЛЬНОМ методе Checko. Реальный баг (2026-09-12): по ИНН
+  // 772743901348 (ИП, 12 цифр) метод /company честно отвечает "не найдено
+  // ни одной организации", и проверка рисовала красный флаг "нет в
+  // ЕГРЮЛ/ЕГРИП" действующему ИП на УСН. Различаем по длине ИНН: 12 цифр —
+  // ИП (/entrepreneur), 10 — юрлицо (/company).
+  //
+  // Состав полей у ИП беднее: нет ЮрАдрес (вместо него Регион/НасПункт),
+  // УстКап, Руковод, СЧР, ДисквЛица, НелегалФин и Санкций. computeRisks это
+  // переживает — отсутствующее поле просто не даёт флага, а не считается
+  // "всё чисто" (см. комментарий там).
+  const isEntrepreneur = String(inn).length === 12;
   const [companyResp, casesResp, enforcementsResp] = await Promise.all([
-    checkoGet('company', { inn }),
+    checkoGet(isEntrepreneur ? 'entrepreneur' : 'company', { inn }),
     checkoGet('legal-cases', { inn, role: 'defendant', limit: LEGAL_CASES_LIMIT, sort: '-date' }),
     checkoGet('enforcements', { inn }),
   ]);
@@ -256,7 +267,13 @@ export async function checkReliability(inn) {
       company: null,
       legalCases: null,
       enforcements: null,
-      risks: [{ level: 'danger', title: 'Не найдено в ЕГРЮЛ/ЕГРИП', detail: `По ИНН ${inn} организация не найдена` }],
+      risks: [
+        {
+          level: 'danger',
+          title: 'Не найдено в ЕГРЮЛ/ЕГРИП',
+          detail: `По ИНН ${inn} ${isEntrepreneur ? 'ИП' : 'организация'} не найден${isEntrepreneur ? '' : 'а'}`,
+        },
+      ],
       riskLevel: 'danger',
     };
   }
@@ -274,4 +291,55 @@ export async function checkReliability(inn) {
     risks,
     riskLevel: riskLevelOf(risks),
   };
+}
+
+// Сохранить проверку по ИНН, если её ещё не делали. Общий путь для всех
+// мест, где в системе впервые появляется ИНН поставщика: входящее письмо со
+// счётом (purchase-email-webhook.js) и ручная загрузка счёта в форму
+// (supplier-web-search.js). Владелец, 2026-09-12: "как только поставщик
+// присылает счет в первый раз с новым ИНН, проверка должна автоматически
+// запускаться и выводить на карточке поставщика".
+//
+// Всё внутри обёрнуто так, чтобы НИКОГДА не уронить вызывающий код: приём
+// письма и распознавание счёта — основная работа, терять её из-за
+// недоступности стороннего сервиса недопустимо. Любой сбой — строка в логе.
+//
+// Повторно то же юрлицо не проверяем ("в первый раз с новым ИНН"), да и
+// суточный лимит запросов к Checko не резиновый. Перепроверить вручную
+// всегда можно кнопкой в карточке поставщика.
+export async function saveReliabilityIfNew(inn) {
+  try {
+    if (!inn || invalidInnReason(inn)) return;
+    if (checkoKeyProblem()) return;
+    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return;
+
+    const auth = {
+      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+    };
+    const existing = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/supplier_reliability?inn=eq.${encodeURIComponent(inn)}&select=inn`,
+      { headers: auth },
+    );
+    if (existing.ok && (await existing.json()).length > 0) return;
+
+    const result = await checkReliability(inn);
+    await fetch(`${process.env.SUPABASE_URL}/rest/v1/supplier_reliability?on_conflict=inn`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' },
+      body: JSON.stringify({
+        inn,
+        found: result.found,
+        risk_level: result.riskLevel,
+        risks: result.risks,
+        company: result.company,
+        legal_cases: result.legalCases,
+        enforcements: result.enforcements,
+        error: null,
+        checked_at: new Date().toISOString(),
+      }),
+    });
+  } catch (err) {
+    console.error('Автоматическая проверка благонадёжности по ИНН не удалась (не критично):', err);
+  }
 }
