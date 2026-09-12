@@ -8,6 +8,7 @@ import type { MaterialLedger } from '../../data/materialLedgers';
 import { insertMaterialLedger, updateMaterialLedger, deleteMaterialLedger } from '../../lib/materialLedgersApi';
 import type { PurchaseItem } from '../../data/purchases';
 import { buildMaterialLedgerXlsx, type LedgerAttachment } from '../../lib/materialLedgerXlsx';
+import { isMasterLedgerId } from '../../lib/masterLedger';
 
 // Ключ, по которому чекбокс чек-листа связывается с уже добавленной позицией
 // ведомости. Раньше сравнивали по name — владелец, 2026-09-11: "если две
@@ -209,6 +210,15 @@ export function MaterialLedgerModal({
 
   const canSubmit = name.trim().length > 0 && items.length > 0;
 
+  // Мастер-ведомость (владелец, 2026-09-12) приходит сюда в общем списке
+  // ledgers, но строки в базе у неё нет — она собирается из остальных
+  // ведомостей (см. lib/masterLedger.ts). Поэтому "Сохранить"/"Удалить" для
+  // неё скрыты (updateMaterialLedger/deleteMaterialLedger по её id просто не
+  // нашли бы строку), а "Прикрепить" работает как у любой другой: файл
+  // собирается из локальных items, которые перед отправкой можно поправить —
+  // правка останется только в этом письме и источники не тронет.
+  const masterSelected = isMasterLedgerId(selectedId);
+
   async function handleSaveLedger() {
     if (!canSubmit || saving) return;
     setSaving(true);
@@ -263,7 +273,13 @@ export function MaterialLedgerModal({
     }
   }
 
-  const modalTitle = hideLedgerPicker ? (initialLedgerId ? 'Редактирование ведомости' : 'Новая ведомость') : 'Ведомость материалов';
+  const modalTitle = masterSelected
+    ? 'Мастер-ведомость'
+    : hideLedgerPicker
+      ? initialLedgerId
+        ? 'Редактирование ведомости'
+        : 'Новая ведомость'
+      : 'Ведомость материалов';
 
   return (
     <Modal open onClose={onClose} title={modalTitle}>
@@ -393,14 +409,14 @@ export function MaterialLedgerModal({
 
         <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
           <div>
-            {!readyOnly && selectedId && (
+            {!readyOnly && selectedId && !masterSelected && (
               <Button type="button" variant="ghost" icon={<Trash2 className="h-4 w-4" />} onClick={handleDeleteLedger} disabled={deleting}>
                 {deleting ? 'Удаляем...' : 'Удалить ведомость'}
               </Button>
             )}
           </div>
           <div className="flex gap-2">
-            {!readyOnly && (
+            {!readyOnly && !masterSelected && (
               <Button type="button" variant="secondary" icon={<Save className="h-4 w-4" />} onClick={handleSaveLedger} disabled={!canSubmit || saving}>
                 {saving ? 'Сохраняем...' : 'Сохранить как ведомость'}
               </Button>

@@ -16,7 +16,7 @@ import { supplierOfferEmailAddress, countryFlag, SUPPLIER_COUNTRIES } from '../.
 import { updateSupplierOffer } from '../../lib/supplierResearchApi';
 import type { SupplierOrder } from '../../data/supplierOrders';
 import { insertSupplierOrder, updateSupplierOrder } from '../../lib/supplierOrdersApi';
-import type { SupplierOfferEmail, EmailExtractionItem } from '../../data/supplierOfferEmails';
+import type { SupplierOfferEmail, EmailExtractionItem, EmailExtraction, EmailExtractionApplied } from '../../data/supplierOfferEmails';
 import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
 import { emailSendStatusLabel } from '../../data/emailSendStatus';
 import { sendSupplierOfferEmail, setSupplierOfferEmailExtractionStatus } from '../../lib/supplierOfferEmailsApi';
@@ -34,7 +34,7 @@ import { DocumentPreviewModal, isPreviewable, type PreviewFile } from '../docume
 import { currencies, type Currency } from '../../data/transactions';
 import type { PurchaseItem } from '../../data/purchases';
 import type { SupplierQuote } from '../../data/supplierQuotes';
-import { insertSupplierQuote } from '../../lib/supplierQuotesApi';
+import { insertSupplierQuote, updateSupplierQuoteItems, deleteSupplierQuote } from '../../lib/supplierQuotesApi';
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
@@ -245,6 +245,85 @@ async function saveExtractionAsQuote(
   });
 }
 
+// Счёт, который система уже САМА записала в базу при приёме письма
+// (api/_invoiceApply.js) — владелец, 2026-09-12: "мне нужно автоматическое
+// распознавание счетов и запись в базу ещё до открытия письма нами
+// вручную". Отличается от обычного подтверждённого вручную тем, что
+// человек его ещё не видел: по нему остаётся сверить позиции со сметой, а
+// если модель ошиблась — откатить. Снимок applied пишет сервер; у записей
+// старше этой правки его нет, поэтому проверяем именно его наличие, а не
+// один флаг.
+function autoApplied(e: SupplierOfferEmail): EmailExtractionApplied | null {
+  const extraction = e.extraction;
+  if (!extraction || extraction.status !== 'confirmed' || !extraction.appliedAutomatically) return null;
+  return extraction.applied ?? null;
+}
+
+// Проставляет сопоставление со сметой позициям, которые автозапись уже
+// положила в карточку (или в КП): по applied.itemIds понятно, какие именно
+// строки пришли из ЭТОГО счёта — остальные (из других счетов или
+// добавленные раньше) не трогаем. Индекс позиции счёта = индекс в itemIds,
+// в том же порядке они и записывались (см. toPurchaseItems в
+// api/_invoiceApply.js).
+function withMaterialMatches(
+  items: PurchaseItem[],
+  applied: EmailExtractionApplied,
+  materialMatches: Record<number, MaterialMatch>,
+): PurchaseItem[] {
+  return items.map((item) => {
+    const idx = applied.itemIds.indexOf(item.id);
+    if (idx === -1) return item;
+    const match = materialMatches[idx];
+    const unitPrice = match?.unitPrice ? Number(match.unitPrice) : NaN;
+    return {
+      ...item,
+      sourceMaterialId: match?.materialId || null,
+      unitPrice: Number.isFinite(unitPrice) ? unitPrice : null,
+    };
+  });
+}
+
+// Откат автозаписи — ровно в том объёме, в каком она была сделана:
+// возвращаются прежние цена/валюта/ИНН, убираются добавленные ею позиции и
+// файл (если файл прикрепила именно она — fileAdded). Всё, что закупщица
+// успела добавить в карточку сама, остаётся на месте.
+function revertAppliedOnOffer(offer: SupplierOffer, applied: EmailExtractionApplied): Promise<SupplierOffer> {
+  return updateSupplierOffer(offer.id, {
+    requestId: offer.requestId,
+    name: offer.name,
+    contact: offer.contact,
+    contactMethod: offer.contactMethod,
+    email: offer.email,
+    managerName: offer.managerName,
+    country: offer.country,
+    websiteUrl: offer.websiteUrl,
+    listingUrl: offer.listingUrl,
+    contactSource: offer.contactSource,
+    messengers: offer.messengers,
+    catalogModelName: offer.catalogModelName,
+    catalogModelPhoto: offer.catalogModelPhoto,
+    price: applied.previous.price ?? 0,
+    currency: isValidCurrency(applied.previous.currency) ? applied.previous.currency : offer.currency,
+    items: offer.items.filter((i) => !applied.itemIds.includes(i.id)),
+    files: applied.fileAdded && applied.fileUrl ? offer.files.filter((f) => f.url !== applied.fileUrl) : offer.files,
+    verified: offer.verified,
+    inn: applied.previous.inn,
+  });
+}
+
+function revertAppliedOnOrder(order: SupplierOrder, applied: EmailExtractionApplied): Promise<SupplierOrder> {
+  return updateSupplierOrder(order.id, {
+    title: order.title,
+    communicationStatus: order.communicationStatus,
+    price: applied.previous.price ?? 0,
+    currency: isValidCurrency(applied.previous.currency) ? applied.previous.currency : order.currency,
+    deadline: order.deadline,
+    requirements: order.requirements,
+    items: order.items.filter((i) => !applied.itemIds.includes(i.id)),
+    files: applied.fileAdded && applied.fileUrl ? order.files.filter((f) => f.url !== applied.fileUrl) : order.files,
+  });
+}
+
 async function applyExtractionToOffer(
   offer: SupplierOffer,
   extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[]; supplierInn?: string | null },
@@ -401,7 +480,7 @@ export function EmailThread({
   onReliabilityChecked,
   onOrderUpdated,
   onEmailUpdated,
-  onQuoteAdded,
+  onQuotesChange,
 }: {
   offer: SupplierOffer;
   // Владелец, 2026-09-03: "1 заявка на поставку — одна ветка" — null здесь
@@ -428,7 +507,7 @@ export function EmailThread({
   reliabilityByInn: Map<string, SupplierReliability>;
   onOrderUpdated: (order: SupplierOrder) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
-  onQuoteAdded: (quote: SupplierQuote) => void;
+  onQuotesChange: (update: (prev: SupplierQuote[]) => SupplierQuote[]) => void;
 }) {
   // Письма именно текущего треда — основной переписки (order=null) или
   // конкретной заявки. e.orderId null и undefined тут не разводим, в базе
@@ -636,8 +715,15 @@ export function EmailThread({
   // sourceFile — так футер понимает, что показывать, независимо от того,
   // как открыт предпросмотр (кнопка на карточке или обычный клик по
   // вложению).
+  // 2026-09-12: сюда же попадает и счёт, который система записала в базу
+  // сама (autoApplied) — у него в футере не "подтвердить", а "сохранить
+  // сопоставление со сметой" и откат, но список позиций и сам документ
+  // показываются точно так же.
   const previewExtractionEmail = previewFile
-    ? threadEmails.find((e) => e.extraction?.status === 'pending' && e.extraction.sourceFile?.url === previewFile.url) ?? null
+    ? threadEmails.find(
+        (e) =>
+          (e.extraction?.status === 'pending' || autoApplied(e)) && e.extraction?.sourceFile?.url === previewFile.url,
+      ) ?? null
     : null;
 
   // Заранее подставляем очевидные совпадения (suggestMaterialMatch), но
@@ -651,8 +737,19 @@ export function EmailThread({
       setMaterialMatches({});
       return;
     }
+    // У автозаписанного счёта позиции уже лежат в карточке — если закупщица
+    // их когда-то сверила, показываем СОХРАНЁННОЕ сопоставление, а не
+    // подсказку заново (иначе повторное открытие счёта молча предлагало бы
+    // откатить её ручной выбор).
+    const applied = autoApplied(previewExtractionEmail);
+    const storedItems = applied ? (applied.target === 'order' ? (order?.items ?? []) : offer.items) : [];
     const initial: Record<number, MaterialMatch> = {};
     previewExtractionEmail.extraction.items.forEach((it, idx) => {
+      const stored = applied ? storedItems.find((i) => i.id === applied.itemIds[idx]) : undefined;
+      if (stored?.sourceMaterialId) {
+        initial[idx] = { materialId: stored.sourceMaterialId, unitPrice: stored.unitPrice != null ? String(stored.unitPrice) : '' };
+        return;
+      }
       const suggestion = suggestMaterialMatch(it.name, allMaterials);
       if (suggestion) initial[idx] = { materialId: suggestion, unitPrice: computeUnitPriceGuess(it, suggestion, allMaterials) };
     });
@@ -686,16 +783,15 @@ export function EmailThread({
         if (updated.inn && updated.inn !== offer.inn) {
           checkSupplierReliability(updated.inn).then(onReliabilityChecked).catch(() => {});
         }
-        onQuoteAdded(
-          await saveExtractionAsQuote(
-            offer.id,
-            e,
-            e.extraction,
-            extractionItemsToPurchaseItems(e.extraction.items, materialMatches),
-            e.extraction.sourceFile ?? null,
-            updated.currency,
-          ),
+        const quote = await saveExtractionAsQuote(
+          offer.id,
+          e,
+          e.extraction,
+          extractionItemsToPurchaseItems(e.extraction.items, materialMatches),
+          e.extraction.sourceFile ?? null,
+          updated.currency,
         );
+        onQuotesChange((prev) => [...prev, quote]);
       }
       await setSupplierOfferEmailExtractionStatus(e.id, e.extraction, 'confirmed');
       onEmailUpdated({ ...e, extraction: { ...e.extraction, status: 'confirmed' } });
@@ -710,6 +806,117 @@ export function EmailThread({
       closePreview();
     } catch (err) {
       setExtractionError(errorMessage(err, 'Не удалось применить распознанные данные'));
+    } finally {
+      setApplyingExtraction(false);
+    }
+  }
+
+  // Сверка уже записанного счёта со сметой — второй, необязательный шаг
+  // автозаписи: цена и позиции в базе с момента приёма письма, но какой
+  // строке сметы соответствует "Профиль h30 оцинк." и сколько литров в
+  // банке, знает только человек (владелец, 2026-09-04: "давай сверять
+  // вручную"). Пишем сопоставление и в карточку, и в саму строку КП —
+  // сравнение цен по позициям читает и то, и другое.
+  async function handleSaveMaterialMatches(e: SupplierOfferEmail) {
+    const applied = autoApplied(e);
+    if (!applied || applyingExtraction) return;
+    setApplyingExtraction(true);
+    setExtractionError(null);
+    try {
+      if (order && applied.target === 'order') {
+        onOrderUpdated(
+          await updateSupplierOrder(order.id, {
+            title: order.title,
+            communicationStatus: order.communicationStatus,
+            price: order.price,
+            currency: order.currency,
+            deadline: order.deadline,
+            requirements: order.requirements,
+            items: withMaterialMatches(order.items, applied, materialMatches),
+            files: order.files,
+          }),
+        );
+      } else {
+        onOfferUpdated(
+          await updateSupplierOffer(offer.id, {
+            requestId: offer.requestId,
+            name: offer.name,
+            contact: offer.contact,
+            contactMethod: offer.contactMethod,
+            email: offer.email,
+            managerName: offer.managerName,
+            country: offer.country,
+            websiteUrl: offer.websiteUrl,
+            listingUrl: offer.listingUrl,
+            contactSource: offer.contactSource,
+            messengers: offer.messengers,
+            catalogModelName: offer.catalogModelName,
+            catalogModelPhoto: offer.catalogModelPhoto,
+            price: offer.price,
+            currency: offer.currency,
+            items: withMaterialMatches(offer.items, applied, materialMatches),
+            files: offer.files,
+            verified: offer.verified,
+            inn: offer.inn,
+          }),
+        );
+      }
+      // Позиции строки КП — те же самые объекты с теми же id, что легли в
+      // карточку (их пишет одним списком api/_invoiceApply.js), поэтому
+      // собираем их из карточки по applied.itemIds, а не тянем КП отдельным
+      // запросом: в переписке объекта КП нет.
+      if (applied.quoteId) {
+        const quoteId = applied.quoteId;
+        const quoteItems = withMaterialMatches(
+          applied.itemIds
+            .map((id) => offer.items.find((i) => i.id === id))
+            .filter((i): i is PurchaseItem => !!i),
+          applied,
+          materialMatches,
+        );
+        await updateSupplierQuoteItems(quoteId, quoteItems);
+        onQuotesChange((prev) => prev.map((q) => (q.id === quoteId ? { ...q, items: quoteItems } : q)));
+      }
+      // Сверка счёта — та же работа закупщицы, что и прежнее ручное
+      // подтверждение, и считается в "Метриках" тем же событием (владелец,
+      // 2026-09-10: до этого самый частый её путь не логировался вовсе).
+      logActivity('supplier_invoice_confirmed');
+      closePreview();
+    } catch (err) {
+      setExtractionError(errorMessage(err, 'Не удалось сохранить сопоставление позиций'));
+    } finally {
+      setApplyingExtraction(false);
+    }
+  }
+
+  // "Это не счёт" для автозаписанного распознавания — не просто пометка, а
+  // откат записи: система сработала без человека, значит и убрать за собой
+  // должна полностью (иначе ошибочно распознанная презентация навсегда
+  // оставит в сравнении цен чужую сумму).
+  async function handleUndoAutoExtraction(e: SupplierOfferEmail) {
+    const applied = autoApplied(e);
+    const extraction = e.extraction;
+    if (!applied || !extraction || applyingExtraction) return;
+    if (!window.confirm('Убрать распознанный счёт из базы? Цена, позиции и файл, записанные из этого письма, будут удалены из карточки, прежние значения вернутся.')) return;
+    setApplyingExtraction(true);
+    setExtractionError(null);
+    try {
+      if (applied.quoteId) {
+        const quoteId = applied.quoteId;
+        await deleteSupplierQuote(quoteId);
+        onQuotesChange((prev) => prev.filter((q) => q.id !== quoteId));
+      }
+      if (order && applied.target === 'order') {
+        onOrderUpdated(await revertAppliedOnOrder(order, applied));
+      } else {
+        onOfferUpdated(await revertAppliedOnOffer(offer, applied));
+      }
+      const dismissed: EmailExtraction = { ...extraction, status: 'dismissed', applied: null };
+      await setSupplierOfferEmailExtractionStatus(e.id, dismissed, 'dismissed');
+      onEmailUpdated({ ...e, extraction: dismissed });
+      closePreview();
+    } catch (err) {
+      setExtractionError(errorMessage(err, 'Не удалось убрать распознанный счёт из базы'));
     } finally {
       setApplyingExtraction(false);
     }
@@ -947,6 +1154,41 @@ export function EmailThread({
                     (см. previewExtractionEmail выше). Прямые кнопки здесь —
                     только запасной путь для писем без sourceFile (записи до
                     того, как это поле появилось) — посмотреть файл негде. */}
+                {/* Счёт, записанный системой автоматически (владелец,
+                    2026-09-12: "мне нужно автоматическое распознавание
+                    счетов и запись в базу ещё до открытия письма нами
+                    вручную") — тут уже нечего подтверждать, данные в базе с
+                    момента приёма письма. Остаётся необязательная сверка
+                    позиций со сметой (её система сделать за человека не
+                    может, см. handleSaveMaterialMatches) и откат, если
+                    счётом оказалось что-то другое. */}
+                {autoApplied(e) && e.extraction && (
+                  <div className="flex flex-col gap-2 rounded-control border border-success/40 bg-success/5 p-3 text-sm">
+                    <div className="flex items-center gap-1.5 font-semibold text-ink">
+                      <CheckCircle2 className="h-4 w-4 text-success" />
+                      Счёт распознан и записан в базу автоматически
+                    </div>
+                    <div className="text-ink">
+                      {e.extraction.price != null ? `${e.extraction.price} ${e.extraction.currency ?? ''}`.trim() : 'Сумма не распознана'}
+                      {e.extraction.items.length > 0 && ` · ${e.extraction.items.length} ${pluralPositions(e.extraction.items.length)}`}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {e.extraction.sourceFile && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          icon={<Eye className="h-4 w-4" />}
+                          onClick={() => openPreview(e.extraction!.sourceFile!)}
+                        >
+                          Сверить позиции со сметой
+                        </Button>
+                      )}
+                      <Button type="button" variant="ghost" onClick={() => handleUndoAutoExtraction(e)} disabled={applyingExtraction}>
+                        Это не счёт — убрать из базы
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 {e.extraction?.status === 'pending' && (
                   <div className="flex flex-col gap-2 rounded-control border border-border-strong bg-surface-muted p-3 text-sm">
                     <div className="flex items-center gap-1.5 font-semibold text-ink">
@@ -1376,24 +1618,56 @@ export function EmailThread({
               )}
 
               {extractionError && <p className="text-sm text-danger">{extractionError}</p>}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  icon={<CheckCircle2 className="h-4 w-4" />}
-                  onClick={() => handleConfirmAutoExtraction(previewExtractionEmail)}
-                  disabled={applyingExtraction}
-                >
-                  Подтвердить и заполнить карточку
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => handleDismissAutoExtraction(previewExtractionEmail)}
-                  disabled={applyingExtraction}
-                >
-                  Это не счёт
-                </Button>
-              </div>
+              {/* Автозаписанный счёт уже в базе — подтверждать нечего,
+                  сохраняется только сопоставление позиций со сметой.
+                  Старый путь (status:'pending') остаётся для писем, по
+                  которым автозапись не прошла: сервис распознавания был
+                  недоступен или запись в карточку сорвалась. */}
+              {autoApplied(previewExtractionEmail) ? (
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs text-ink-faint">
+                    Цена и позиции этого счёта записаны в карточку автоматически, когда письмо пришло. Сверка со сметой —
+                    необязательный шаг: без неё позиции просто не участвуют в сравнении цен по материалам.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      icon={<Save className="h-4 w-4" />}
+                      onClick={() => handleSaveMaterialMatches(previewExtractionEmail)}
+                      disabled={applyingExtraction}
+                    >
+                      Сохранить сопоставление
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => handleUndoAutoExtraction(previewExtractionEmail)}
+                      disabled={applyingExtraction}
+                    >
+                      Это не счёт — убрать из базы
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    icon={<CheckCircle2 className="h-4 w-4" />}
+                    onClick={() => handleConfirmAutoExtraction(previewExtractionEmail)}
+                    disabled={applyingExtraction}
+                  >
+                    Подтвердить и заполнить карточку
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => handleDismissAutoExtraction(previewExtractionEmail)}
+                    disabled={applyingExtraction}
+                  >
+                    Это не счёт
+                  </Button>
+                </div>
+              )}
             </div>
           )
         }
@@ -1463,7 +1737,7 @@ export function SupplierCorrespondenceTab({
   reliabilityByInn,
   onOrdersChange,
   onEmailUpdated,
-  onQuoteAdded,
+  onQuotesChange,
 }: {
   requests: SupplierRequest[];
   offers: SupplierOffer[];
@@ -1498,7 +1772,7 @@ export function SupplierCorrespondenceTab({
   reliabilityByInn: Map<string, SupplierReliability>;
   onOrdersChange: (orders: SupplierOrder[]) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
-  onQuoteAdded: (quote: SupplierQuote) => void;
+  onQuotesChange: (update: (prev: SupplierQuote[]) => SupplierQuote[]) => void;
 }) {
   // Владелец, 2026-09-04: "сидишь на странице конкретной переписки,
   // обновляешь — и всё слетело... кастомный урл даже на переписки с
@@ -1967,7 +2241,7 @@ export function SupplierCorrespondenceTab({
                 reliabilityByInn={reliabilityByInn}
                 onOrderUpdated={handleOrderUpdated}
                 onEmailUpdated={onEmailUpdated}
-                onQuoteAdded={onQuoteAdded}
+                onQuotesChange={onQuotesChange}
               />
             </div>
           )}

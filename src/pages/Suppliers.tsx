@@ -56,6 +56,7 @@ import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 import { fetchAllSupplierOfferEmails, markSupplierOfferEmailsRead } from '../lib/supplierOfferEmailsApi';
 import { EmailThread, SupplierCorrespondenceTab, countUnreadSupplierEmails } from '../components/suppliers/SupplierCorrespondenceTab';
 import { MaterialLedgerModal } from '../components/suppliers/MaterialLedgerModal';
+import { MasterLedgerCard } from '../components/suppliers/MasterLedgerCard';
 import { BulkSendModal } from '../components/suppliers/BulkSendModal';
 import { SupplierMergeModal, type SupplierMergePlan } from '../components/suppliers/SupplierMergeModal';
 import type { LedgerAttachment } from '../lib/materialLedgerXlsx';
@@ -2019,6 +2020,22 @@ export function Suppliers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [materialLedgers, estimates, objects]);
 
+  const masterLedgerForEstimate = useMemo(
+    () =>
+      ledgerEstimateId
+        ? materialLedgersWithMasters.find((l) => isMasterLedgerId(l.id) && l.estimateId === ledgerEstimateId) ?? null
+        : null,
+    [materialLedgersWithMasters, ledgerEstimateId],
+  );
+
+  // Наверх из модалки/переписки прилетает ВЕСЬ список, который туда отдали, —
+  // а отдаём мы его вместе с виртуальными мастерами. Без этого фильтра они
+  // попали бы в стейт настоящих ведомостей, начали бы дублироваться в
+  // списках и однажды уехали бы в updateMaterialLedger по несуществующему id.
+  function handleLedgersChange(next: MaterialLedger[]) {
+    setMaterialLedgers(next.filter((l) => !isMasterLedgerId(l.id)));
+  }
+
   const materialGroupOptions = useMemo(() => {
     const set = new Set<string>();
     (ledgerEstimate?.sections ?? []).forEach((s) => s.materials.forEach((m) => m.group && set.add(m.group)));
@@ -3015,6 +3032,19 @@ export function Suppliers() {
             {ledgerEstimateId && scopedMaterialLedgers.length === 0 && (
               <p className="text-sm text-ink-faint">Для этой сметы пока нет ни одной сохранённой ведомости.</p>
             )}
+            {/* Мастер-ведомость — первой строкой списка, отдельным
+                компонентом (MasterLedgerCard): она не хранится, а считается
+                из ведомостей ниже, поэтому у неё нет ни правки, ни удаления,
+                только просмотр. Появляется от ДВУХ ведомостей у сметы — при
+                одной это её же копия. */}
+            {masterLedgerForEstimate && (
+              <MasterLedgerCard
+                ledger={masterLedgerForEstimate}
+                sourceCount={scopedMaterialLedgers.length}
+                onOpen={() => setLedgerModalTarget(masterLedgerForEstimate.id)}
+              />
+            )}
+
             {scopedMaterialLedgers.length > 0 && (
               <div className="flex flex-col gap-2">
                 {scopedMaterialLedgers.map((l) => (
@@ -3181,7 +3211,7 @@ export function Suppliers() {
             orders={supplierOrders}
             emails={supplierEmails}
             templates={emailTemplates}
-            ledgers={materialLedgers}
+            ledgers={materialLedgersWithMasters}
             allMaterials={allEstimateMaterials}
             legalEntities={legalEntities}
             templatesModalOpen={templatesModalOpen}
@@ -3190,12 +3220,12 @@ export function Suppliers() {
             onEmailSent={handleSupplierEmailSent}
             onMarkRead={handleMarkSupplierEmailsRead}
             onTemplatesChange={setEmailTemplates}
-            onLedgersChange={setMaterialLedgers}
+            onLedgersChange={handleLedgersChange}
             onOfferUpdated={handleSupplierOfferUpdated}
             onReliabilityChecked={(r) => setReliability((prev) => [...prev.filter((x) => x.inn !== r.inn), r])}
             reliabilityByInn={reliabilityByInn}
             onOrdersChange={setSupplierOrders}
-            onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
+            onQuotesChange={setSupplierQuotes}
             onEmailUpdated={handleSupplierEmailUpdated}
           />
         </div>
@@ -3669,16 +3699,16 @@ export function Suppliers() {
               requests={requests}
               emails={supplierEmails.filter((e) => e.offerId === offer.id)}
               templates={emailTemplates}
-              ledgers={materialLedgers}
+              ledgers={materialLedgersWithMasters}
               allMaterials={allEstimateMaterials}
               legalEntities={legalEntities}
               onEmailSent={handleSupplierEmailSent}
               onMarkRead={handleMarkSupplierEmailsRead}
               onTemplateSaved={handleEmailTemplateSaved}
-              onLedgersChange={setMaterialLedgers}
+              onLedgersChange={handleLedgersChange}
               onOfferUpdated={handleSupplierOfferUpdated}
               onEmailUpdated={handleSupplierEmailUpdated}
-              onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
+              onQuotesChange={setSupplierQuotes}
               onClose={() => setEmailOfferId(null)}
             />
           );
@@ -3847,13 +3877,18 @@ export function Suppliers() {
         <MaterialLedgerModal
           open
           hideLedgerPicker
+          // Мастер-ведомость открывается только на просмотр (readyOnly):
+          // редактировать сводку бессмысленно — её состав задаётся
+          // ведомостями-источниками, а сохранить правку было бы некуда
+          // (своей строки в базе у неё нет).
+          readyOnly={ledgerModalTarget !== 'new' && isMasterLedgerId(ledgerModalTarget)}
           initialLedgerId={ledgerModalTarget === 'new' ? undefined : ledgerModalTarget}
           estimateId={ledgerEstimateId || null}
           requestItems={[]}
           allMaterials={ledgerEstimateChecklistMaterials}
-          ledgers={materialLedgers}
+          ledgers={materialLedgersWithMasters}
           onClose={() => setLedgerModalTarget(null)}
-          onLedgersChange={setMaterialLedgers}
+          onLedgersChange={handleLedgersChange}
         />
       )}
 
@@ -3863,9 +3898,9 @@ export function Suppliers() {
           readyOnly
           requestItems={[]}
           allMaterials={allEstimateMaterials}
-          ledgers={materialLedgers}
+          ledgers={materialLedgersWithMasters}
           onClose={() => setBulkLedgerPickerRequest(null)}
-          onLedgersChange={setMaterialLedgers}
+          onLedgersChange={handleLedgersChange}
           onAttach={(attachment) => {
             const request = bulkLedgerPickerRequest;
             setBulkLedgerPickerRequest(null);
@@ -3913,7 +3948,7 @@ function OfferEmailModal({
   onReliabilityChecked,
   reliabilityByInn,
   onEmailUpdated,
-  onQuoteAdded,
+  onQuotesChange,
   onClose,
 }: {
   offer: SupplierOffer;
@@ -3932,7 +3967,7 @@ function OfferEmailModal({
   onReliabilityChecked: (r: SupplierReliability) => void;
   reliabilityByInn: Map<string, SupplierReliability>;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
-  onQuoteAdded: (quote: SupplierQuote) => void;
+  onQuotesChange: (update: (prev: SupplierQuote[]) => SupplierQuote[]) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -3968,7 +4003,7 @@ function OfferEmailModal({
         reliabilityByInn={reliabilityByInn}
         onOrderUpdated={() => {}}
         onEmailUpdated={onEmailUpdated}
-        onQuoteAdded={onQuoteAdded}
+        onQuotesChange={onQuotesChange}
       />
     </Modal>
   );
