@@ -2584,6 +2584,7 @@ export function Suppliers() {
           email: offerForm.email.trim(),
           websiteUrl: offerForm.websiteUrl.trim(),
           inn: offerForm.inn ?? null,
+          country: offerForm.country,
         }),
       );
       if (twin) {

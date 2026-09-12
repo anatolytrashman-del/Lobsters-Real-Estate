@@ -452,7 +452,7 @@ export function supplierWebsiteHost(url: string): string {
   return host.includes('.') ? host : '';
 }
 
-export type SupplierIdentityFields = Pick<SupplierOffer, 'name' | 'email' | 'websiteUrl' | 'inn'>;
+export type SupplierIdentityFields = Pick<SupplierOffer, 'name' | 'email' | 'websiteUrl' | 'inn' | 'country'>;
 
 // Одна и та же компания в двух карточках? Полноценного идентификатора
 // поставщика в данных нет (ИНН появляется только после первого счёта),
@@ -471,6 +471,18 @@ export function isSameSupplier(a: SupplierIdentityFields, b: SupplierIdentityFie
   const hostA = supplierWebsiteHost(a.websiteUrl);
   const hostB = supplierWebsiteHost(b.websiteUrl);
   if (hostA && hostA === hostB && !MARKETPLACE_HOSTS.has(hostA)) return true;
+
+  // Совпадение ТОЛЬКО по названию — самый слабый признак, и на разных
+  // рынках он регулярно врёт: "ТЕХНОстрой" из Беларуси (tehnostroy.by,
+  // +375) и "ТехноСтрой" из России (tekno-stroy.ru, +7) — разные компании
+  // с одним названием, поймано на разборе живой базы 2026-09-12. Страна у
+  // поставщика — не косметика, по ней ведётся отдельная закупка, поэтому
+  // при разных странах одно название компанию не отождествляет. Пустая
+  // страна хотя бы у одной из карточек — не противоречие, сравниваем как
+  // раньше.
+  const countryA = a.country.trim();
+  const countryB = b.country.trim();
+  if (countryA && countryB && countryA !== countryB) return false;
 
   const nameA = normalizeSupplierName(a.name);
   const nameB = normalizeSupplierName(b.name);
