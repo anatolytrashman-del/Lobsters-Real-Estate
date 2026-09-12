@@ -3,3 +3,4 @@ dist
 *.local
 .env
 ui-audit-report
+.prerender-result.json

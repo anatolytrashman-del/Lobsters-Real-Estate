@@ -48,6 +48,14 @@
 // рендер, не быстрый (чтобы баг в этой логике никогда не стал тихой SEO-
 // регрессией).
 //
+// 2026-09-12 (вечер) — быстрый режим больше не сопоставляет имена чанков:
+// в копию с прода целиком подставляются stylesheet-ссылка и лоадер ТЕКУЩЕЙ
+// сборки из dist/index.html, результат проверяется по диску
+// (scripts/prerender-snapshot.mjs — там история трёх сломанных версий и
+// почему именно так; покрыто юнит-тестами). Итог быстрого режима пишется в
+// .prerender-result.json для generate-og-cards.mjs (обложки скопированных
+// страниц тоже берутся с прода, а не рисуются заново).
+//
 // 2026-09-12 — у полного режима появился ВТОРОЙ автоматический сигнал:
 // правка кода самих публичных страниц (отпечаток их исходников,
 // scripts/public-build-id.mjs, сверяется с живым продом — см.
@@ -65,9 +73,10 @@
 // даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { computePublicBuildId } from './public-build-id.mjs';
+import { adoptBuildAssets, extractBuildBlocks } from './prerender-snapshot.mjs';
 
 const ROOT_DIR = new URL('..', import.meta.url).pathname;
 const DIST_DIR = join(ROOT_DIR, 'dist');
@@ -648,147 +657,57 @@ async function publicCodeChangedSinceLive() {
   }
 }
 
-// Быстрый путь: вместо рендера — скачать уже готовый снапшот с прода как
-// есть. Валидным считаем только страницу с реальным <h1> (то же условие,
+// Быстрый путь: вместо рендера — скачать уже готовый снапшот с прода и
+// подставить в него ассеты ТЕКУЩЕЙ сборки (scripts/prerender-snapshot.mjs —
+// там же история трёх сломанных версий этой логики и почему теперь именно
+// так). Валидной считаем только страницу с реальным <h1> (то же условие,
 // что renderPath ждёт от headless-рендера) — «голый» SPA-шелл (например,
 // если путь на проде почему-то ещё не был пререндерен) не проходит, и
 // вызывающий код делает настоящий рендер именно для этого пути.
-// Имя входного чанка (assets/index-<hash>.js) в переданном HTML. Хэш в имени
-// считается от содержимого бандла, поэтому он меняется при ЛЮБОЙ правке кода
-// фронта.
-function entryAssetOf(html) {
-  const m = html.match(/assets\/index-[A-Za-z0-9_-]+\.js/);
-  return m ? m[0] : null;
+
+// Итог быстрого режима для следующего шага сборки
+// (scripts/generate-og-cards.mjs): какие пути скопированы с прода — для них
+// и OG-обложку можно взять с прода, а не рисовать браузером заново (это было
+// ~45 секунд на КАЖДОЙ сборке, половина всего быстрого билда). Лежит в корне
+// репозитория: не в dist/ (в деплой не попадает) и не в node_modules/.cache
+// (его Vercel восстанавливает между сборками — устаревший список был бы
+// опасен). Стирается в начале каждого прогона и читателем после чтения.
+const PRERENDER_RESULT_PATH = join(ROOT_DIR, '.prerender-result.json');
+
+// Блоки текущей сборки (stylesheet + лоадер) из dist/index.html — читаются
+// один раз, лениво (к этому моменту vite build и defer-entry-script.mjs уже
+// отработали). Бросает, если формат вывода сборки неожиданный — main()
+// в этом случае уходит в полный режим целиком, с внятной строкой в логе.
+let buildBlocksCache;
+function currentBuildBlocks() {
+  if (!buildBlocksCache) buildBlocksCache = extractBuildBlocks(readFileSync(join(DIST_DIR, 'index.html'), 'utf8'));
+  return buildBlocksCache;
 }
 
-// 2026-09-12 — ПЕРЕНАЦЕЛИВАНИЕ АССЕТОВ снапшота вместо отказа от него.
-// Предыстория: 2026-09-11 прод лёг после первого же быстрого деплоя с
-// правкой кода. Копия страницы с прода тащит с собой её ссылки на
-// `/assets/<чанк>-<хэш>.js`, а в НОВОЙ сборке хэши пересчитаны и файлов с
-// такими именами физически нет — SPA-рерайт vercel.json отдавал на них
-// index.html, браузер отказывался исполнять HTML как модуль, и все ~285
-// публичных страниц оставались статикой без приложения. Тогдашний фикс
-// («снапшот годится, только если ссылается на входной чанк ЭТОЙ сборки,
-// иначе честный рендер») закрыл симптом ценой самого быстрого режима: хэш
-// входного чанка меняется при ЛЮБОЙ правке фронта, поэтому быстрый путь
-// вырождался в полный практически на каждом деплое. Замеряно по Build Logs
-// сборки 2026-09-12 11:02: 284 из 285 путей отрендерены заново, скопирован
-// ноль, 9 минут пререндера на пуш, не тронувший ни одной публичной страницы
-// (весь остальной билд — 30 секунд). Это и есть «деплой висит по 20 минут».
-//
-// Настоящая разница между старым снапшотом и новой сборкой — ТОЛЬКО имена
-// файлов ассетов: пререндеренная разметка от хэшей не зависит. Поэтому
-// снапшот не выбрасываем, а переписываем в нём ссылки на имена текущей
-// сборки. Имя чанка у Vite — `<стем>-<хэш>.<ext>`, где стем (`index`,
-// `supabase`, `chevron-down`…) между сборками стабилен, меняется только хэш
-// — по стему и сопоставляем. Если хоть одна ссылка не сопоставилась (чанк
-// переименован/исчез, стем неоднозначен, dist/assets не читается) — снапшот
-// не чиним, а честно рендерим ИМЕННО ЭТОТ путь: молча оставить ссылку на
-// несуществующий файл нельзя, это ровно тот баг, от которого защищались.
-const ASSET_NAME_RE = /^(.+)-([A-Za-z0-9_-]+)\.(js|css)$/;
-const ASSET_REF_RE = /\/assets\/[A-Za-z0-9_.$@-]+\.(?:js|css)/g;
+const assetExistsInDist = (name) => existsSync(join(DIST_DIR, 'assets', name));
 
-// Стем → имя файла в ТЕКУЩЕЙ сборке (строится один раз, лениво — dist/assets
-// к этому моменту уже собран vite). Неоднозначные стемы выбрасываем совсем:
-// лучше лишний честный рендер, чем ссылка на чужой чанк.
-let currentAssetsByStemCache;
-function currentAssetsByStem() {
-  if (currentAssetsByStemCache) return currentAssetsByStemCache;
-  const byStem = new Map();
-  const ambiguous = new Set();
-  try {
-    for (const file of readdirSync(join(DIST_DIR, 'assets'))) {
-      const m = file.match(ASSET_NAME_RE);
-      if (!m) continue;
-      const stem = `${m[1]}.${m[3]}`;
-      if (byStem.has(stem)) ambiguous.add(stem);
-      byStem.set(stem, file);
-    }
-  } catch (err) {
-    console.warn('[prerender] dist/assets не прочитан — копии с прода отключены, рендерю честно:', err);
-  }
-  for (const stem of ambiguous) byStem.delete(stem);
-  currentAssetsByStemCache = byStem;
-  return byStem;
-}
-
-// Переписывает все /assets/... в HTML на имена текущей сборки.
-// html: null — сопоставить удалось не всё, вызывающий делает настоящий рендер.
-function retargetAssets(html) {
-  const byStem = currentAssetsByStem();
-  if (byStem.size === 0) return { html: null, missing: ['dist/assets недоступен'] };
-  const missing = new Set();
-  let changed = 0;
-  const out = html.replace(ASSET_REF_RE, (ref) => {
-    const m = ref.slice('/assets/'.length).match(ASSET_NAME_RE);
-    const current = m ? byStem.get(`${m[1]}.${m[3]}`) : undefined;
-    if (!current) {
-      missing.add(ref);
-      return ref;
-    }
-    if (`/assets/${current}` !== ref) changed++;
-    return `/assets/${current}`;
-  });
-  if (missing.size > 0) return { html: null, missing: [...missing] };
-  return { html: out, changed };
-}
-
-// Входной чанк ТЕКУЩЕЙ сборки (читается один раз, лениво — dist/index.html
-// к этому моменту уже собран vite).
-let currentEntryAssetCache;
-function currentEntryAsset() {
-  if (currentEntryAssetCache === undefined) {
-    try {
-      currentEntryAssetCache = entryAssetOf(readFileSync(join(DIST_DIR, 'index.html'), 'utf8'));
-    } catch {
-      currentEntryAssetCache = null;
-    }
-  }
-  return currentEntryAssetCache;
-}
-
+// { ok: true } — снапшот записан; { ok: false, reason } — копию использовать
+// нельзя, вызывающий код рендерит путь честно и учитывает причину в сводке.
 async function fetchPathLive(path) {
   try {
     const res = await fetch(`${SITE_ORIGIN}/${path}`, { signal: AbortSignal.timeout(10_000) });
-    if (!res.ok) return false;
+    if (!res.ok) return { ok: false, reason: `прод ответил ${res.status}` };
     const html = await res.text();
-    if (!/<h1[\s>]/i.test(html)) return false;
-    // Снапшот с прода ссылается на чанки ПРОШЛОЙ сборки — переписываем их
-    // на имена текущей (см. retargetAssets выше). Не сопоставилось — честный
-    // рендер этого пути.
-    const retargeted = retargetAssets(html);
-    if (!retargeted.html) {
-      const shown = retargeted.missing.slice(0, 3).join(', ');
-      console.log(
-        `[prerender] /${path}: в копии с прода чанки, которых нет в этой сборке (${shown}${retargeted.missing.length > 3 ? ', …' : ''}) — рендерю заново`,
-      );
-      return false;
-    }
-    // Страховка на случай ошибки в самом перенацеливании: после него снапшот
-    // обязан ссылаться на входной чанк ИМЕННО этой сборки, иначе приложение
-    // на странице не запустится (тот самый баг 2026-09-11). Не сошлось —
-    // рендерим честно, то есть откатываемся ровно к прежнему поведению.
-    const expected = currentEntryAsset();
-    if (expected && !retargeted.html.includes(expected)) {
-      console.log(
-        `[prerender] /${path}: после перенацеливания нет входного чанка ${expected} (в копии ${entryAssetOf(html) ?? 'чанк не найден'}) — рендерю заново`,
-      );
-      return false;
-    }
+    if (!/<h1[\s>]/i.test(html)) return { ok: false, reason: 'на проде нет снапшота (голый SPA-шелл без <h1>)' };
+    const adopted = adoptBuildAssets(html, currentBuildBlocks(), assetExistsInDist);
+    if (!adopted.html) return { ok: false, reason: adopted.reason };
     const dir = join(DIST_DIR, path);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'index.html'), retargeted.html);
-    console.log(
-      `[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(retargeted.html.length / 1024)} КБ, ассетов перенацелено: ${retargeted.changed})`,
-    );
-    return true;
+    writeFileSync(join(dir, 'index.html'), adopted.html);
+    console.log(`[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(adopted.html.length / 1024)} КБ)`);
+    return { ok: true };
   } catch (err) {
-    console.warn(`[prerender] /${path}: не удалось скачать живую копию (${err instanceof Error ? err.message : err}), рендерю`);
-    return false;
+    return { ok: false, reason: `не удалось скачать живую копию: ${err instanceof Error ? err.message : err}` };
   }
 }
 
 async function main() {
+  rmSync(PRERENDER_RESULT_PATH, { force: true });
   // PRERENDER_SKIP=1 — полностью пропустить пререндер (2026-09-11, владелец:
   // «меняю админку, мне не нужна повторная регенерация страниц маркетинга»).
   // Локальный прогон идёт в ПОЛНОМ режиме (см. shouldForceFullPrerender) —
@@ -865,7 +784,18 @@ async function main() {
   // (single-process Chromium) тут ни при чём, можно куда больше параллелизма.
   const FAST_WORKER_COUNT = 16;
 
-  const fullMode = await shouldForceFullPrerender();
+  let fullMode = await shouldForceFullPrerender();
+  if (!fullMode) {
+    try {
+      currentBuildBlocks();
+    } catch (err) {
+      console.warn(
+        '[prerender] не удалось взять блоки ассетов текущей сборки из dist/index.html — полный режим:',
+        err instanceof Error ? err.message : err,
+      );
+      fullMode = true;
+    }
+  }
   console.log(
     fullMode
       ? '[prerender] ПОЛНЫЙ режим — рендерю каждый путь headless-браузером (реальное изменение данных или ручной прогон)'
@@ -972,16 +902,27 @@ async function main() {
   // Быстрый режим: сперва пробуем скачать живую копию с прода, и только если
   // её нет/не прошла проверку — настоящий рендер именно для этого пути
   // (тот же renderPath, что и в полном режиме, с его же ретраями/failedPaths).
+  const copiedFromProd = [];
+  const rerenderReasons = new Map(); // причина → сколько путей
+  let alwaysFullCount = 0;
+
   async function processPathFast(path) {
     // ALWAYS_FULL_RENDER_PATHS — см. комментарий у самой константы: эти
     // несколько страниц правятся кодом достаточно часто, чтобы не
     // полагаться на "скачать текущую (возможно ещё старую) живую копию".
     if (ALWAYS_FULL_RENDER_PATHS.has(path)) {
+      alwaysFullCount++;
       await renderPath(path);
       return;
     }
-    const ok = await fetchPathLive(path);
-    if (!ok) await renderPath(path);
+    const live = await fetchPathLive(path);
+    if (live.ok) {
+      copiedFromProd.push(path);
+      return;
+    }
+    console.log(`[prerender] /${path}: ${live.reason} — рендерю заново`);
+    rerenderReasons.set(live.reason, (rerenderReasons.get(live.reason) ?? 0) + 1);
+    await renderPath(path);
   }
 
   try {
@@ -996,6 +937,28 @@ async function main() {
     await Promise.all(Array.from({ length: fullMode ? WORKER_COUNT : FAST_WORKER_COUNT }, worker));
   } finally {
     serverProc.kill();
+  }
+
+  writeFileSync(PRERENDER_RESULT_PATH, JSON.stringify({ fullMode, copiedFromProd }));
+
+  // Одна строка-итог, по которой видно здоровье быстрого режима, не листая
+  // сотни строк лога: «отрендерено из-за непригодной копии» в норме 0 (или
+  // единицы — реально новые страницы). Десятки/сотни — сломан сам быстрый
+  // путь (как 2026-09-11 и дважды 2026-09-12), и причины напечатаны ниже.
+  if (!fullMode) {
+    const rerendered = paths.length - copiedFromProd.length;
+    console.log(
+      `[prerender] ИТОГ быстрого режима: путей ${paths.length}, скопировано с прода ${copiedFromProd.length}, ` +
+        `отрендерено браузером ${rerendered} (по списку ALWAYS_FULL_RENDER_PATHS: ${alwaysFullCount}, ` +
+        `из-за непригодной копии: ${rerendered - alwaysFullCount})`,
+    );
+    if (rerenderReasons.size > 0) {
+      const top = [...rerenderReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      console.warn(
+        '[prerender] причины повторного рендера (много одинаковых — баг быстрого пути, а не новые страницы):\n' +
+          top.map(([reason, n]) => `  - ${n} × ${reason}`).join('\n'),
+      );
+    }
   }
 
   // Э0-2 (PAGESPEED_PLAN.md) — раньше пропуск ЛЮБОГО пути (включая

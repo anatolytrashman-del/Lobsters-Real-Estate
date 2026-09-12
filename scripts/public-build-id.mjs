@@ -31,7 +31,18 @@ import { dirname, join, relative, resolve } from 'node:path';
 const ROOT_DIR = resolve(new URL('..', import.meta.url).pathname);
 const ENTRY_FILES = ['src/main.tsx'];
 // Не импортируется ниоткуда, но попадает в каждый снапшот (мета, счётчики).
-const EXTRA_FILES = ['index.html'];
+const EXTRA_FILES = [
+  'index.html',
+  // 2026-09-12 — OG-обложки тоже часть публичного вывода: в быстром режиме
+  // generate-og-cards.mjs берёт PNG с прода, а не рисует, и это корректно
+  // ровно потому, что при совпавшем отпечатке не менялись ни этот скрипт, ни
+  // шрифты, которые он встраивает в карточку. Правка дизайна обложек →
+  // отпечаток другой → полный прогон → все обложки перерисованы.
+  'scripts/generate-og-cards.mjs',
+  'public/fonts/Montserrat-Medium.woff2',
+  'public/fonts/Montserrat-SemiBold.woff2',
+  'public/fonts/Montserrat-ExtraBold.woff2',
+];
 // Единственный файл, из которого динамические импорты НЕ считаем публичными
 // (там за ними стоят админ-страницы, см. шапку).
 const DYNAMIC_IMPORT_IGNORED_IN = 'src/App.tsx';
