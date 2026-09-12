@@ -50,6 +50,34 @@ export function fetchAllSupplierOfferEmails(): Promise<SupplierOfferEmail[]> {
   });
 }
 
+// Облегчённый срез исходящих писем для страницы метрик (/admin/metrics) —
+// только те три поля, по которым там считаются плитки. Отдельная функция, а не
+// fetchAllSupplierOfferEmails, именно из-за автообновления: метрики
+// перезапрашиваются раз в минуту в фоне, а `select('*')` тянет ещё и body
+// каждого письма (полный HTML со всей цитируемой перепиской) — на такой
+// частоте это мегабайты трафика впустую.
+export interface OutgoingEmailMetric {
+  createdAt: string;
+  sentByName: string | null;
+  toAddress: string;
+}
+
+export function fetchOutgoingEmailMetrics(): Promise<OutgoingEmailMetric[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase
+      .from('supplier_offer_emails')
+      .select('created_at, sent_by_name, to_address')
+      .eq('direction', 'out')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data as Pick<SupplierOfferEmailRow, 'created_at' | 'sent_by_name' | 'to_address'>[]).map((row) => ({
+      createdAt: row.created_at,
+      sentByName: row.sent_by_name ?? null,
+      toAddress: row.to_address,
+    }));
+  });
+}
+
 // Отмечает прочитанными все ВХОДЯЩИЕ письма этого треда, у которых read_at
 // ещё не проставлен — вызывается при открытии треда. orderId=null — тред
 // "основной" переписки офера, конкретный id — тред отдельной заявки

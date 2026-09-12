@@ -27,6 +27,10 @@
     {
       "source": "/icons/(.*)",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=2592000" }]
+    },
+    {
+      "source": "/og/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }]
     }
   ],
   "redirects": [
@@ -48,6 +52,14 @@
     { "source": "/plan/(.*)", "destination": "/plan.html" },
     { "source": "/summary/(.*)", "destination": "/summary.html" },
     { "source": "/business-upload", "destination": "/business-upload.html" },
+    { "source": "/admin/objects/(.*)", "destination": "/admin/objects/index.html" },
+    { "source": "/admin/estimates/(.*)", "destination": "/admin/estimates/index.html" },
+    { "source": "/admin/finmodels/(.*)", "destination": "/admin/finmodels/index.html" },
+    { "source": "/admin/design-projects/(.*)", "destination": "/admin/design-projects/index.html" },
+    { "source": "/admin/documents/(.*)", "destination": "/admin/documents/index.html" },
+    { "source": "/admin/meeting-summaries/(.*)", "destination": "/admin/meeting-summaries/index.html" },
+    { "source": "/admin/transactions/(.*)", "destination": "/admin/transactions/index.html" },
+    { "source": "/admin/(.*)", "destination": "/admin/index.html" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

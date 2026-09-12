@@ -13,6 +13,7 @@ import { badgeColor } from '../lib/badgeColor';
 import { cn } from '../lib/cn';
 import { fetchTasks, insertTask, updateTask, deleteTask } from '../lib/tasksApi';
 import { fetchPeople } from '../lib/peopleApi';
+import { getCurrentProfile, isTaskVisible } from '../lib/accessProfile';
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
@@ -308,7 +309,16 @@ export function Tasks() {
       .catch(() => setTaskAssignees([]));
   }, []);
 
-  const activeTasks = useMemo(() => tasks.filter((t) => !t.isDone), [tasks]);
+  // Сотрудник видит только задачи, где он сам в ответственных; владелец
+  // (isSuperAdmin) — весь список. Фильтр один на всё содержимое страницы,
+  // поэтому и активные бакеты, и архив ниже считаются уже от него.
+  const profile = getCurrentProfile();
+  const visibleTasks = useMemo(
+    () => tasks.filter((t) => isTaskVisible(profile, t.assignees)),
+    [tasks, profile],
+  );
+
+  const activeTasks = useMemo(() => visibleTasks.filter((t) => !t.isDone), [visibleTasks]);
   // Многодневная задача (startDate < endDate) должна быть видна в каждый
   // день, который она захватывает — поэтому бакеты ниже не взаимоисключающие,
   // одна и та же задача может попасть сразу в "сегодня" и "завтра" (и даже
@@ -330,8 +340,8 @@ export function Tasks() {
   }, [activeTasks]);
 
   const archivedTasks = useMemo(
-    () => [...tasks.filter((t) => t.isDone)].sort((a, b) => b.endDate.localeCompare(a.endDate)),
-    [tasks],
+    () => [...visibleTasks.filter((t) => t.isDone)].sort((a, b) => b.endDate.localeCompare(a.endDate)),
+    [visibleTasks],
   );
   // Бакеты архива считаются по концу задачи (endDate), отдельного поля даты
   // выполнения в Task нет — на практике задача обычно закрывается около
