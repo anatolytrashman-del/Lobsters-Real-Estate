@@ -41,6 +41,7 @@ import {
   UNIVERSAL_SUPPLIERS_TITLE,
   isUniversalRequest,
   isSameSupplier,
+  supplierWebsiteHost,
   type ResearchContactMethod,
   type SupplierRequest,
   type SupplierRequestGroup,
@@ -52,6 +53,8 @@ import {
 import type { SupplierReliability } from '../data/supplierReliability';
 import { fetchSupplierReliability, checkSupplierReliability } from '../lib/supplierReliabilityApi';
 import { RiskBadge } from '../components/suppliers/RiskBadge';
+import type { SupplierSiteSnapshot } from '../data/supplierSiteSnapshots';
+import { fetchSupplierSiteSnapshots } from '../lib/supplierSiteSnapshotsApi';
 import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 import { fetchAllSupplierOfferEmails, markSupplierOfferEmailsRead } from '../lib/supplierOfferEmailsApi';
 import { EmailThread, SupplierCorrespondenceTab, countUnreadSupplierEmails } from '../components/suppliers/SupplierCorrespondenceTab';
@@ -339,6 +342,46 @@ function VerificationBadge({
   return <Badge tone={tone}>{SUPPLIER_VERIFICATION_LABEL[status]}</Badge>;
 }
 
+// Что поставляет компания — товарные группы из снимка её сайта (см.
+// data/supplierSiteSnapshots.ts). Владелец, 2026-09-12: "каждый поставщик
+// поставляет только свой спектр товара... у кого-то десятки категорий, у
+// кого-то всего несколько" — в списке хватает нескольких первых групп,
+// полный набор с заметкой классификатора — в карточке. Группы появляются
+// сами (снимок → классификация), ручного ввода здесь нет.
+function SupplyCategoriesChips({
+  snapshot,
+  compact = false,
+}: {
+  snapshot: SupplierSiteSnapshot | null | undefined;
+  compact?: boolean;
+}) {
+  if (!snapshot) return null;
+  if (snapshot.categories.length === 0) {
+    if (compact) return null;
+    const hint =
+      snapshot.status === 'error'
+        ? 'сайт не открылся, разделы каталога не прочитаны'
+        : snapshot.status === 'done'
+          ? snapshot.classifiedAt
+            ? 'по сайту не понять, что поставляет'
+            : 'разделы прочитаны, ещё не разложены по группам'
+          : 'сайт ещё не прочитан';
+    return <span className="text-xs text-ink-faint">{hint}</span>;
+  }
+  const shown = compact ? snapshot.categories.slice(0, 4) : snapshot.categories;
+  const rest = snapshot.categories.length - shown.length;
+  return (
+    <div className={cn('flex flex-wrap items-center gap-1', compact ? 'basis-full' : '')}>
+      {shown.map((c) => (
+        <span key={c} className="rounded-full border border-border px-2 py-0.5 text-xs text-ink">
+          {c}
+        </span>
+      ))}
+      {rest > 0 && <span className="text-xs text-ink-faint">+{rest}</span>}
+    </div>
+  );
+}
+
 // Владелец, 2026-09-11: "давай выводить цены и статус «лучшая цена» на
 // странице сравнения цен, а в списке поставщиков просто оставим самих
 // поставщиков со статусом Верифицировано/Нет" — раньше и здесь, и на
@@ -359,11 +402,13 @@ function SupplierListBlock({
   showCountryToggle = true,
   enrichmentState,
   reliabilityByInn,
+  snapshotByHost,
 }: {
   offers: SupplierOffer[];
   onOpenDetail: (o: SupplierOffer) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
   reliabilityByInn: Map<string, SupplierReliability>;
+  snapshotByHost: Map<string, SupplierSiteSnapshot>;
   // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
   // Беларуси и для России... в идеале переключение списков прямо внутри
   // самого блока" — подсказка для пустого списка отличается в зависимости
@@ -424,6 +469,7 @@ function SupplierListBlock({
               <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
                 Подробнее
               </Button>
+              <SupplyCategoriesChips snapshot={snapshotByHost.get(supplierWebsiteHost(o.websiteUrl))} compact />
             </div>
           ))}
         </div>
@@ -870,6 +916,7 @@ function RequestCard({
   onDismissSearchJob,
   enrichmentState,
   reliabilityByInn,
+  snapshotByHost,
   duplicatesCount,
   onMergeDuplicates,
 }: {
@@ -892,6 +939,7 @@ function RequestCard({
   onDismissSearchJob: (jobId: string) => void;
   enrichmentState: Map<string, OfferEnrichmentState>;
   reliabilityByInn: Map<string, SupplierReliability>;
+  snapshotByHost: Map<string, SupplierSiteSnapshot>;
   // Сколько универсальных поставщиков этой категории продублировано в
   // профильных категориях (нулю не равно только у самой категории
   // "Универсальные поставщики", см. universalDuplicatePlans в Suppliers).
@@ -1063,6 +1111,7 @@ function RequestCard({
           showCountryToggle={false}
           enrichmentState={enrichmentState}
           reliabilityByInn={reliabilityByInn}
+          snapshotByHost={snapshotByHost}
         />
       )}
     </Card>
@@ -1090,6 +1139,7 @@ function OfferDetailModal({
   onQuoteDelete,
   savingQuoteId,
   deletingQuoteId,
+  siteSnapshot,
 }: {
   offer: SupplierOffer;
   emails: SupplierOfferEmail[];
@@ -1111,6 +1161,7 @@ function OfferDetailModal({
   checkingReliability: boolean;
   onVerify: (o: SupplierOffer) => void;
   verifying: boolean;
+  siteSnapshot: SupplierSiteSnapshot | null;
 }) {
   const status = offerCommunicationStatus(offer, emails);
   return (
@@ -1231,6 +1282,14 @@ function OfferDetailModal({
             <span className="text-ink">—</span>
           )}
         </div>
+
+        {siteSnapshot && (
+          <div className="flex flex-col gap-1 text-sm">
+            <span className="text-ink-faint">Что поставляет</span>
+            <SupplyCategoriesChips snapshot={siteSnapshot} />
+            {siteSnapshot.categoriesNote && <span className="text-xs text-ink-faint">{siteSnapshot.categoriesNote}</span>}
+          </div>
+        )}
 
         {offer.listingUrl && (
           <div className="flex flex-col gap-1 text-sm">
@@ -1777,6 +1836,10 @@ export function Suppliers() {
   // одна на юрлицо, а предложений с этим ИНН может быть несколько.
   const [reliability, setReliability] = useState<SupplierReliability[]>([]);
   const reliabilityByInn = useMemo(() => new Map(reliability.map((r) => [r.inn, r])), [reliability]);
+  // Снимки сайтов (что поставляет компания) — по домену, см.
+  // data/supplierSiteSnapshots.ts; карточка находит свой по websiteUrl.
+  const [siteSnapshots, setSiteSnapshots] = useState<SupplierSiteSnapshot[]>([]);
+  const snapshotByHost = useMemo(() => new Map(siteSnapshots.map((s) => [s.host, s])), [siteSnapshots]);
   const [checkingInn, setCheckingInn] = useState<string | null>(null);
 
   // Перепроверка вручную из карточки. Автоматическая проверка живёт не
@@ -1805,6 +1868,7 @@ export function Suppliers() {
       .catch((err) => setLoadError(errorMessage(err, 'Не удалось загрузить поставщиков')))
       .finally(() => setLoading(false));
     fetchSupplierReliability().then(setReliability).catch(() => setReliability([]));
+    fetchSupplierSiteSnapshots().then(setSiteSnapshots).catch(() => setSiteSnapshots([]));
     fetchEstimates().then(setEstimates).catch(() => setEstimates([]));
     fetchObjects().then(setObjects).catch(() => setObjects([]));
     fetchLegalEntities().then(setLegalEntities).catch(() => setLegalEntities([]));
@@ -2926,6 +2990,7 @@ export function Suppliers() {
                       onDismissSearchJob={dismissWebSearchJob}
                       enrichmentState={enrichmentState}
                       reliabilityByInn={reliabilityByInn}
+                      snapshotByHost={snapshotByHost}
                       duplicatesCount={isUniversalRequest(r) ? universalDuplicatePlans.length : 0}
                       onMergeDuplicates={() =>
                         setMergePlans({
@@ -3752,6 +3817,7 @@ export function Suppliers() {
               deletingQuoteId={deletingQuoteId}
               enrichmentState={enrichmentState}
               reliabilityByInn={reliabilityByInn}
+              siteSnapshot={snapshotByHost.get(supplierWebsiteHost(offer.websiteUrl)) ?? null}
               onVerify={handleVerifyOffer}
               verifying={verifyingOfferId === offer.id}
               onCheckReliability={handleCheckReliability}
