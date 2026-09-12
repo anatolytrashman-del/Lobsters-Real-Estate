@@ -96,31 +96,54 @@ web_fetch (до ${MAX_FETCHES} вызовов). Найди:
 // упали с "Unexpected non-whitespace character after JSON" — модель иногда
 // возвращает ДВА JSON-блока подряд (например, черновик и финальную версию),
 // не один. Наивный "от первой { до последней }" склеивал оба в невалидный
-// JSON. Вместо этого ищем именно ПЕРВЫЙ полный JSON-объект по глубине
-// скобок — то, что модель написала первым, игнорируя любой хвост после.
-function extractJson(content) {
-  const text = (Array.isArray(content) ? content : [])
-    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text)
-    .join('');
-  const stripped = text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-  const start = stripped.indexOf('{');
-  if (start === -1) {
-    throw new Error('Модель не вернула JSON в ожидаемом формате');
-  }
-  let depth = 0;
-  for (let i = start; i < stripped.length; i++) {
-    if (stripped[i] === '{') depth++;
-    else if (stripped[i] === '}') {
-      depth--;
-      if (depth === 0) return JSON.parse(stripped.slice(start, i + 1));
+// JSON. Разбираем блоки по отдельности и берём ПОСЛЕДНИЙ разобравшийся
+// объект: с веб-поиском модель ещё и комментирует ход поиска между вызовами
+// инструмента, и в комментарии попадаются скобки с куском шаблона ответа —
+// на "первом объекте склейки" найденная почта терялась молча (odissey2000.ru).
+function balancedObjects(text) {
+  const found = [];
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          found.push(text.slice(start, i + 1));
+          break;
+        }
+      }
     }
   }
-  throw new Error('Модель не вернула JSON в ожидаемом формате (не нашли закрывающую скобку)');
+  return found;
+}
+
+function extractJson(content) {
+  const texts = (Array.isArray(content) ? content : [])
+    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text);
+  let fallback = null;
+  for (const text of [...texts].reverse()) {
+    const stripped = text
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+    for (const candidate of balancedObjects(stripped).reverse()) {
+      let parsed;
+      try {
+        parsed = JSON.parse(candidate);
+      } catch {
+        continue; // комментарий модели, а не ответ
+      }
+      if (parsed && typeof parsed === 'object') {
+        if ('orderEmail' in parsed || 'phone' in parsed) return parsed;
+        fallback ??= parsed;
+      }
+    }
+  }
+  if (fallback) return fallback;
+  throw new Error('Модель не вернула JSON в ожидаемом формате');
 }
 
 function sanitizeResult(raw) {
@@ -256,19 +279,44 @@ async function askModel(body, retried = false) {
 }
 
 // Попытка 2: читаем страницы сами с раннера и отдаём модели уже готовый текст.
+// Ссылки на страницу контактов прямо из разметки главной: перебор готовых
+// путей промахивается на нетиповых адресах — у odissey2000.ru контакты лежат
+// на /kontakty-odissey, и почта не находилась вовсе (2026-09-11).
+const CONTACT_LINK_RE = /href\s*=\s*["']([^"'\s>]*(?:kontakt|contact|o-kompanii|about)[^"'\s>]*)["']/gi;
+
 async function fetchFromPagesDirectly(name, websiteUrl) {
   const base = /^https?:\/\//i.test(websiteUrl) ? websiteUrl : `https://${websiteUrl}`;
   const pages = [];
+  const urls = [];
   let insecureUsed = false;
-  for (const path of CONTACT_PATHS) {
-    if (pages.length >= 2) break;
+  try {
+    const { html, insecure } = await fetchPage(base);
+    insecureUsed = insecureUsed || insecure;
+    const text = htmlToText(html);
+    if (text.length > 200) pages.push(text);
+    for (const m of html.matchAll(CONTACT_LINK_RE)) {
+      try {
+        urls.push(new URL(m[1], base).toString());
+      } catch {
+        // мусорный href вроде "javascript:void(0)"
+      }
+    }
+  } catch {
+    // главная не открылась — остаются типовые пути ниже
+  }
+  for (const path of CONTACT_PATHS) urls.push(new URL(path, base).toString());
+  const seen = new Set([base]);
+  for (const url of urls) {
+    if (pages.length >= 3) break;
+    if (seen.has(url)) continue;
+    seen.add(url);
     try {
-      const { html, insecure } = await fetchPage(new URL(path, base).toString());
+      const { html, insecure } = await fetchPage(url);
       insecureUsed = insecureUsed || insecure;
       const text = htmlToText(html);
       if (text.length > 200) pages.push(text);
     } catch {
-      // Страницы может не быть (404) или она недоступна — просто пробуем следующую.
+      // Страницы может не быть (404) или она недоступна — пробуем следующую.
     }
   }
   if (pages.length === 0) throw new Error('страницы не открылись напрямую');
@@ -312,7 +360,14 @@ async function searchContacts(name, websiteUrl) {
 
 "messengers" — массив, type строго одно из "Telegram"/"WhatsApp"/"Max".
 "note" — одной фразой по-русски, откуда взяты контакты (какой источник).`,
-    messages: [{ role: 'user', content: `Компания «${name}», сайт ${websiteUrl}. Найди её контакты.` }],
+    messages: [
+      {
+        role: 'user',
+        content: websiteUrl
+          ? `Компания «${name}», сайт ${websiteUrl}. Найди её контакты.`
+          : `Компания «${name}», сайт неизвестен. Найди её контакты и сайт.`,
+      },
+    ],
   });
 }
 
@@ -329,8 +384,11 @@ function mergeResults(base, extra) {
   };
 }
 
-function hasContacts(result) {
-  return Boolean(result.orderEmail || result.phone);
+// Следующий шаг цепочки пропускаем, только когда есть И почта, И телефон.
+// Раньше здесь было "или", и сайт, отдавший один телефон, закрывал поиск
+// почты совсем (termokit.ru: на сайте телефон, opt@ — только в выдаче).
+function isComplete(result) {
+  return Boolean(result.orderEmail && result.phone);
 }
 
 async function fetchEnrichment(name, websiteUrl) {
@@ -374,7 +432,7 @@ async function applyToOffer(offerId, result) {
   if (DRY_RUN) return { emailApplied: false, phoneApplied: false, messengersAdded: [] };
   const { data: offer, error: fetchError } = await supabase
     .from('supplier_research_offers')
-    .select('email, contact, contact_method, messengers')
+    .select('email, contact, contact_method, messengers, contact_source')
     .eq('id', offerId)
     .single();
   if (fetchError || !offer) {
@@ -399,6 +457,11 @@ async function applyToOffer(offerId, result) {
   const messengersAdded = result.messengers.filter((m) => !existingTypes.has(m.type));
   if (messengersAdded.length > 0) {
     patch.messengers = [...existingMessengers, ...messengersAdded];
+  }
+  // Откуда контакты — в карточку: почта из каталога при недоступном сайте
+  // может быть многолетней давности, закупщица должна видеть разницу.
+  if ((emailApplied || phoneApplied) && !offer.contact_source) {
+    patch.contact_source = result.siteAccessible ? 'сайт' : 'каталоги';
   }
 
   if (Object.keys(patch).length === 0) return { emailApplied, phoneApplied, messengersAdded };
@@ -433,12 +496,6 @@ async function processJob(job) {
     console.error('  → предложение не найдено (удалено?)');
     return;
   }
-  if (!offer.website_url) {
-    await updateJob(job.id, { status: 'error', error: 'У поставщика не указан сайт', completed_at: new Date().toISOString() });
-    console.error('  → у предложения не указан сайт');
-    return;
-  }
-
   try {
     // Цепочка попыток (см. комментарий у fetchPage выше): настоящая страница →
     // прямой запрос с раннера → веб-поиск. Следующая попытка идёт только если
@@ -447,35 +504,42 @@ async function processJob(job) {
     const sources = [];
     let result = { orderEmail: '', phone: '', messengers: [], note: '', siteAccessible: false };
 
-    try {
-      result = mergeResults(result, await fetchEnrichment(offer.name, offer.website_url));
-      if (hasContacts(result)) sources.push('сайт');
-    } catch (err) {
-      console.error(`  → web_fetch не сработал: ${err instanceof Error ? err.message : err}`);
-    }
-
-    if (!hasContacts(result)) {
+    // Поставщика без сайта раньше помечали ошибкой и не обогащали вовсе —
+    // карточка с одним названием так и висела пустой. Контакты по названию
+    // ищет тот же веб-поиск.
+    if (offer.website_url) {
       try {
-        const direct = await fetchFromPagesDirectly(offer.name, offer.website_url);
-        result = mergeResults(result, direct.result);
-        if (hasContacts(result)) {
-          sources.push(direct.insecureUsed ? 'прямой просмотр сайта (сертификат сайта невалиден)' : 'прямой просмотр сайта');
-        }
+        result = mergeResults(result, await fetchEnrichment(offer.name, offer.website_url));
+        if (result.orderEmail || result.phone) sources.push('сайт');
       } catch (err) {
-        console.error(`  → прямой просмотр не сработал: ${err instanceof Error ? err.message : err}`);
+        console.error(`  → web_fetch не сработал: ${err instanceof Error ? err.message : err}`);
+      }
+
+      if (!isComplete(result)) {
+        try {
+          const before = result;
+          const direct = await fetchFromPagesDirectly(offer.name, offer.website_url);
+          result = mergeResults(result, direct.result);
+          if (result.orderEmail !== before.orderEmail || result.phone !== before.phone) {
+            sources.push(direct.insecureUsed ? 'прямой просмотр сайта (сертификат сайта невалиден)' : 'прямой просмотр сайта');
+          }
+        } catch (err) {
+          console.error(`  → прямой просмотр не сработал: ${err instanceof Error ? err.message : err}`);
+        }
       }
     }
 
-    if (!hasContacts(result)) {
+    if (!isComplete(result)) {
       try {
-        result = mergeResults(result, await searchContacts(offer.name, offer.website_url));
-        if (hasContacts(result)) sources.push('веб-поиск (сайт напрямую не открылся)');
+        const before = result;
+        result = mergeResults(result, await searchContacts(offer.name, offer.website_url ?? ''));
+        if (result.orderEmail !== before.orderEmail || result.phone !== before.phone) sources.push('веб-поиск');
       } catch (err) {
         console.error(`  → веб-поиск не сработал: ${err instanceof Error ? err.message : err}`);
       }
     }
 
-    if (sources.length > 0) result.note = `Источник: ${sources[sources.length - 1]}. ${result.note}`.trim();
+    if (sources.length > 0) result.note = `Источник: ${sources.join(', ')}. ${result.note}`.trim();
     const applied = await applyToOffer(job.offer_id, result);
     await updateJob(job.id, { status: 'done', result, completed_at: new Date().toISOString() });
     console.log(

@@ -250,6 +250,13 @@ export interface SupplierOffer {
   // веб-поиска (см. SupplierWebSearchModal/addWebSearchResults в
   // Suppliers.tsx), но остаётся обычным редактируемым полем.
   listingUrl: string;
+  // Откуда автосбор взял контакты: 'сайт', 'каталоги' или 'сайт + каталоги'
+  // (пусто — заведены вручную). Нужен закупщице как мера доверия: почта из
+  // каталога при недоступном сайте может быть многолетней давности — так в
+  // базу попал sales@m-delivery.ru у компании со снятым с делегирования
+  // доменом (2026-09-11). Заполняется только обогащением и только в пустое
+  // поле, вручную не редактируется.
+  contactSource: string;
   // Номера в мессенджерах (см. SupplierMessengerContact выше) — заполняются
   // либо вручную, либо автообогащением (см. lib/supplierEnrichmentApi.ts).
   // Может быть несколько записей одного типа (например, два номера
@@ -317,6 +324,7 @@ export interface SupplierOfferRow {
   country: string | null;
   website_url: string;
   listing_url: string | null;
+  contact_source: string | null;
   messengers: SupplierMessengerContact[] | null;
   catalog_model_name: string;
   catalog_model_photo: DocumentFile | null;
