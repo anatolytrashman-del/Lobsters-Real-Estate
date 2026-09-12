@@ -53,24 +53,24 @@ async function pollOnce(): Promise<void> {
     if (done.length === 1) {
       addNotification({
         title: 'Поиск поставщиков завершён',
-        body: `«${jobLabel(done[0])}» — найдено ${done[0].results.length}. Смотрите вкладку «Ресерч» на странице «Поставщики».`,
+        body: `«${jobLabel(done[0])}» — найдено ${done[0].results.length}. Смотрите вкладку «Поставщики» на странице «Закупки».`,
       });
     } else if (done.length > 1) {
       addNotification({
         title: 'Поиск поставщиков завершён',
-        body: `${done.length} завершённых поиска — смотрите вкладку «Ресерч» на странице «Поставщики».`,
+        body: `${done.length} завершённых поиска — смотрите вкладку «Поставщики» на странице «Закупки».`,
       });
     }
 
     if (failed.length === 1) {
       addNotification({
         title: 'Поиск поставщиков не удался',
-        body: `«${jobLabel(failed[0])}»: ${failed[0].error || 'см. вкладку «Ресерч»'}`,
+        body: `«${jobLabel(failed[0])}»: ${failed[0].error || 'см. вкладку «Поставщики»'}`,
       });
     } else if (failed.length > 1) {
       addNotification({
         title: 'Поиск поставщиков не удался',
-        body: `${failed.length} заданий завершились ошибкой — смотрите вкладку «Ресерч» на странице «Поставщики».`,
+        body: `${failed.length} заданий завершились ошибкой — смотрите вкладку «Поставщики» на странице «Закупки».`,
       });
     }
   }
