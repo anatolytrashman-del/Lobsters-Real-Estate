@@ -61,6 +61,67 @@ function formatTotalsMap(map: Map<Currency, number>) {
   return [...map.entries()].map(([currency, amount]) => formatAmount(amount, currency)).join(' · ');
 }
 
+function pad2(n: number) {
+  return String(n).padStart(2, '0');
+}
+
+// Локальная (не UTC) дата в формате YYYY-MM-DD. Через toISOString() нельзя:
+// у владельца часовой пояс впереди UTC, и вечером "сегодня" превращалось бы
+// во вчерашнее число.
+function toIsoDate(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function todayIso() {
+  return toIsoDate(new Date());
+}
+
+// Сортировка списка на клиенте — та же, что у fetchTransactions на сервере
+// (дата по убыванию). Array.prototype.sort стабильна, поэтому внутри одной
+// даты сохраняется порядок, пришедший с сервера (created_at по убыванию),
+// а только что добавленная транзакция, вставленная в начало массива,
+// оказывается первой среди своей даты — а не первой во всём списке, как
+// было раньше при простом [created, ...prev] (владелец, 2026-09-12).
+function sortByDateDesc(list: Transaction[]) {
+  return [...list].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+}
+
+// Периоды-вкладки над таблицей. Значения вкладок — это же и подписи.
+const periodOptions = ['Этот месяц', 'Прошлый месяц', 'Этот год', 'Период'] as const;
+type PeriodOption = (typeof periodOptions)[number];
+
+// Границы выбранного периода в виде YYYY-MM-DD (сравниваем строки —
+// ISO-даты сравниваются лексикографически так же, как хронологически).
+// У кастомного периода любая из границ может быть пустой: тогда период
+// открыт с этой стороны.
+function periodBounds(period: PeriodOption, customFrom: string, customTo: string) {
+  const now = new Date();
+  if (period === 'Этот месяц') {
+    return {
+      from: toIsoDate(new Date(now.getFullYear(), now.getMonth(), 1)),
+      to: toIsoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+    };
+  }
+  if (period === 'Прошлый месяц') {
+    return {
+      from: toIsoDate(new Date(now.getFullYear(), now.getMonth() - 1, 1)),
+      to: toIsoDate(new Date(now.getFullYear(), now.getMonth(), 0)),
+    };
+  }
+  if (period === 'Этот год') {
+    return { from: `${now.getFullYear()}-01-01`, to: `${now.getFullYear()}-12-31` };
+  }
+  return { from: customFrom || '0000-01-01', to: customTo || '9999-12-31' };
+}
+
+function periodLabel(period: PeriodOption, customFrom: string, customTo: string) {
+  if (period !== 'Период') return period.toLowerCase();
+  if (customFrom && customTo) return `${formatDate(customFrom)} — ${formatDate(customTo)}`;
+  if (customFrom) return `с ${formatDate(customFrom)}`;
+  if (customTo) return `по ${formatDate(customTo)}`;
+  return 'всё время';
+}
+
 type OperationKind = 'Расход' | 'Доход';
 
 const emptyForm = {
@@ -149,17 +210,15 @@ function calculateSoloBalances(
   return result;
 }
 
-// Расходы (отрицательная сумма) и доходы (положительная) за текущий календарный
-// месяц, отдельно по каждой валюте. Компенсация тут ни при чём — это просто
-// движение денег за месяц, а не про то, что ещё не взаимозачтено.
-function calculateMonthTotals(transactions: Transaction[]) {
-  const now = new Date();
-  const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+// Расходы (отрицательная сумма) и доходы (положительная) по уже отфильтрованному
+// списку транзакций (за выбранный период — см. periodBounds выше; раньше здесь
+// был жёстко зашит текущий календарный месяц). Компенсация тут ни при чём — это
+// просто движение денег за период, а не про то, что ещё не взаимозачтено.
+function calculateTotals(transactions: Transaction[]) {
   const expenses = new Map<Currency, number>();
   const income = new Map<Currency, number>();
 
   for (const t of transactions) {
-    if (!t.date.startsWith(monthPrefix)) continue;
     if (t.amount < 0) {
       expenses.set(t.currency, (expenses.get(t.currency) ?? 0) + Math.abs(t.amount));
     } else if (t.amount > 0) {
@@ -201,6 +260,14 @@ export function Transactions() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
+
+  // Вкладки периода над таблицей (владелец, 2026-09-12: "пора разделять
+  // транзакции"). Фильтруется только сам список и итоги под ним; расчёты
+  // взаимозачёта ниже ("Непогашенный остаток") намеренно считаются по всем
+  // транзакциям — это сальдо за всё время, а не за выбранный месяц.
+  const [period, setPeriod] = useState<PeriodOption>('Этот месяц');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
 
   // Кто платит/получает деньги — из общей таблицы people (data/people.ts),
   // не из захардкоженных списков (см. комментарий у Payer в data/transactions.ts).
@@ -298,6 +365,11 @@ export function Transactions() {
     return [...set];
   }, [transactions, form.category]);
 
+  const visibleTransactions = useMemo(() => {
+    const { from, to } = periodBounds(period, customFrom, customTo);
+    return transactions.filter((t) => t.date >= from && t.date <= to);
+  }, [transactions, period, customFrom, customTo]);
+
   useEffect(() => {
     fetchTransactions()
       .then(setTransactions)
@@ -319,7 +391,9 @@ export function Transactions() {
   function openAddModal() {
     setEditingId(null);
     setEditingTransaction(null);
-    setForm(emptyForm);
+    // Дата по умолчанию — сегодня (владелец, 2026-09-12); при
+    // редактировании подставляется дата самой транзакции, см. openEditModal.
+    setForm({ ...emptyForm, date: todayIso() });
     setSubmitError(null);
     setOpen(true);
   }
@@ -355,12 +429,15 @@ export function Transactions() {
         compensated: form.compensated === 'Да',
         rateDate,
       };
+      // Пересортировка по дате обязательна в обеих ветках: у новой транзакции
+      // дата может быть задним числом, у отредактированной — измениться,
+      // и без сортировки строка зависала бы наверху списка (см. sortByDateDesc).
       if (editingId) {
         const updated = await updateTransaction(editingId, payload);
-        setTransactions((prev) => prev.map((t) => (t.id === editingId ? updated : t)));
+        setTransactions((prev) => sortByDateDesc(prev.map((t) => (t.id === editingId ? updated : t))));
       } else {
         const created = await insertTransaction(payload);
-        setTransactions((prev) => [created, ...prev]);
+        setTransactions((prev) => sortByDateDesc([created, ...prev]));
       }
       setForm(emptyForm);
       setEditingId(null);
@@ -449,7 +526,7 @@ export function Transactions() {
     }
   }
 
-  const monthTotals = calculateMonthTotals(transactions);
+  const periodTotals = calculateTotals(visibleTransactions);
 
   return (
     <>
@@ -471,6 +548,20 @@ export function Transactions() {
         }
       />
 
+      <div className="flex flex-col gap-3">
+        <ToggleGroup
+          options={[...periodOptions]}
+          value={period}
+          onChange={(v) => setPeriod(v as PeriodOption)}
+        />
+        {period === 'Период' && (
+          <div className="grid grid-cols-1 gap-3 sm:max-w-md sm:grid-cols-2">
+            <Input label="С" type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+            <Input label="По" type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+          </div>
+        )}
+      </div>
+
       <Card className="flex flex-col gap-4 p-0">
         {/* От md и шире — таблица-грид. Ниже md — карточки (см. блок md:hidden). */}
         <div className="hidden overflow-x-auto md:block">
@@ -485,7 +576,7 @@ export function Transactions() {
             <span />
             <span />
           </div>
-          {transactions.map((t) => (
+          {visibleTransactions.map((t) => (
             <div
               key={t.id}
               className="grid min-w-[1050px] grid-cols-[100px_120px_1.6fr_1fr_1fr_1fr_110px_44px_44px] items-center gap-4 border-t border-border px-6 py-4 text-sm"
@@ -543,13 +634,15 @@ export function Transactions() {
           {!loading && loadError && (
             <div className="px-6 py-10 text-center text-sm text-danger">{loadError}</div>
           )}
-          {!loading && !loadError && transactions.length === 0 && (
-            <div className="px-6 py-10 text-center text-sm text-ink-muted">Транзакций пока нет</div>
+          {!loading && !loadError && visibleTransactions.length === 0 && (
+            <div className="px-6 py-10 text-center text-sm text-ink-muted">
+              {transactions.length === 0 ? 'Транзакций пока нет' : 'За выбранный период транзакций нет'}
+            </div>
           )}
         </div>
 
         <div className="flex flex-col gap-3 p-4 md:hidden">
-          {transactions.map((t) => (
+          {visibleTransactions.map((t) => (
             <div key={t.id} className="flex flex-col gap-2.5 rounded-control border border-border p-3.5">
               <div className="flex items-start justify-between gap-2">
                 <span className="min-w-0 break-words font-medium text-ink">{t.purpose}</span>
@@ -610,20 +703,26 @@ export function Transactions() {
             </div>
           )}
           {!loading && loadError && <div className="py-10 text-center text-sm text-danger">{loadError}</div>}
-          {!loading && !loadError && transactions.length === 0 && (
-            <div className="py-10 text-center text-sm text-ink-muted">Транзакций пока нет</div>
+          {!loading && !loadError && visibleTransactions.length === 0 && (
+            <div className="py-10 text-center text-sm text-ink-muted">
+              {transactions.length === 0 ? 'Транзакций пока нет' : 'За выбранный период транзакций нет'}
+            </div>
           )}
         </div>
 
         {!loading && !loadError && (
           <div className="flex flex-col">
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border bg-black/[0.025] px-4 py-3 text-sm sm:px-6">
-              <span className="font-medium text-ink-muted">Итого расходы за месяц</span>
-              <span className="font-bold text-danger">{formatTotalsMap(monthTotals.expenses)}</span>
+              <span className="font-medium text-ink-muted">
+                Итого расходы за {periodLabel(period, customFrom, customTo)}
+              </span>
+              <span className="font-bold text-danger">{formatTotalsMap(periodTotals.expenses)}</span>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border bg-black/[0.025] px-4 py-3 text-sm sm:px-6">
-              <span className="font-medium text-ink-muted">Итого доходы за месяц</span>
-              <span className="font-bold text-success">{formatTotalsMap(monthTotals.income)}</span>
+              <span className="font-medium text-ink-muted">
+                Итого доходы за {periodLabel(period, customFrom, customTo)}
+              </span>
+              <span className="font-bold text-success">{formatTotalsMap(periodTotals.income)}</span>
             </div>
           </div>
         )}
