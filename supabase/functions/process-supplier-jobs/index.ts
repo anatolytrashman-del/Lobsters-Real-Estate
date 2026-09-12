@@ -666,7 +666,535 @@ async function claim(table: string, id: string): Promise<boolean> {
   return (data?.length ?? 0) > 0;
 }
 
-Deno.serve(async () => {
+// ——— Снимки сайтов (supplier_site_snapshots) ———————————————————————————
+// Что поставляет компания — по разделам её каталога. Владелец, 2026-09-12:
+// "каждый поставщик поставляет только свой спектр товара... парсинг
+// категорий поставки... не через проксиапи, он дорого обходится". Поэтому
+// здесь модели НЕТ вовсе: функция только скачивает главную, разделы каталога
+// и sitemap.xml и складывает список разделов в таблицу. Раскладывает их по
+// товарным группам уже сессия Claude Code (в рамках подписки), см.
+// scripts/supply-categories/README.md и миграцию
+// supabase/migrations/20260912-supplier-site-snapshots.sql.
+//
+// Порция — SNAPSHOT_BATCH доменов за вызов, параллельно с обогащением (оба
+// шага — ожидание сети). 259 доменов первичной очереди разбираются примерно
+// за час; новые домены ставит в очередь триггер в базе.
+// Снимок — это почти целиком ожидание сети, процессор простаивает, поэтому
+// домены идут параллельно и ограничение сверху — wall-clock вызова (~150с на
+// free-плане), а не их число. Владелец, 2026-09-12: «можем запустить ещё
+// больше параллельно?» — да, но не классификаторов (они и так простаивают, их
+// кормит эта очередь), а чтения: 5 → 14 доменов за вызов.
+const SNAPSHOT_BATCH = 26;
+const SNAPSHOT_MAX_SECTIONS = 250;
+const SNAPSHOT_MAX_SITEMAP = 150;
+// Общий бюджет времени на один сайт: главная + до 2 страниц каталога +
+// sitemap (+ до 2 вложенных). Дальше не ходим — wall-clock вызова общий с
+// обогащением.
+const SNAPSHOT_TIME_BUDGET_MS = 55000;
+// Медленный хостинг успевает ответить за 20с, но не за 12 (семь таймаутов на
+// первых 130 доменах). Повторов на домен — три, дальше считаем сайт мёртвым.
+const SNAPSHOT_HOME_TIMEOUT_MS = 20000;
+const SNAPSHOT_MAX_ATTEMPTS = 3;
+
+interface SiteSection {
+  title: string;
+  url: string;
+}
+
+interface SiteSnapshot {
+  pageTitle: string;
+  metaDescription: string;
+  homeText: string;
+  sections: SiteSection[];
+  pagesFetched: number;
+}
+
+// Сегмент пути, по которому раздел опознаётся как каталожный (Bitrix
+// /catalog/, WooCommerce /product-category/, OpenCart /category/, InSales
+// /collection/, самописные /tovary/, /produkciya/ ...).
+const CATALOG_SEGMENT_RE =
+  /^(catalog|katalog|category|categories|categor(y|ies)|product-category|products?|produkt(y|siya|ciya)?|produkc(iya|ija)?|productions?|tovar(y|s)?|shop|magazin|collections?|assortiment|assortment|razdel(y)?|nomenklatura|goods|materialy|materials|oborudovanie|equipment|katalog-tovarov|catalogue)$/i;
+// Разделы, которые для номенклатуры не значат ничего: контакты, новости,
+// доставка, корзина, вакансии и прочая обвязка сайта.
+const NOISE_PATH_RE =
+  /(kontakt|contact|about|o-kompanii|o-nas|company|news|novost|blog|stati|articles?|deliver|dostavk|oplat|payment|login|auth|signin|register|registr|cart|basket|korzin|search|poisk|privacy|policy|politik|personal|vakans|vacanc|career|otzyv|review|faq|help|garant|warranty|rekvizit|sitemap|feedback|partner|dealer|diler|cabinet|account|compare|wishlist|favorite|akci|aktsi|sale|discount|skidk|press|video|foto|gallery|galere|portfolio|proekt|project|certif|sertif|licen|document|dokument|sotrudnich|cooperation|return|vozvrat|terms|agreement|soglashen|cookie|calc|kalkul|schema-proezda|map$|karta$|brand|brend|manufacturer|proizvoditel|wp-|\.php$|\/tag\/|\/tags\/|\/page\/|\/rss)/i;
+const FILE_EXT_RE = /\.(pdf|jpe?g|png|gif|webp|svg|xlsx?|docx?|zip|rar|mp4|avi|css|js|xml|txt)$/i;
+
+function normalizeHost(host: string): string {
+  return host.toLowerCase().replace(/^www\./, '');
+}
+
+// Путь без завершающего слэша и .html, в нижнем регистре — ключ дедупликации
+// (одна и та же категория с главной, из каталога и из sitemap).
+function pathKey(url: URL): string {
+  return url.pathname
+    .replace(/\/+$/, '')
+    .replace(/\.html?$/i, '')
+    .toLowerCase();
+}
+
+function pathDepth(url: URL): number {
+  return url.pathname.split('/').filter(Boolean).length;
+}
+
+function isCatalogPath(url: URL): boolean {
+  return url.pathname.split('/').filter(Boolean).some((seg) => CATALOG_SEGMENT_RE.test(seg));
+}
+
+function isUsableSection(url: URL, host: string): boolean {
+  if (normalizeHost(url.hostname) !== host) return false;
+  if (url.search || url.hash) return false;
+  const depth = pathDepth(url);
+  if (depth === 0 || depth > 3) return false;
+  const path = url.pathname.toLowerCase();
+  if (FILE_EXT_RE.test(path)) return false;
+  if (NOISE_PATH_RE.test(path)) return false;
+  return true;
+}
+
+function cleanTitle(raw: string): string {
+  const text = raw
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#?\w+;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (text.length < 2 || text.length > 70) return '';
+  if (/^[\d\s+()\-–—.,]+$/.test(text)) return ''; // телефон/число
+  if (/@/.test(text)) return '';
+  return text;
+}
+
+// Название раздела из слага sitemap: /catalog/keramogranit-30x60/ →
+// "keramogranit 30x60". Классификатору хватает — транслит он читает.
+function titleFromSlug(url: URL): string {
+  const seg = url.pathname.split('/').filter(Boolean).pop() ?? '';
+  let decoded = seg;
+  try {
+    decoded = decodeURIComponent(seg);
+  } catch {
+    // битая кодировка — оставляем как есть
+  }
+  return cleanTitle(decoded.replace(/\.html?$/i, '').replace(/[-_+]+/g, ' '));
+}
+
+// Архивная ссылка → исходная: https://web.archive.org/web/20240101/https://x.ru/catalog/
+// превращается в https://x.ru/catalog/. Без этого все разделы архивной копии
+// отсеялись бы как «чужой хост».
+const WAYBACK_PREFIX_RE = /^https?:\/\/web\.archive\.org\/web\/[^/]+\/(https?:\/\/.+)$/i;
+function unwrapWayback(url: string): string {
+  const m = WAYBACK_PREFIX_RE.exec(url);
+  return m ? m[1] : url;
+}
+
+function extractLinks(html: string, base: URL, host: string): SiteSection[] {
+  const out: SiteSection[] = [];
+  for (const m of html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const attrs = m[1];
+    const hrefMatch = /href\s*=\s*["']([^"']+)["']/i.exec(attrs);
+    if (!hrefMatch) continue;
+    const href = hrefMatch[1].trim();
+    if (!href || /^(javascript:|mailto:|tel:|#)/i.test(href)) continue;
+    let url: URL;
+    try {
+      url = new URL(unwrapWayback(new URL(href, base).toString()));
+    } catch {
+      continue;
+    }
+    if (!/^https?:$/.test(url.protocol)) continue;
+    if (!isUsableSection(url, host)) continue;
+    // Текст ссылки; если внутри только картинка — title/aria-label.
+    let title = cleanTitle(m[2]);
+    if (!title) {
+      const alt = /(?:title|aria-label)\s*=\s*["']([^"']+)["']/i.exec(attrs) ?? /alt\s*=\s*["']([^"']+)["']/i.exec(m[2]);
+      title = alt ? cleanTitle(alt[1]) : '';
+    }
+    if (!title) continue;
+    url.hash = '';
+    out.push({ title, url: url.toString() });
+  }
+  return out;
+}
+
+function extractMeta(html: string, name: string): string {
+  const re = new RegExp(`<meta\\s+[^>]*(?:name|property)\\s*=\\s*["']${name}["'][^>]*>`, 'i');
+  const tag = re.exec(html)?.[0] ?? '';
+  const content = /content\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1] ?? '';
+  return cleanTitle(content) || content.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
+// Русские сайты часто отдают windows-1251, а resp.text() всегда разбирает как
+// UTF-8 — заголовок и разделы превращаются в «?????» (2026-09-12: так пришёл
+// снимок bard.su, классификатор по нему не понял ничего). Кодировку берём из
+// заголовка Content-Type, а если её там нет — из <meta charset> в начале
+// самого документа, разбирая байты дважды.
+function decodeBytes(bytes: Uint8Array, contentType: string): string {
+  const fromHeader = /charset\s*=\s*["']?([\w-]+)/i.exec(contentType)?.[1];
+  const decode = (label: string) => {
+    try {
+      return new TextDecoder(label, { fatal: false }).decode(bytes);
+    } catch {
+      return null; // рантайм не знает такой кодировки
+    }
+  };
+  if (fromHeader && !/utf-?8/i.test(fromHeader)) {
+    const decoded = decode(fromHeader);
+    if (decoded) return decoded;
+  }
+  const utf8 = decode('utf-8') ?? '';
+  if (fromHeader) return utf8;
+  const fromMeta =
+    /<meta[^>]+charset\s*=\s*["']?\s*([\w-]+)/i.exec(utf8.slice(0, 2000))?.[1] ??
+    /<\?xml[^>]+encoding\s*=\s*["']([\w-]+)/i.exec(utf8.slice(0, 200))?.[1];
+  if (fromMeta && !/utf-?8/i.test(fromMeta)) {
+    const decoded = decode(fromMeta);
+    if (decoded) return decoded;
+  }
+  return utf8;
+}
+
+// Почему не открылась последняя запрошенная страница — иначе на все случаи
+// (403 от защиты, битый сертификат, мёртвый домен) в базе лежит одинаковое
+// «сайт не открылся», и непонятно, чинить это или списывать.
+let lastFetchFailure = '';
+
+// Российский IP для сайтов, которые режут иностранные адреса. Функция живёт
+// в eu-west-3 (Париж), и часть российских доменов с парижского адреса просто
+// молчит до таймаута или отдаёт 403 — владелец, 2026-09-12: «сайты могли не
+// открыться из-за того, что они не открываются из-за vpn... попробуй открыть
+// из-под россии». Секрет SNAPSHOT_PROXY_URL вида
+// http://логин:пароль@хост:порт (или socks5://...). Если секрета нет — всё
+// работает как раньше, напрямую.
+const SNAPSHOT_PROXY_URL = Deno.env.get('SNAPSHOT_PROXY_URL') ?? '';
+
+// Клиент создаётся один раз на вызов функции: каждый createHttpClient — это
+// свой пул соединений, плодить их на каждую страницу незачем.
+let proxyClientCache: unknown | null | undefined;
+function proxyClient(): unknown | null {
+  if (proxyClientCache !== undefined) return proxyClientCache;
+  proxyClientCache = null;
+  if (!SNAPSHOT_PROXY_URL) return null;
+  try {
+    const u = new URL(SNAPSHOT_PROXY_URL);
+    const username = decodeURIComponent(u.username);
+    const password = decodeURIComponent(u.password);
+    u.username = '';
+    u.password = '';
+    const create = (Deno as unknown as { createHttpClient?: (o: unknown) => unknown }).createHttpClient;
+    if (!create) return null;
+    proxyClientCache = create({
+      proxy: username ? { url: u.toString(), basicAuth: { username, password } } : { url: u.toString() },
+    });
+  } catch (err) {
+    console.error('SNAPSHOT_PROXY_URL не разобрался:', err instanceof Error ? err.message : err);
+    proxyClientCache = null;
+  }
+  return proxyClientCache;
+}
+
+async function fetchOnce(url: string, timeoutMs: number, viaProxy: boolean): Promise<string | null> {
+  const client = viaProxy ? proxyClient() : null;
+  if (viaProxy && !client) return null;
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ru-RU,ru;q=0.9', Accept: 'text/html,application/xml;q=0.9,*/*;q=0.8' },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'follow',
+      ...(client ? { client } : {}),
+    } as RequestInit);
+    if (!resp.ok) {
+      lastFetchFailure = `HTTP ${resp.status}${viaProxy ? ' (через прокси)' : ''}`;
+      return null;
+    }
+    const type = resp.headers.get('content-type') ?? '';
+    if (type && !/html|xml|text/i.test(type)) {
+      lastFetchFailure = `не страница (${type.slice(0, 40)})`;
+      return null;
+    }
+    return decodeBytes(new Uint8Array(await resp.arrayBuffer()), type);
+  } catch (err) {
+    lastFetchFailure = `${err instanceof Error ? err.message.slice(0, 80) : 'сеть'}${viaProxy ? ' (через прокси)' : ''}`;
+    return null;
+  }
+}
+
+// Сначала напрямую (быстро и не тратит трафик прокси), и только если не
+// вышло — через российский IP. Обратный порядок гонял бы через прокси все
+// 259 доменов, хотя мешает он меньшинству.
+async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string | null> {
+  const direct = await fetchOnce(url, timeoutMs, false);
+  if (direct !== null) return direct;
+  if (!SNAPSHOT_PROXY_URL) return null;
+  return await fetchOnce(url, timeoutMs, true);
+}
+
+function sitemapLocs(xml: string): string[] {
+  return [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1].trim());
+}
+
+// Последняя сохранённая копия сайта в Wayback Machine. Ключей не требует,
+// бесплатна; если копии нет — null, и домен останется ошибкой.
+async function fetchWaybackHome(host: string): Promise<{ url: string; html: string } | null> {
+  try {
+    const resp = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(host)}`, {
+      headers: { 'User-Agent': BROWSER_UA },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const snap = data?.archived_snapshots?.closest;
+    if (!snap?.available || typeof snap.url !== 'string') return null;
+    // id_ отдаёт исходный HTML без панели и скриптов архива.
+    const raw = snap.url.replace(/^http:/, 'https:').replace(/\/web\/(\d+)\//, '/web/$1id_/');
+    const html = await fetchOnce(raw, 20000, false);
+    if (!html) return null;
+    return { url: snap.url.replace(/^http:/, 'https:'), html };
+  } catch {
+    return null;
+  }
+}
+
+async function buildSiteSnapshot(host: string, websiteUrl: string): Promise<SiteSnapshot> {
+  const startedAt = Date.now();
+  const withinBudget = () => Date.now() - startedAt < SNAPSHOT_TIME_BUDGET_MS;
+
+  // Главная: как записано в карточке, потом https://host, https://www.host
+  // (у части сайтов apex без сертификата или без A-записи вовсе), потом то же
+  // по http — сайты с битым TLS так хоть как-то читаются.
+  const candidates = new Set<string>();
+  if (/^https?:\/\//i.test(websiteUrl)) candidates.add(websiteUrl.trim());
+  candidates.add(`https://${host}/`);
+  candidates.add(`https://www.${host}/`);
+  candidates.add(`http://${host}/`);
+  candidates.add(`http://www.${host}/`);
+  lastFetchFailure = '';
+  let home: string | null = null;
+  let base: URL | null = null;
+  // Первым двум адресам даём полный таймаут, запасным — короткий, и в сумме
+  // не выходим за бюджет: пять адресов по 20с не уложились бы в wall-clock
+  // вызова, где такие же снимки идут ещё для четырёх доменов.
+  let tried = 0;
+  for (const url of candidates) {
+    if (!withinBudget()) break;
+    home = await fetchSnapshotPage(url, tried < 2 ? SNAPSHOT_HOME_TIMEOUT_MS : 8000);
+    tried++;
+    if (home) {
+      base = new URL(url);
+      break;
+    }
+  }
+  // Сайт не открылся вовсе — берём архивную копию. Владелец, 2026-09-12:
+  // «сайты могли не открыться из-за того, что они не открываются из-за vpn...
+  // попробуй открыть из-под россии» — причина обычно именно такая (функция
+  // живёт в eu-west-3, часть российских доменов режет иностранные адреса), но
+  // чужой IP для этого не нужен: разделы каталога годичной давности для
+  // определения товарных групп ничем не хуже сегодняшних, а веб-архив
+  // бесплатен и ключей не требует. Помечаем такой снимок в page_title, чтобы
+  // было видно, что данные не свежие.
+  let fromArchive = false;
+  let pagesFetchedExtra = 0;
+  if (!home || !base) {
+    const archived = await fetchWaybackHome(host);
+    if (archived) {
+      home = archived.html;
+      base = new URL(archived.url);
+      fromArchive = true;
+      pagesFetchedExtra++;
+    }
+  }
+  if (!home || !base) throw new Error(`сайт не открылся напрямую: ${lastFetchFailure || 'причина неизвестна'}`);
+
+  let pagesFetched = 1 + pagesFetchedExtra;
+  const byPath = new Map<string, SiteSection>();
+  const add = (section: SiteSection) => {
+    const key = pathKey(new URL(section.url));
+    if (!byPath.has(key)) byPath.set(key, section);
+  };
+  extractLinks(home, base, host).forEach(add);
+
+  // Корень каталога: ссылка глубины 1 с каталожным сегментом — на ней
+  // обычно полный список разделов, которого нет в шапке. Если с главной
+  // такой ссылки не нашлось, пробуем типовые адреса.
+  const roots = [...byPath.values()]
+    .map((s) => new URL(s.url))
+    .filter((u) => pathDepth(u) === 1 && isCatalogPath(u))
+    .map((u) => u.toString());
+  if (roots.length === 0) {
+    for (const path of ['/catalog/', '/katalog/', '/products/', '/shop/', '/product-category/']) {
+      roots.push(new URL(path, base).toString());
+    }
+  }
+  // В архивной копии ссылки уже развёрнуты в исходные адреса, но ходить по
+  // ним напрямую бессмысленно (сайт и так не открылся) — заворачиваем корень
+  // каталога обратно в архивный адрес с тем же слепком времени. Без этого
+  // шага у 19 из 31 архивных снимков было меньше трёх разделов: на главной
+  // многих сайтов полного меню каталога нет.
+  const archiveStamp = fromArchive ? /\/web\/(\d+)/.exec(base.pathname)?.[1] ?? '' : '';
+  const toFetchable = (u: string) =>
+    fromArchive && archiveStamp ? `https://web.archive.org/web/${archiveStamp}id_/${u}` : u;
+  let rootsFetched = 0;
+  for (const rootUrl of roots) {
+    if (rootsFetched >= 2 || !withinBudget()) break;
+    const html = await fetchSnapshotPage(toFetchable(rootUrl), fromArchive ? 20000 : 10000);
+    if (!html) continue;
+    rootsFetched++;
+    pagesFetched++;
+    extractLinks(html, new URL(rootUrl), host).forEach(add);
+  }
+
+  // sitemap.xml — единственный источник для сайтов, где меню рисует скрипт.
+  // Из индекса берём до двух вложенных карт, предпочитая каталожные.
+  if (withinBudget() && !fromArchive) {
+    const xml = await fetchSnapshotPage(new URL('/sitemap.xml', base).toString(), 10000);
+    if (xml) {
+      pagesFetched++;
+      let locs = sitemapLocs(xml);
+      if (/<sitemapindex/i.test(xml)) {
+        const children = locs
+          .filter((u) => !/image|video|news|blog|post|article|tag|author/i.test(u))
+          .sort((a, b) => Number(/catalog|categor|product|collection/i.test(b)) - Number(/catalog|categor|product|collection/i.test(a)))
+          .slice(0, 2);
+        locs = [];
+        for (const child of children) {
+          if (!withinBudget()) break;
+          const childXml = await fetchSnapshotPage(child, 10000);
+          if (!childXml) continue;
+          pagesFetched++;
+          locs.push(...sitemapLocs(childXml));
+        }
+      }
+      const parsed: URL[] = [];
+      for (const loc of locs) {
+        try {
+          const u = new URL(loc);
+          if (isUsableSection(u, host)) parsed.push(u);
+        } catch {
+          // мусор в <loc>
+        }
+      }
+      // Если на сайте вообще есть каталожные пути — берём только их (иначе
+      // sitemap приносит все статьи и служебные страницы); если нет —
+      // разделы верхних двух уровней.
+      const hasCatalog = parsed.some(isCatalogPath) || [...byPath.values()].some((s) => isCatalogPath(new URL(s.url)));
+      parsed
+        .filter((u) => (hasCatalog ? isCatalogPath(u) : pathDepth(u) <= 2))
+        .sort((a, b) => pathDepth(a) - pathDepth(b) || a.pathname.localeCompare(b.pathname))
+        .slice(0, SNAPSHOT_MAX_SITEMAP)
+        .forEach((u) => {
+          const title = titleFromSlug(u);
+          if (title) add({ title, url: u.toString() });
+        });
+    }
+  }
+
+  const sections = [...byPath.values()].slice(0, SNAPSHOT_MAX_SECTIONS);
+  const pageTitle = cleanTitle(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(home)?.[1] ?? '') ||
+    (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(home)?.[1] ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  return {
+    pageTitle: fromArchive ? `[архивная копия] ${pageTitle}`.slice(0, 200) : pageTitle,
+    metaDescription: extractMeta(home, 'description') || extractMeta(home, 'og:description'),
+    homeText: htmlToText(home).slice(0, 3000),
+    sections,
+    pagesFetched,
+  };
+}
+
+async function processSnapshot(row: { host: string; website_url: string }): Promise<void> {
+  const snapshot = await buildSiteSnapshot(row.host, row.website_url);
+  await supabase
+    .from('supplier_site_snapshots')
+    .update({
+      status: 'done',
+      page_title: snapshot.pageTitle,
+      meta_description: snapshot.metaDescription,
+      home_text: snapshot.homeText,
+      sections: snapshot.sections,
+      pages_fetched: snapshot.pagesFetched,
+      error: null,
+      fetched_at: new Date().toISOString(),
+    })
+    .eq('host', row.host);
+}
+
+async function processSnapshotQueue(summary: { snapshots: number; errors: string[] }): Promise<void> {
+  // Если вызов умер посреди снимка (лимит wall-clock рантайма), строка
+  // осталась бы в processing навсегда и домен выпал бы из очереди молча.
+  // Возвращаем такие в pending: снимок идемпотентен, повтор безопасен.
+  await supabase
+    .from('supplier_site_snapshots')
+    .update({ status: 'pending' })
+    .eq('status', 'processing')
+    .lt('claimed_at', new Date(Date.now() - 10 * 60 * 1000).toISOString());
+
+  const { data: rows } = await supabase
+    .from('supplier_site_snapshots')
+    .select('host, website_url, attempts')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(SNAPSHOT_BATCH);
+  const claimed: { host: string; website_url: string; attempts: number }[] = [];
+  for (const row of rows ?? []) {
+    const { data } = await supabase
+      .from('supplier_site_snapshots')
+      .update({ status: 'processing', claimed_at: new Date().toISOString() })
+      .eq('host', row.host)
+      .eq('status', 'pending')
+      .select('host');
+    if ((data?.length ?? 0) > 0) claimed.push(row);
+  }
+  const settled = await Promise.allSettled(claimed.map((row) => processSnapshot(row)));
+  for (const [i, r] of settled.entries()) {
+    if (r.status === 'fulfilled') {
+      summary.snapshots++;
+      continue;
+    }
+    const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
+    summary.errors.push(`снимок ${claimed[i].host}: ${message}`);
+    // Временный отказ (медленный хостинг, 429/503, обрыв соединения) — вернуть
+    // в очередь: на следующем круге сайт часто открывается. 401/403/404 —
+    // отказ по существу, повтор их не починит, сразу ошибка.
+    const attempts = (claimed[i].attempts ?? 0) + 1;
+    const transient = /timed out|timeout|HTTP (429|5\d\d)|client error \(Connect/i.test(message);
+    await supabase
+      .from('supplier_site_snapshots')
+      .update(
+        transient && attempts < SNAPSHOT_MAX_ATTEMPTS
+          ? { status: 'pending', attempts, error: message.slice(0, 400) }
+          : { status: 'error', attempts, error: message.slice(0, 400), fetched_at: new Date().toISOString() },
+      )
+      .eq('host', claimed[i].host);
+  }
+}
+
+Deno.serve(async (req: Request) => {
+  // Диагностика окружения рантайма (умеет ли он ходить через прокси) — нужна
+  // была, чтобы понять, можно ли читать российские сайты с российского IP:
+  // сама функция живёт в eu-west-3, и часть доменов режет иностранные адреса.
+  if (new URL(req.url).searchParams.get('probe') === 'runtime') {
+    let proxyOk = false;
+    let proxyError = '';
+    try {
+      const client = (Deno as unknown as { createHttpClient?: (o: unknown) => unknown }).createHttpClient?.({
+        proxy: { url: 'http://127.0.0.1:1' },
+      });
+      proxyOk = !!client;
+      (client as { close?: () => void } | undefined)?.close?.();
+    } catch (err) {
+      proxyError = err instanceof Error ? err.message.slice(0, 160) : String(err);
+    }
+    return new Response(
+      JSON.stringify({
+        hasCreateHttpClient: typeof (Deno as unknown as { createHttpClient?: unknown }).createHttpClient,
+        proxyOk,
+        proxyError,
+        snapshotProxySet: !!Deno.env.get('SNAPSHOT_PROXY_URL'),
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
   if (!PROXYAPI_KEY) {
     return new Response(JSON.stringify({ error: 'PROXYAPI_KEY не задан в секретах функции' }), {
       status: 500,
@@ -674,7 +1202,7 @@ Deno.serve(async () => {
     });
   }
 
-  const summary = { search: 0, enrichment: 0, errors: [] as string[] };
+  const summary = { search: 0, enrichment: 0, snapshots: 0, errors: [] as string[] };
 
   // Поиск важнее: он порождает новых поставщиков, и именно его ждёт человек с
   // открытой вкладкой. Один раунд за вызов — чтобы уложиться в wall-clock.
@@ -715,7 +1243,13 @@ Deno.serve(async () => {
     if (await claim('supplier_enrichment_jobs', job.id)) claimed.push(job);
   }
 
-  const settled = await Promise.allSettled(claimed.map((job) => processEnrichmentJob(job)));
+  // Снимки сайтов идут параллельно с обогащением: и то и другое — ожидание
+  // сети, а не процессор. Когда в этот вызов шёл поиск, снимки пропускаем —
+  // wall-clock уже потрачен.
+  const [settled] = await Promise.all([
+    Promise.allSettled(claimed.map((job) => processEnrichmentJob(job))),
+    summary.search > 0 ? Promise.resolve() : processSnapshotQueue(summary),
+  ]);
   settled.forEach((r, i) => {
     if (r.status === 'fulfilled') {
       summary.enrichment++;
