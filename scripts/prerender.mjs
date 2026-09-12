@@ -48,6 +48,18 @@
 // рендер, не быстрый (чтобы баг в этой логике никогда не стал тихой SEO-
 // регрессией).
 //
+// 2026-09-12 — у полного режима появился ВТОРОЙ автоматический сигнал:
+// правка кода самих публичных страниц. Отпечаток их исходников
+// (scripts/public-build-id.mjs, граф статических импортов от src/main.tsx —
+// туда по построению не попадает ни одна админ-страница, они все за lazy())
+// кладётся сборкой в dist/public-build-id.txt и сверяется с тем, что лежит на
+// живом проде: не совпал — полный рендер. Правки админки/API/скриптов
+// отпечаток не меняют и идут быстрым путём, как и просил владелец
+// («быстрый рендер чисто для админки и полный при правках маркетинговых
+// страниц»). Копии страниц при этом перенацеливаются на бандл текущей
+// сборки — см. scripts/prerender-assets.mjs, без этого быстрый режим
+// вырождался в полный на каждом пуше (хэши чанков меняются каскадом).
+//
 // Важное следствие: страницы БЕЗ своего триггера обновления (каталог БЦ,
 // хабы, аналитика — только лендинги объектов дёргают хук) больше не
 // освежаются попутно от каждого пуша кода, как раньше — держать в голове,
@@ -59,8 +71,10 @@
 // даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { retargetAssetRefs, unknownAssetRefs } from './prerender-assets.mjs';
+import { computePublicBuildId } from './public-build-id.mjs';
 
 const ROOT_DIR = new URL('..', import.meta.url).pathname;
 const DIST_DIR = join(ROOT_DIR, 'dist');
@@ -556,9 +570,63 @@ async function shouldForceFullPrerender() {
     );
     if (!res.ok) return true;
     const rows = await res.json();
-    return rows.length > 0; // забрали флаг первыми — наш билд делает полный рендер
+    if (rows.length > 0) return true; // забрали флаг первыми — наш билд делает полный рендер
   } catch (err) {
     console.warn('[prerender] не удалось проверить/потребить deploy_debounce — полный режим на всякий случай:', err);
+    return true;
+  }
+  // Данные не менялись — остаётся вопрос, не менялся ли КОД публичных
+  // страниц (см. ниже).
+  return await publicCodeChangedSinceLive();
+}
+
+// Второй сигнал полного режима (владелец, 2026-09-12: «большинство правок я
+// вношу в админку, а оно рендерит и все маркетинговые страницы; нужен быстрый
+// рендер чисто для админки и полный при правках маркетинговых страниц»).
+//
+// Быстрый режим копирует разметку страниц с живого прода — значит он верен
+// ровно до тех пор, пока эта разметка не устарела, то есть пока не правился
+// код самих публичных страниц. Отпечаток их исходников
+// (scripts/public-build-id.mjs) сборка кладёт в dist/public-build-id.txt;
+// сравниваем свой с тем, что лежит на живом проде: совпал — правки не
+// касались маркетинга, копии корректны; не совпал — полный рендер.
+//
+// Любая неопределённость (файла на проде ещё нет, сеть подвела, отпечаток не
+// посчитался) — полный режим, как и везде в этой логике: тихая SEO-регрессия
+// дороже лишних минут сборки.
+async function publicCodeChangedSinceLive() {
+  let localId;
+  try {
+    localId = computePublicBuildId().id;
+  } catch (err) {
+    console.warn('[prerender] не удалось посчитать отпечаток публичного кода — полный режим:', err);
+    return true;
+  }
+  try {
+    const res = await fetch(`${SITE_ORIGIN}/public-build-id.txt`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      console.log(`[prerender] /public-build-id.txt на проде недоступен (${res.status}) — полный режим`);
+      return true;
+    }
+    // До первого деплоя с этим шагом сборки файла на проде нет, и SPA-рерайт
+    // vercel.json отдаёт на этот путь index.html с кодом 200 — поэтому
+    // недостаточно проверить res.ok, нужен ещё и формат отпечатка.
+    const liveId = (await res.text()).trim();
+    if (!/^[0-9a-f]{32}$/.test(liveId)) {
+      console.log('[prerender] на проде ещё нет /public-build-id.txt (ответ не похож на отпечаток) — полный режим');
+      return true;
+    }
+    if (liveId === localId) {
+      console.log(`[prerender] публичный код не менялся (отпечаток ${localId}) — правки не касаются маркетинговых страниц`);
+      return false;
+    }
+    console.log(`[prerender] публичный код изменился (${liveId || 'пусто'} → ${localId}) — полный режим`);
+    return true;
+  } catch (err) {
+    console.warn('[prerender] не удалось сверить отпечаток публичного кода с продом — полный режим:', err);
     return true;
   }
 }
@@ -568,26 +636,32 @@ async function shouldForceFullPrerender() {
 // что renderPath ждёт от headless-рендера) — «голый» SPA-шелл (например,
 // если путь на проде почему-то ещё не был пререндерен) не проходит, и
 // вызывающий код делает настоящий рендер именно для этого пути.
-// Имя входного чанка (assets/index-<hash>.js) в переданном HTML. Хэш в имени
-// считается от содержимого бандла, поэтому он меняется при ЛЮБОЙ правке кода
-// фронта — по нему и сверяем, из той ли сборки снапшот.
-function entryAssetOf(html) {
-  const m = html.match(/assets\/index-[A-Za-z0-9_-]+\.js/);
-  return m ? m[0] : null;
-}
 
-// Входной чанк ТЕКУЩЕЙ сборки (читается один раз, лениво — dist/index.html
-// к этому моменту уже собран vite).
-let currentEntryAssetCache;
-function currentEntryAsset() {
-  if (currentEntryAssetCache === undefined) {
+// Имена файлов текущей сборки (dist/assets) — по ним проверяем, что в
+// перенацеленном снапшоте не осталось ссылок на чанки прошлых сборок.
+let buildAssetNamesCache;
+function buildAssetNames() {
+  if (buildAssetNamesCache === undefined) {
     try {
-      currentEntryAssetCache = entryAssetOf(readFileSync(join(DIST_DIR, 'index.html'), 'utf8'));
+      buildAssetNamesCache = new Set(readdirSync(join(DIST_DIR, 'assets')));
     } catch {
-      currentEntryAssetCache = null;
+      buildAssetNamesCache = new Set();
     }
   }
-  return currentEntryAssetCache;
+  return buildAssetNamesCache;
+}
+
+// SPA-шелл текущей сборки — источник актуальных ссылок на бандл.
+let shellHtmlCache;
+function shellHtml() {
+  if (shellHtmlCache === undefined) {
+    try {
+      shellHtmlCache = readFileSync(join(DIST_DIR, 'index.html'), 'utf8');
+    } catch {
+      shellHtmlCache = null;
+    }
+  }
+  return shellHtmlCache;
 }
 
 async function fetchPathLive(path) {
@@ -601,21 +675,35 @@ async function fetchPathLive(path) {
     // index-<старый хэш>.js">, а в НОВОМ деплое файлов с такими именами нет
     // (хэш пересчитался) — SPA-рерайт vercel.json отдавал на них index.html,
     // браузер отказывался исполнять HTML как модуль, и все ~285 публичных
-    // страниц оставались статикой без приложения. Поэтому снапшот с прода
-    // годится, только если он ссылается на входной чанк этой же сборки;
-    // иначе — честный рендер (то есть при любой правке кода фронта быстрый
-    // путь сам собой вырождается в полный, что и требуется).
-    const expected = currentEntryAsset();
-    if (expected && !html.includes(expected)) {
+    // страниц оставались статикой без приложения.
+    //
+    // 2026-09-12 — тогда такая копия просто отвергалась (честный рендер
+    // пути), но хэши чанков пересчитываются КАСКАДОМ от любой правки кода,
+    // даже чисто админской, так что отвергались сразу все ~285 путей: каждый
+    // пуш = полный рендер = сборка 10 минут вместо минуты. Теперь копия не
+    // отвергается, а перенацеливается — ссылки на бандл заменяются на ссылки
+    // этой сборки (см. scripts/prerender-assets.mjs), разметка страницы
+    // остаётся от прода. Не удалось перенацелить или после замены осталась
+    // хоть одна ссылка на несуществующий файл — рендерим честно, как раньше.
+    const shell = shellHtml();
+    const retargeted = shell ? retargetAssetRefs(html, shell) : null;
+    if (!retargeted) {
+      console.log(`[prerender] /${path}: не удалось перенацелить ссылки на бандл в живой копии — рендерю заново`);
+      return false;
+    }
+    const unknown = unknownAssetRefs(retargeted, buildAssetNames());
+    if (unknown.length > 0) {
       console.log(
-        `[prerender] /${path}: живая копия от другой сборки (${entryAssetOf(html) ?? 'чанк не найден'} вместо ${expected}) — рендерю заново`,
+        `[prerender] /${path}: в живой копии остались чанки чужой сборки (${unknown.slice(0, 3).join(', ')}${unknown.length > 3 ? ', …' : ''}) — рендерю заново`,
       );
       return false;
     }
     const dir = join(DIST_DIR, path);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'index.html'), html);
-    console.log(`[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(html.length / 1024)} КБ)`);
+    writeFileSync(join(dir, 'index.html'), retargeted);
+    console.log(
+      `[prerender] /${path} → dist/${path}/index.html (скопировано с прода, ${Math.round(retargeted.length / 1024)} КБ)`,
+    );
     return true;
   } catch (err) {
     console.warn(`[prerender] /${path}: не удалось скачать живую копию (${err instanceof Error ? err.message : err}), рендерю`);
