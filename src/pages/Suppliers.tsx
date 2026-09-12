@@ -3914,7 +3914,6 @@ export function Suppliers() {
           request={bulkSendConfig.request}
           requests={requests}
           attachment={bulkSendConfig.attachment}
-          masterLedgers={materialLedgersWithMasters.filter((l) => isMasterLedgerId(l.id))}
           offers={offers}
           emails={supplierEmails}
           templates={emailTemplates}
