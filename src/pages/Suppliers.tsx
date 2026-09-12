@@ -2263,6 +2263,12 @@ export function Suppliers() {
           .filter((o) => o.requestId === request.id)
           .map((o) => ({ name: o.name, website: o.websiteUrl })),
       });
+      // Владелец, 2026-09-12: учёт добавления новых поставщиков по
+      // сотрудникам. Само действие человека здесь — "запустил поиск"; сколько
+      // поставщиков по нему реально добавилось, считается не отсюда, а по
+      // added_count самого задания (created_by_name в supplier_web_search_jobs,
+      // см. Metrics.tsx) — в момент постановки в очередь это ещё неизвестно.
+      logActivity('supplier_web_search_started');
       setWebSearchJobs((prev) => [job, ...prev]);
     } catch (err) {
       setWebSearchQueueError({ requestId: request.id, message: errorMessage(err, 'Не удалось поставить поиск в очередь') });

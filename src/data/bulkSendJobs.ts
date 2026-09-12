@@ -20,6 +20,12 @@ export interface BulkSendJob {
   body: string;
   attachment: LedgerAttachment;
   status: 'queued' | 'done';
+  // Кто поставил рассылку (владелец, 2026-09-12 — учёт работы с письмами по
+  // сотрудникам). Обработчик очереди переносит это имя в каждое созданное им
+  // письмо (sent_by_name в supplier_offer_emails): сами письма отправляет
+  // фоновая функция, никакого "вошедшего пользователя" в тот момент уже нет.
+  createdByProfileId: string | null;
+  createdByName: string | null;
   createdAt: string;
 }
 
@@ -31,5 +37,7 @@ export interface BulkSendJobRow {
   body: string;
   attachment: LedgerAttachment;
   status: string;
+  created_by_profile_id: string | null;
+  created_by_name: string | null;
   created_at: string;
 }

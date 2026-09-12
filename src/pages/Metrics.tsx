@@ -10,6 +10,7 @@ import { fetchActivityLog } from '../lib/activityLogApi';
 import type { ActivityLogEntry } from '../data/activityLog';
 import { fetchAllSupplierOfferEmails } from '../lib/supplierOfferEmailsApi';
 import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
+import { fetchSupplierWebSearchJobs, type SupplierWebSearchJob } from '../lib/supplierWebSearchApi';
 
 // Владелец, 2026-09-05: "давай трекать Альмиру" (по аналогии с Activity Log
 // Светланы — см. data/activityLog.ts/ActivityLog.tsx). Страница НЕ в меню и
@@ -46,6 +47,32 @@ import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 // supplier_offer_verified (то по-прежнему означает "первая ручная
 // верификация карточки, добавленной веб-поиском"), у него другой смысл
 // ("уже N-е подтверждение присланного счёта/КП по переписке").
+//
+// 2026-09-12 — владелец: "добавь учёт действий Светланы по добавлению новых
+// поставщиков", "добавь учёт моих действий по поставщикам и письмам".
+// Реальная проблема, которую это вскрыло: до этой правки страница считала
+// события ПО ТИПУ ДЕЙСТВИЯ, а не по сотруднику — тип действия работал
+// заглушкой вместо человека ("supplier_* значит Альмира"). Пока поставщиками
+// занимался ровно один человек, это совпадало; как только их стало трое,
+// цифры поехали — в блоке Альмиры в тот же день лежали 11 верификаций
+// владельца и лежали бы все добавления Светланы. Теперь КАЖДЫЙ счётчик
+// фильтруется по profile_name залогировавшего профиля, а блоки строятся по
+// людям (TRACKED_PEOPLE + все прочие профили, реально встретившиеся в логе,
+// чтобы ничья работа не осталась невидимой), с одинаковым набором плиток —
+// никаких предположений "кто чем занимается" в коде больше нет.
+//
+// Три новых источника данных, которых не хватало для этого:
+//  1. supplier_web_search_jobs.created_by_name — кто запустил веб-поиск;
+//     рядом лежит added_count (сколько поставщиков реально добавилось), то
+//     есть "добавлено поиском" считается по факту, а не по числу запусков.
+//  2. activity_log 'supplier_web_search_started' — само действие "запустил
+//     поиск" (Suppliers.tsx), видно сразу, не дожидаясь результата.
+//  3. supplier_offer_emails.sent_by_name — автор исходящего письма. Раньше
+//     письма нельзя было разделить по сотрудникам в принципе (в таблице не
+//     было автора), поэтому весь их объём висел на Альмире. Заполняется
+//     сервером по вошедшему пользователю (api/purchase-send-email.js) и
+//     автором задания у массовой рассылки; историю разобрали бэкфиллом по
+//     подписи в теле письма (см. docs/session-journal.md, 2026-09-12).
 
 type Period = 'today' | 'week' | 'month' | 'custom';
 
@@ -142,19 +169,48 @@ function PersonSection({ name, subtitle, children }: { name: string; subtitle: s
   );
 }
 
+// Сотрудники, чей блок показывается всегда — даже если за период у них нули:
+// ноль здесь несёт смысл ("трекается, но человек ничего не делал"), именно
+// из-за невозможности отличить его от "действие вообще не логируется" была
+// правка 2026-09-10 (см. комментарий в начале файла). Все прочие профили,
+// реально встретившиеся в данных за период, дописываются к списку сами.
+const TRACKED_PEOPLE = ['Светлана', 'Альмира', 'Трэшмен'];
+
+// display_name владельца в профиле — рабочий никнейм ("в платформе имя не
+// меняй", 2026-09-03); на этой странице, которую видит только он сам,
+// показываем полное имя — та же узкая подмена, что и в подписи писем
+// (emailSignature в SupplierCorrespondenceTab.tsx), сам профиль не трогаем.
+function personTitle(name: string): string {
+  return name === 'Трэшмен' ? 'Анатолий (Трэшмен)' : name;
+}
+
+interface PersonStats {
+  name: string;
+  marketOffersVerified: number;
+  suppliersAddedManually: number;
+  supplierSearchesStarted: number;
+  suppliersAddedBySearch: number;
+  suppliersVerified: number;
+  invoicesConfirmed: number;
+  emailsTotal: number;
+  emailsUnique: number;
+}
+
 export function Metrics() {
   const [entries, setEntries] = useState<ActivityLogEntry[] | null>(null);
   const [emails, setEmails] = useState<SupplierOfferEmail[] | null>(null);
+  const [searchJobs, setSearchJobs] = useState<SupplierWebSearchJob[] | null>(null);
   const [error, setError] = useState('');
 
   const [period, setPeriod] = useState<Period>('today');
   const [customMonth, setCustomMonth] = useState(currentMonthStr());
 
   useEffect(() => {
-    Promise.all([fetchActivityLog(), fetchAllSupplierOfferEmails()])
-      .then(([logEntries, offerEmails]) => {
+    Promise.all([fetchActivityLog(), fetchAllSupplierOfferEmails(), fetchSupplierWebSearchJobs()])
+      .then(([logEntries, offerEmails, jobs]) => {
         setEntries(logEntries);
         setEmails(offerEmails);
+        setSearchJobs(jobs);
       })
       .catch(() => setError('Не удалось загрузить метрики.'));
   }, []);
@@ -171,35 +227,60 @@ export function Metrics() {
 
   const entriesInRange = useMemo(() => (entries ?? []).filter((e) => inRange(e.createdAt)), [entries, inRange]);
 
-  const svetlanaVerifiedCount = useMemo(
-    () => entriesInRange.filter((e) => e.action === 'market_offer_verified').length,
-    [entriesInRange],
-  );
-
-  const almiraVerifiedCount = useMemo(
-    () => entriesInRange.filter((e) => e.action === 'supplier_offer_verified').length,
-    [entriesInRange],
-  );
-  const almiraAddedManuallyCount = useMemo(
-    () => entriesInRange.filter((e) => e.action === 'supplier_offer_added_manually').length,
-    [entriesInRange],
-  );
-  const almiraInvoiceConfirmedCount = useMemo(
-    () => entriesInRange.filter((e) => e.action === 'supplier_invoice_confirmed').length,
-    [entriesInRange],
-  );
-
   const outgoingEmailsInRange = useMemo(
     () => (emails ?? []).filter((e) => e.direction === 'out' && inRange(e.createdAt)),
     [emails, inRange],
   );
-  const almiraTotalEmailsCount = outgoingEmailsInRange.length;
-  const almiraUniqueEmailsCount = useMemo(
-    () => new Set(outgoingEmailsInRange.map((e) => e.toAddress.trim().toLowerCase())).size,
+
+  // Задание веб-поиска относим к периоду по времени ПОСТАНОВКИ В ОЧЕРЕДЬ —
+  // это и есть момент действия человека. Обработчик дописывает added_count
+  // минутами позже, но в ту же строку, поэтому поиск, запущенный в конце
+  // периода, не теряется и не задваивается.
+  const searchJobsInRange = useMemo(
+    () => (searchJobs ?? []).filter((j) => inRange(j.createdAt)),
+    [searchJobs, inRange],
+  );
+
+  const people: PersonStats[] = useMemo(() => {
+    const names = [...TRACKED_PEOPLE];
+    const seen = [
+      ...entriesInRange.map((e) => e.profileName),
+      ...outgoingEmailsInRange.map((e) => e.sentByName),
+      ...searchJobsInRange.map((j) => j.createdByName),
+    ];
+    for (const name of seen) {
+      if (name && !names.includes(name)) names.push(name);
+    }
+    return names.map((name) => {
+      const actions = entriesInRange.filter((e) => e.profileName === name);
+      const countAction = (action: string) => actions.filter((e) => e.action === action).length;
+      const sent = outgoingEmailsInRange.filter((e) => e.sentByName === name);
+      return {
+        name,
+        marketOffersVerified: countAction('market_offer_verified'),
+        suppliersAddedManually: countAction('supplier_offer_added_manually'),
+        supplierSearchesStarted: countAction('supplier_web_search_started'),
+        suppliersAddedBySearch: searchJobsInRange
+          .filter((j) => j.createdByName === name)
+          .reduce((sum, j) => sum + (j.addedCount ?? 0), 0),
+        suppliersVerified: countAction('supplier_offer_verified'),
+        invoicesConfirmed: countAction('supplier_invoice_confirmed'),
+        emailsTotal: sent.length,
+        emailsUnique: new Set(sent.map((e) => e.toAddress.trim().toLowerCase())).size,
+      };
+    });
+  }, [entriesInRange, outgoingEmailsInRange, searchJobsInRange]);
+
+  // Письма без автора — отправленные до появления колонки sent_by_name и не
+  // разобранные бэкфиллом по подписи. Показываем их отдельной строкой, а не
+  // растворяем в чьих-то плитках: приписать их наугад = ровно та ошибка,
+  // из-за которой эта страница и переделывалась.
+  const emailsWithoutAuthor = useMemo(
+    () => outgoingEmailsInRange.filter((e) => !e.sentByName).length,
     [outgoingEmailsInRange],
   );
 
-  const loading = entries === null || emails === null;
+  const loading = entries === null || emails === null || searchJobs === null;
 
   return (
     <>
@@ -236,33 +317,57 @@ export function Metrics() {
           </div>
           <p className="text-xs text-ink-faint">{formatPeriodCaption(period, start, end)}</p>
 
-          <PersonSection name="Светлана" subtitle="Верификация объявлений (аналитика рынка, /admin/market-offers)">
-            <StatTile label="Верифицировано объявлений" value={svetlanaVerifiedCount} />
-          </PersonSection>
+          {people.map((p) => (
+            <PersonSection
+              key={p.name}
+              name={personTitle(p.name)}
+              subtitle={`Действия, залогированные под профилем «${p.name}»`}
+            >
+              <StatTile
+                label="Верифицировано объявлений"
+                value={p.marketOffersVerified}
+                hint="Аналитика рынка, /admin/market-offers"
+              />
+              <StatTile
+                label="Добавлено поставщиков вручную"
+                value={p.suppliersAddedManually}
+                hint="Новая карточка, заполненная через форму с нуля"
+              />
+              <StatTile
+                label="Запущено веб-поисков"
+                value={p.supplierSearchesStarted}
+                hint="Кнопка «Найти в сети» в категории на вкладке «Поставщики»"
+              />
+              <StatTile
+                label="Добавлено поставщиков поиском"
+                value={p.suppliersAddedBySearch}
+                hint="Реально созданные карточки по запущенным им поискам"
+              />
+              <StatTile
+                label="Верифицировано поставщиков"
+                value={p.suppliersVerified}
+                hint="Подтверждены данные у поставщика, добавленного веб-поиском"
+              />
+              <StatTile
+                label="Подтверждено счетов/КП"
+                value={p.invoicesConfirmed}
+                hint="Автораспознанный счёт в письме, подтверждён кнопкой"
+              />
+              <StatTile
+                label="Уникальных писем отправлено"
+                value={p.emailsUnique}
+                hint="Разных адресов получателей"
+              />
+              <StatTile label="Писем отправлено всего" value={p.emailsTotal} hint="Включая повторные письма" />
+            </PersonSection>
+          ))}
 
-          <PersonSection name="Альмира" subtitle="Работа с поставщиками (раздел «Закупки» → «Поставщики»/«Письма»)">
-            <StatTile
-              label="Верифицировано поставщиков"
-              value={almiraVerifiedCount}
-              hint="Подтверждены данные у поставщика, добавленного веб-поиском"
-            />
-            <StatTile
-              label="Добавлено вручную"
-              value={almiraAddedManuallyCount}
-              hint="Новое предложение, заполненное через форму с нуля"
-            />
-            <StatTile
-              label="Подтверждено счетов/КП"
-              value={almiraInvoiceConfirmedCount}
-              hint="Автораспознанный счёт в письме, подтверждён кнопкой"
-            />
-            <StatTile
-              label="Уникальных писем отправлено"
-              value={almiraUniqueEmailsCount}
-              hint="Разных адресов получателей"
-            />
-            <StatTile label="Писем отправлено всего" value={almiraTotalEmailsCount} hint="Включая повторные письма" />
-          </PersonSection>
+          {emailsWithoutAuthor > 0 && (
+            <p className="text-xs text-ink-faint">
+              Писем за период без автора: {emailsWithoutAuthor} — отправлены до того, как отправитель начал
+              записываться в саму переписку (и не опознались по подписи в теле письма).
+            </p>
+          )}
         </div>
       )}
     </>

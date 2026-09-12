@@ -277,6 +277,12 @@ async function sendOneEmail(offer: any, request: any, legalEntity: any, job: any
     body,
     files: storedFiles,
     resend_message_id: resendJson?.id ?? null,
+    // Автор рассылки переносится в каждое её письмо (владелец, 2026-09-12 —
+    // учёт работы с письмами по сотрудникам, см. Metrics.tsx): в момент
+    // фоновой отправки вошедшего пользователя уже нет, единственный
+    // достоверный источник — кто поставил задание (bulk_send_jobs).
+    sent_by_profile_id: job.created_by_profile_id ?? null,
+    sent_by_name: job.created_by_name ?? null,
   });
   if (error) throw error;
 }

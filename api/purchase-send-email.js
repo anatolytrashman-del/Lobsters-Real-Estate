@@ -66,6 +66,30 @@ async function fetchShortCode(table, id) {
   return rows[0]?.short_code ?? null;
 }
 
+// Кто отправляет письмо — берём по реально вошедшему пользователю (id из
+// проверенного токена, см. requireStaffAuth), а не по имени, присланному
+// клиентом: иначе метрику "писем отправлено" по сотрудникам можно было бы
+// подделать обычным POST'ом. Best-effort — если профиль почему-то не нашёлся,
+// письмо всё равно уходит, просто без автора (владелец, 2026-09-12).
+async function fetchAuthorProfile(userId) {
+  try {
+    const resp = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/access_profiles?select=id,display_name&user_id=eq.${userId}&limit=1`,
+      {
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      },
+    );
+    if (!resp.ok) return null;
+    const rows = await resp.json();
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function insertEmailRow(table, payload) {
   const resp = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${table}`, {
     method: 'POST',
@@ -252,8 +276,19 @@ export default async function handler(req, res) {
     }
     const resendJson = await resendResp.json();
 
+    // sent_by_* есть только у supplier_offer_emails (переписка Ресерча) —
+    // в purchase_emails таких колонок нет, туда поля не подмешиваем.
+    const author = purchaseId ? null : await fetchAuthorProfile(user.id);
+
     const row = await insertEmailRow(table, {
-      ...(purchaseId ? { purchase_id: purchaseId } : { offer_id: offerId, order_id: orderId ?? null }),
+      ...(purchaseId
+        ? { purchase_id: purchaseId }
+        : {
+            offer_id: offerId,
+            order_id: orderId ?? null,
+            sent_by_profile_id: author?.id ?? null,
+            sent_by_name: author?.display_name ?? null,
+          }),
       direction: 'out',
       from_address: fromAddress,
       to_address: toAddress,

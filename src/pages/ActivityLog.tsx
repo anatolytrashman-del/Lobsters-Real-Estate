@@ -67,8 +67,9 @@ export function ActivityLog() {
 
   const todayTotal = days.find((d) => d.dayKey === todayKey)?.total ?? 0;
 
-  // Пока залогирован только один вид действия, но подпись выводим на
-  // случай, если позже добавятся другие — чтобы не переписывать страницу.
+  // Виды действий, реально встречающиеся в логе — подпись под счётчиком за
+  // сегодня. Список растёт сам (ACTIVITY_ACTION_LABELS в data/activityLog.ts),
+  // страницу под каждое новое действие переписывать не нужно.
   const actionsSeen = useMemo(() => {
     if (!entries) return [];
     return [...new Set(entries.map((e) => e.action))];
@@ -91,7 +92,10 @@ export function ActivityLog() {
         <div className="flex flex-col gap-4">
           <div className={cn('flex flex-col gap-1 p-4', glassCardClass)} style={glassCardShadow}>
             <p className="text-sm text-ink-muted">Сегодня, {formatDayLabel(todayKey)}</p>
-            <p className="text-2xl font-semibold text-ink">{todayTotal} карточек проверено</p>
+            {/* Раньше было "карточек проверено" — с появлением действий вроде
+                запуска веб-поиска поставщиков (2026-09-12) это перестало быть
+                правдой: строка лога ≠ проверенная карточка. */}
+            <p className="text-2xl font-semibold text-ink">{todayTotal} действий залогировано</p>
             {actionsSeen.length > 0 && (
               <p className="text-xs text-ink-faint">
                 Отслеживается: {actionsSeen.map(activityActionLabel).join(', ')}
