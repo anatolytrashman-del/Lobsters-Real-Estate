@@ -38,7 +38,7 @@
 // убранной, как и была).
 import { requireStaffAuth } from './_auth.js';
 import { recognizeInvoice } from './_invoiceRecognition.js';
-import { checkReliability, checkoKeyProblem, invalidInnReason } from './_checko.js';
+import { checkReliability, checkoKeyProblem, invalidInnReason, saveReliabilityIfNew } from './_checko.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -99,6 +99,11 @@ async function handleRecognizeInvoice(req, res) {
   }
   try {
     const extraction = await recognizeInvoice(fileUrl.trim(), fileName.trim());
+    // Счёт, загруженный в форму руками, — такое же "первое появление ИНН",
+    // как и пришедший письмом, поэтому проверка запускается и здесь.
+    if (extraction.isInvoice) {
+      await saveReliabilityIfNew(extraction.supplierInn);
+    }
     res.status(200).json({ extraction });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Не удалось распознать документ' });

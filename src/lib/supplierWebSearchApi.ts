@@ -29,6 +29,9 @@ export interface RecognizedInvoice {
   isInvoice: boolean;
   price: number | null;
   currency: string | null;
+  // ИНН поставщика, выставившего счёт (не покупателя). Уже проверен по
+  // контрольному разряду на сервере; null — в документе не нашёлся.
+  supplierInn: string | null;
   items: RecognizedInvoiceItem[];
 }
 

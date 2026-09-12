@@ -41,6 +41,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { extractEmailAttachments, fetchReceivedEmailBody } from './_attachments.js';
 import { recognizeInvoice, INVOICE_MAX_PAGES } from './_invoiceRecognition.js';
+import { saveReliabilityIfNew } from './_checko.js';
 
 export const config = {
   api: {
@@ -363,6 +364,21 @@ export default async function handler(req, res) {
               sourceFile: { url: candidate.url, fileName: candidate.fileName },
               recognizedAt: new Date().toISOString(),
             };
+          }
+          // Владелец, 2026-09-12: "как только поставщик присылает счет в
+          // первый раз с новым ИНН, проверка должна автоматически
+          // запускаться и выводить на карточке поставщика" — запускаем
+          // ЗДЕСЬ, на приёме письма, а не при подтверждении распознавания
+          // закупщицей: к моменту, когда она откроет карточку, результат уже
+          // должен лежать в базе, иначе "автоматически" превращается в
+          // "после того, как я нажму подтвердить".
+          //
+          // Проверка привязана к ИНН, а не к предложению, поэтому её можно
+          // сохранять ещё до того, как закупщица примет счёт: строка в
+          // supplier_reliability ни на что не влияет, пока у предложения не
+          // появится тот же inn.
+          if (recognized.isInvoice) {
+            await saveReliabilityIfNew(recognized.supplierInn);
           }
         } catch (err) {
           console.error('Не удалось автораспознать вложение как счёт (не критично, письмо всё равно сохранится):', err);

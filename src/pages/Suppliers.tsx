@@ -261,6 +261,10 @@ const emptyOfferForm = {
   price: '' as string,
   currency: RESEARCH_CURRENCIES[0] as Currency,
   items: [] as PurchaseItem[],
+  // Не редактируется руками — приходит из распознанного счёта (см. inn в
+  // data/supplierResearch.ts). Живёт в форме только чтобы пережить
+  // сохранение карточки и не потеряться между распознаванием и submit.
+  inn: null as string | null,
 };
 
 // Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей цены" — тот
@@ -1416,10 +1420,14 @@ function ReliabilityBlock({
   const enforcements = (reliability?.enforcements ?? {}) as Record<string, any>;
   const facts: Array<[string, string]> = [];
   if (reliability?.found) {
-    if (company['НаимПолн'] || company['НаимСокр']) facts.push(['Юрлицо', String(company['НаимСокр'] || company['НаимПолн'])]);
+    // У ИП вместо наименования — ФИО, и это не юрлицо, поэтому и подпись
+    // другая (см. ветку по длине ИНН в api/_checko.js).
+    if (company['ФИО']) facts.push(['ИП', String(company['ФИО'])]);
+    else if (company['НаимПолн'] || company['НаимСокр']) facts.push(['Юрлицо', String(company['НаимСокр'] || company['НаимПолн'])]);
     if (company['Статус']?.['Наим']) facts.push(['Статус в ЕГРЮЛ', String(company['Статус']['Наим'])]);
     if (company['ДатаРег']) facts.push(['Зарегистрировано', String(company['ДатаРег'])]);
     if (company['ЮрАдрес']?.['АдресРФ']) facts.push(['Юр. адрес', String(company['ЮрАдрес']['АдресРФ'])]);
+    else if (company['Регион'] || company['НасПункт']) facts.push(['Регион', String(company['НасПункт'] || company['Регион'])]);
     if (company['Руковод']?.[0]?.['ФИО']) facts.push(['Руководитель', String(company['Руковод'][0]['ФИО'])]);
     if (typeof company['СЧР'] === 'number') facts.push(['Сотрудников (ФНС)', String(company['СЧР'])]);
     if (typeof cases['ЗапВсего'] === 'number') {
@@ -1609,6 +1617,7 @@ export function Suppliers() {
   const [offerExtraction, setOfferExtraction] = useState<{
     price: number | null;
     currency: string | null;
+    supplierInn: string | null;
     items: RecognizedInvoiceItem[];
     fileName: string;
   } | null>(null);
@@ -2281,6 +2290,7 @@ export function Suppliers() {
     setOfferRequestId(o.requestId);
     setEditingOffer(o);
     setOfferForm({
+      inn: o.inn,
       name: o.name,
       contactMethod: o.contactMethod,
       contact: o.contact,
@@ -2379,7 +2389,7 @@ export function Suppliers() {
     try {
       const result = await recognizeInvoiceFile(fileUrl, fileName);
       if (result.isInvoice) {
-        setOfferExtraction({ price: result.price, currency: result.currency, items: result.items, fileName });
+        setOfferExtraction({ price: result.price, currency: result.currency, supplierInn: result.supplierInn, items: result.items, fileName });
       } else {
         setOfferNotInvoiceFile(fileName);
       }
@@ -2410,6 +2420,10 @@ export function Suppliers() {
       ...f,
       price: offerExtraction.price != null ? String(offerExtraction.price) : f.price,
       currency: isValidOfferCurrency(offerExtraction.currency) ? offerExtraction.currency : f.currency,
+      // ИНН из счёта, загруженного руками в форму — тот же путь, что и у
+      // счёта из переписки (applyExtractionToOffer). Уже распознанный ИНН
+      // не затираем, если в новом документе его не нашлось.
+      inn: offerExtraction.supplierInn ?? f.inn,
       items: [...f.items, ...newItems],
     }));
     setOfferExtraction(null);
@@ -2481,7 +2495,7 @@ export function Suppliers() {
         // ИНН формой не правится (он приходит из распознанного счёта —
         // см. data/supplierResearch.ts), поэтому при сохранении карточки
         // сохраняем уже имеющееся значение, а не затираем его в null.
-        inn: editingOffer?.inn ?? null,
+        inn: offerForm.inn ?? editingOffer?.inn ?? null,
       };
       // Владелец, 2026-09-05: лог действий Альмиры для страницы "Метрики" —
       // те же два события, что различает комментарий выше ("верификация" vs
