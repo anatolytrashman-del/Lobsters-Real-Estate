@@ -1,4 +1,5 @@
 import type { DocumentFile } from './contractorDocuments';
+import type { EmailSendStatus } from './emailSendStatus';
 
 // Одно письмо в переписке по закупке (входящее от поставщика или исходящее
 // от нас) — см. data/purchases.ts (purchaseEmailAddress) и
@@ -17,6 +18,9 @@ export interface PurchaseEmail {
   files: DocumentFile[];
   // id письма в Resend — для справки/отладки, не используется в UI.
   resendMessageId: string | null;
+  // Ушло ли письмо на самом деле — см. data/emailSendStatus.ts.
+  sendStatus: EmailSendStatus;
+  sendError: string | null;
   createdAt: string;
 }
 
@@ -31,5 +35,7 @@ export interface PurchaseEmailRow {
   body: string | null;
   files: DocumentFile[] | null;
   resend_message_id: string | null;
+  send_status: string | null;
+  send_error: string | null;
   created_at: string;
 }
