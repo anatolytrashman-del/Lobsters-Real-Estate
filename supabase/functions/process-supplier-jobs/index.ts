@@ -684,7 +684,7 @@ async function claim(table: string, id: string): Promise<boolean> {
 // free-плане), а не их число. Владелец, 2026-09-12: «можем запустить ещё
 // больше параллельно?» — да, но не классификаторов (они и так простаивают, их
 // кормит эта очередь), а чтения: 5 → 14 доменов за вызов.
-const SNAPSHOT_BATCH = 14;
+const SNAPSHOT_BATCH = 26;
 const SNAPSHOT_MAX_SECTIONS = 250;
 const SNAPSHOT_MAX_SITEMAP = 150;
 // Общий бюджет времени на один сайт: главная + до 2 страниц каталога +
