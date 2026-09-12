@@ -3,10 +3,12 @@ import { ChevronRight, Search } from 'lucide-react';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
+import { SearchInput } from '../ui/SearchInput';
 import { cn } from '../../lib/cn';
 import {
   findCatalogCategory,
   SUPPLIER_CATALOG,
+  SUPPLIER_CATALOG_CATEGORIES,
   type SupplierCatalogCategory,
   type SupplierCatalogHub,
 } from '../../data/supplierCatalog';
@@ -14,6 +16,7 @@ import {
   countryFlag,
   isUniversalRequest,
   supplierWebsiteHost,
+  SUPPLIER_COUNTRIES,
   UNIVERSAL_SUPPLIERS_TITLE,
   type SupplierOffer,
   type SupplierRequest,
@@ -35,6 +38,14 @@ import type { SupplierSiteSnapshot } from '../../data/supplierSiteSnapshots';
 // поставщик так может оказаться сразу в нескольких плитках — это ожидаемо,
 // плитка отвечает «кто это реально возит», а не «в какую строку его завели».
 // «Баз +K» — отдельно, это универсальные поставщики с такой группой.
+//
+// Страна — не отдельный список внутри плитки (третья правка того же дня:
+// «не друг под другом выводить категории, а в целом вверху каталога выбор
+// иконки флага и далее идёт поиск уже по нужной стране»), а фильтр НАД всем
+// каталогом: один переключатель флагов в шапке решает, что считают и хабы, и
+// категории, и списки компаний — вся навигация ниже видит уже отфильтрованные
+// по стране предложения. Карточки без указанной страны (их 25 из 278, старые
+// записи) показываются при любом флаге — молчаливо прятать их неправильно.
 
 interface CategoryStats {
   category: SupplierCatalogCategory;
@@ -58,6 +69,19 @@ function offerGroups(o: SupplierOffer, snapshotByHost: Map<string, SupplierSiteS
   return snapshotByHost.get(supplierWebsiteHost(o.websiteUrl))?.categories ?? [];
 }
 
+// Ярлык категории для строки поиска — «домашняя» (по названию строки
+// закупки) в приоритете, иначе первая категория, чья товарная группа есть
+// на снимке сайта, иначе сырое название строки закупки (услуги вроде «ЭДО»,
+// не входящие в каталог).
+function catalogLabelFor(o: SupplierOffer, requestTitleById: Map<string, string>, snapshotByHost: Map<string, SupplierSiteSnapshot>): string {
+  const title = requestTitleById.get(o.requestId) ?? '';
+  const home = findCatalogCategory(title);
+  if (home) return home.name;
+  const groups = offerGroups(o, snapshotByHost);
+  const bySite = SUPPLIER_CATALOG_CATEGORIES.find((c) => c.supplyGroups.some((g) => groups.includes(g)));
+  return bySite?.name ?? title ?? '—';
+}
+
 export function SupplierCatalog({
   offers,
   requests,
@@ -69,15 +93,24 @@ export function SupplierCatalog({
   snapshotByHost: Map<string, SupplierSiteSnapshot>;
   onOpenDetail: (o: SupplierOffer) => void;
 }) {
+  const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  const [search, setSearch] = useState('');
   const [hubName, setHubName] = useState<string | null>(null);
   const [categoryName, setCategoryName] = useState<string | null>(null);
   const [groupFilter, setGroupFilter] = useState<string | null>(null);
 
+  // Карточки без страны видны при любом флаге (см. комментарий выше) —
+  // отфильтровать их молчаливо было бы потерей данных, а не удобством.
+  const countryOffers = useMemo(
+    () => offers.filter((o) => !o.country.trim() || o.country === country),
+    [offers, country],
+  );
+
   const requestTitleById = useMemo(() => new Map(requests.map((r) => [r.id, r.title])), [requests]);
   const universalRequest = useMemo(() => requests.find((r) => isUniversalRequest(r)) ?? null, [requests]);
   const universalOffers = useMemo(
-    () => (universalRequest ? offers.filter((o) => o.requestId === universalRequest.id) : []),
-    [offers, universalRequest],
+    () => (universalRequest ? countryOffers.filter((o) => o.requestId === universalRequest.id) : []),
+    [countryOffers, universalRequest],
   );
 
   const hubs = useMemo<HubStats[]>(() => {
@@ -87,7 +120,7 @@ export function SupplierCatalog({
         const groups = new Set(category.supplyGroups);
         const suppliers: SupplierOffer[] = [];
         const bases: SupplierOffer[] = [];
-        for (const o of offers) {
+        for (const o of countryOffers) {
           const title = requestTitleById.get(o.requestId) ?? '';
           const isUniversal = universalRequest ? o.requestId === universalRequest.id : title.trim().toLowerCase() === UNIVERSAL_SUPPLIERS_TITLE.toLowerCase();
           // Категория присваивается по ЛЮБОМУ из двух признаков — по новому
@@ -108,11 +141,24 @@ export function SupplierCatalog({
       });
       return { hub, categories, total: seen.size };
     });
-  }, [offers, requestTitleById, snapshotByHost, universalRequest]);
+  }, [countryOffers, requestTitleById, snapshotByHost, universalRequest]);
 
   const currentHub = hubs.find((h) => h.hub.name === hubName) ?? null;
   const currentCategory = currentHub?.categories.find((c) => c.category.name === categoryName) ?? null;
   const isUniversalHub = currentHub?.hub.categories.length === 1 && isUniversalRequest({ title: currentHub.hub.categories[0].name });
+
+  // Поиск по имени поставщика — плоский результат по всему каталогу (в
+  // рамках выбранной страны), поверх навигации по хабам/категориям, а не
+  // фильтр внутри текущего уровня: владелец, 2026-09-12, «справа от
+  // заголовка нужна строка поиска поставщика».
+  const searchQuery = search.trim().toLowerCase();
+  const searchResults = useMemo(() => {
+    if (!searchQuery) return [];
+    return countryOffers
+      .filter((o) => o.name.toLowerCase().includes(searchQuery))
+      .map((o) => ({ offer: o, categoryLabel: catalogLabelFor(o, requestTitleById, snapshotByHost) }))
+      .sort((a, b) => a.offer.name.localeCompare(b.offer.name, 'ru'));
+  }, [countryOffers, requestTitleById, searchQuery, snapshotByHost]);
 
   const openHub = (h: HubStats) => {
     setHubName(h.hub.name);
@@ -149,10 +195,56 @@ export function SupplierCatalog({
 
   return (
     <Card className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-lg font-bold text-ink">Каталог поставщиков</span>
-        {crumb}
+        <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+          <SearchInput
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Поиск поставщика"
+            wrapperClassName="w-full max-w-[240px]"
+          />
+          <div className="flex items-center gap-1">
+            {SUPPLIER_COUNTRIES.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setCountry(c)}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
+                  country === c ? 'border-primary text-primary' : 'border-border text-ink-muted hover:border-primary',
+                )}
+              >
+                <span className="text-sm leading-none">{countryFlag(c)}</span>
+                {c}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
+
+      {searchQuery ? (
+        <div className="flex flex-col gap-2">
+          <span className="text-sm text-ink-muted">
+            {searchResults.length === 0
+              ? `Никого не нашлось по «${search.trim()}».`
+              : `Найдено ${searchResults.length} ${plural(searchResults.length, 'поставщик', 'поставщика', 'поставщиков')}.`}
+          </span>
+          {searchResults.map(({ offer, categoryLabel }) => (
+            <div key={offer.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="truncate font-medium text-ink">{offer.name}</span>
+                <span className="text-xs text-ink-faint">{categoryLabel}</span>
+              </div>
+              <Button type="button" variant="secondary" onClick={() => onOpenDetail(offer)}>
+                Подробнее
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+      {crumb}
 
       {/* Уровень 0: хабы */}
       {!currentHub && (
@@ -222,10 +314,11 @@ export function SupplierCatalog({
           universalOffers={universalOffers}
           groupFilter={groupFilter}
           onGroupFilter={setGroupFilter}
-          requestTitleById={requestTitleById}
           snapshotByHost={snapshotByHost}
           onOpenDetail={onOpenDetail}
         />
+      )}
+        </>
       )}
     </Card>
   );
@@ -237,7 +330,6 @@ function CategoryView({
   universalOffers,
   groupFilter,
   onGroupFilter,
-  requestTitleById,
   snapshotByHost,
   onOpenDetail,
 }: {
@@ -246,7 +338,6 @@ function CategoryView({
   universalOffers: SupplierOffer[];
   groupFilter: string | null;
   onGroupFilter: (g: string | null) => void;
-  requestTitleById: Map<string, string>;
   snapshotByHost: Map<string, SupplierSiteSnapshot>;
   onOpenDetail: (o: SupplierOffer) => void;
 }) {
@@ -255,24 +346,17 @@ function CategoryView({
   const groupCount = (g: string) =>
     stats.suppliers.filter((o) => offerGroups(o, snapshotByHost).includes(g)).length;
 
-  const row = (o: SupplierOffer) => {
-    const filedAs = requestTitleById.get(o.requestId) ?? '';
-    const sameName = filedAs.trim().toLowerCase() === category.name.trim().toLowerCase();
-    return (
-      <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="truncate font-medium text-ink">{o.name}</span>
-          <span className="text-xs text-ink-faint">
-            {countryFlag(o.country)}
-            {!sameName && filedAs ? ` заведён как «${filedAs}»` : ''}
-          </span>
-        </div>
-        <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
-          Подробнее
-        </Button>
+  const row = (o: SupplierOffer) => (
+    <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="truncate font-medium text-ink">{o.name}</span>
+        {!o.country.trim() && <span className="text-xs text-ink-faint">страна не указана</span>}
       </div>
-    );
-  };
+      <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
+        Подробнее
+      </Button>
+    </div>
+  );
 
   if (universal) {
     return (
