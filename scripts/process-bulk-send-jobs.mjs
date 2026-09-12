@@ -4,13 +4,21 @@
 // сам гонял цикл отправки прямо в браузере с паузами 25-35с между письмами
 // (античтобы не выглядело как массовая рассылка) — закрыл вкладку, рассылка
 // обрывается на середине. Теперь клиент только СТАВИТ задание в очередь
-// (bulk_send_jobs + bulk_send_job_items), а этот скрипт, запускаемый по
-// расписанию (.github/workflows/process-bulk-send-jobs.yml, раз в 5 минут),
-// реально шлёт письма с тем же темпом — от постановки в очередь до первого
-// письма может пройти до 5 минут (следующий тик крона), это принятый
-// компромисс, чтобы не заводить ещё один Vercel serverless endpoint
-// (Hobby-план и так на пределе 12 функций, см. комментарий в
-// api/purchase-send-email.js).
+// (bulk_send_jobs + bulk_send_job_items), а фоновый воркер реально шлёт
+// письма с тем же темпом.
+//
+// ЖИВОЙ воркер с 2026-09-11 — не этот файл, а Edge Function
+// supabase/functions/process-bulk-send-jobs (pg_cron раз в минуту, см.
+// CLAUDE.md). Здесь — ручной запасной путь на случай, если Edge Function
+// недоступна: .github/workflows/process-bulk-send-jobs.yml, только
+// workflow_dispatch, без расписания. Запускать его "чтобы побыстрее"
+// не нужно: очередь и так разбирается раз в минуту.
+//
+// Оба пути могут работать одновременно и не задваивают письма только за
+// счёт атомарного захвата строки задания (см. processItem) — до 2026-09-12
+// захвата здесь не было, и параллельный ручной запуск разослал по два
+// одинаковых письма 38 поставщикам. Любая правка порядка "захват → проверка
+// → отправка" должна делаться в обоих файлах сразу.
 //
 // Логика отправки одного письма (адрес-плюс из short_code, сборка HTML,
 // вызов Resend, запись строки supplier_offer_emails, заливка вложений в
@@ -217,7 +225,22 @@ async function sendLedgerCopy({ job, request, offer, recipientsCount }) {
   }
 }
 
-async function sendOneEmail({ offer, request, legalEntity, job }) {
+async function sendOneEmail({ offer, request, legalEntity, job, item }) {
+  // Второй рубеж против дубля (первый — атомарный захват в processItem):
+  // по каждой строке задания в переписке может быть только одно письмо.
+  // Та же проверка стоит в Edge Function, а в базе — уникальный индекс
+  // supplier_offer_emails_bulk_job_item_uniq по bulk_job_item_id.
+  const { data: alreadySent, error: alreadySentError } = await supabase
+    .from('supplier_offer_emails')
+    .select('id')
+    .eq('bulk_job_item_id', item.id)
+    .limit(1);
+  if (alreadySentError) throw alreadySentError;
+  if ((alreadySent ?? []).length > 0) {
+    console.log(`  ⤼ письмо по этой строке задания уже отправлено, повтор не шлём (item ${item.id})`);
+    return;
+  }
+
   const rendered = {
     subject: renderTemplate(job.subject, { offer, request }).trim(),
     body: renderTemplate(job.body, { offer, request }),
@@ -306,6 +329,10 @@ async function sendOneEmail({ offer, request, legalEntity, job }) {
     body: rendered.body,
     files: storedFiles,
     resend_message_id: resendJson?.id ?? null,
+    // Строка задания, по которой ушло письмо — под уникальным индексом,
+    // то есть повторная вставка по той же строке физически невозможна
+    // (последняя страховка от дубля, см. комментарий в начале функции).
+    bulk_job_item_id: item.id,
     // Автор рассылки переносится в каждое её письмо (владелец, 2026-09-12 —
     // учёт работы с письмами по сотрудникам, см. Metrics.tsx): в момент
     // фоновой отправки вошедшего пользователя уже нет, единственный
@@ -367,6 +394,26 @@ async function fetchQueuedWork() {
 }
 
 async function processItem({ job, item, request, legalEntity, recipientsCount }) {
+  // Атомарный захват письма — ровно как в supabase/functions/process-bulk-
+  // send-jobs (владелец, 2026-09-12: "это что, письмо задублировалось?").
+  // Список писем здесь набирается ОДИН раз в начале запуска
+  // (fetchQueuedWork), а сам запуск живёт десятки минут — за это время те же
+  // строки успевает разобрать Edge Function, которую pg_cron дёргает раз в
+  // минуту. Без захвата оба пути слали каждому поставщику по письму: 12.09
+  // так ушло 38 лишних писем по двум рассылкам. Ноль обновлённых строк —
+  // письмо уже взял другой исполнитель, молча пропускаем.
+  const { data: claimed, error: claimError } = await supabase
+    .from('bulk_send_job_items')
+    .update({ status: 'sending' })
+    .eq('id', item.id)
+    .eq('status', 'pending')
+    .select('id');
+  if (claimError) throw claimError;
+  if ((claimed ?? []).length === 0) {
+    console.log(`  ⤼ письмо уже взял другой исполнитель, пропускаем (item ${item.id})`);
+    return;
+  }
+
   const { data: offer, error: offerError } = await supabase
     .from('supplier_research_offers')
     .select('*')
@@ -386,6 +433,7 @@ async function processItem({ job, item, request, legalEntity, recipientsCount })
       request: { title: request.title, items: request.items ?? [] },
       legalEntity,
       job,
+      item,
     });
 
     await supabase
