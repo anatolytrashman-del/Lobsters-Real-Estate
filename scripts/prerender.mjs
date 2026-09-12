@@ -72,10 +72,10 @@
 // часто правящихся руками страниц, которые всегда получают настоящий рендер
 // даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
-import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { extname, join, normalize } from 'node:path';
 import { computePublicBuildId } from './public-build-id.mjs';
 import { adoptBuildAssets, extractBuildBlocks } from './prerender-snapshot.mjs';
 
@@ -458,31 +458,70 @@ async function fetchBusinessCenterPaths() {
 // SPA-фолбэком из коробки. Не переизобретаю сервер вручную — самодельный
 // без точного MIME для .js/.css рискует сломать загрузку ES-модулей в
 // headless-браузере (Chromium требует text/javascript у <script type="module">).
+// Свой статический сервер для dist вместо `vite preview` (2026-09-12):
+//  • SPA-шелл (dist/index.html) на любой навигацию без расширения — ровно то,
+//    что нужно рендеру; файлы (assets/fonts/images/…) — как есть;
+//  • /assets/* отдаются с `Cache-Control: immutable` — vite preview отдавал
+//    `no-cache`, и браузер на каждой странице перепроверял каждый чанк; с
+//    общим на воркер контекстом (см. renderPath) бандл и его скомпилированный
+//    код теперь переживают переход между страницами;
+//  • никакого дочернего процесса: раньше `proc.kill()` убивал npx, а его
+//    дочерний vite оставался сиротой и держал пайпы — node не завершался после
+//    последней страницы (локально висел до таймаута с уже записанным
+//    результатом).
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.gif': 'image/gif',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
+  '.map': 'application/json',
+};
+
 function startPreviewServer() {
-  // Vite запускается напрямую (node + bin из node_modules), а не через npx:
-  // `proc.kill()` убивает только сам npx, а его дочерний vite оставался
-  // сиротой и держал открытыми свои stdio-пайпы — node не мог завершиться
-  // после последней страницы (локально проверено 2026-09-12: процесс висел
-  // до таймаута с уже записанным результатом).
-  const proc = spawn(process.execPath, [join(ROOT_DIR, 'node_modules', 'vite', 'bin', 'vite.js'), 'preview', '--port', String(PORT), '--strictPort'], {
-    cwd: ROOT_DIR,
-    stdio: 'pipe',
+  const shell = readFileSync(join(DIST_DIR, 'index.html'));
+  const server = createServer((req, res) => {
+    const pathname = decodeURIComponent((req.url ?? '/').split('?')[0]);
+    const rel = normalize(pathname).replace(/^(\.\.[/\\])+/, '');
+    const file = join(DIST_DIR, rel);
+    const ext = extname(rel);
+    if (ext && file.startsWith(DIST_DIR) && existsSync(file)) {
+      res.writeHead(200, {
+        'Content-Type': MIME[ext] ?? 'application/octet-stream',
+        'Cache-Control': rel.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      });
+      res.end(readFileSync(file));
+      return;
+    }
+    if (ext) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('not found');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
+    res.end(shell);
   });
-  return proc;
+  return server;
 }
 
-async function waitForServer(timeoutMs = 20_000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(BASE_URL);
-      if (res.ok) return;
-    } catch {
-      // сервер ещё не поднялся — подождать и попробовать снова
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  throw new Error('vite preview не поднялся за 20с');
+function waitForServer(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(PORT, '127.0.0.1', () => resolve());
+  });
 }
 
 // На Vercel обычный playwright-браузер не факт что запустится (минимальный
@@ -896,7 +935,7 @@ async function main() {
     );
   }
 
-  const serverProc = startPreviewServer();
+  const server = startPreviewServer();
 
   // Пути, которые не удалось снять снапшотом ни за одну попытку — собираем,
   // чтобы в конце сборки явно провалиться, если среди них есть что-то
@@ -906,7 +945,21 @@ async function main() {
 
   const RENDER_ATTEMPTS = 3;
 
-  async function renderPath(path) {
+  // Контексты воркеров: ключ — сам объект браузера, чтобы после перезапуска
+  // общего браузера старые контексты не переиспользовались. При legacy-режиме
+  // (свой браузер на страницу) контекст тоже свой — там переиспользовать нечего.
+  const workerContexts = new WeakMap();
+  async function workerContext(browser, workerId) {
+    let byWorker = workerContexts.get(browser);
+    if (!byWorker) {
+      byWorker = new Map();
+      workerContexts.set(browser, byWorker);
+    }
+    if (!byWorker.has(workerId)) byWorker.set(workerId, await browser.newContext());
+    return byWorker.get(workerId);
+  }
+
+  async function renderPath(path, workerId = 0) {
     for (let attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++) {
       let browser;
       let context;
@@ -921,10 +974,14 @@ async function main() {
           usedShared = sharedBrowser();
           browser = await usedShared;
         }
-        // Свой BrowserContext на каждую страницу: localStorage/куки/кеш не
-        // текут между путями — ровно та же «чистая» среда, что давал прежний
-        // отдельный браузер на страницу, только без его запуска (~секунда+).
-        context = await browser.newContext();
+        // Один BrowserContext на воркер (см. workerContext): страницы одного
+        // воркера делят HTTP-кеш и скомпилированный код бандла — мегабайт JS не
+        // качается и не компилируется заново на каждый путь. Сторадж между
+        // путями при этом общий, но публичный код в него не пишет (проверено
+        // 2026-09-12: sessionStorage трогает только ErrorBoundary при краше).
+        // Вкладка на каждый путь — своя, чтобы JS-состояние одной страницы не
+        // пережило переход к следующей.
+        context = await workerContext(browser, workerId);
         page = await context.newPage();
         // ?prerender=1 — сигнал для инлайн-скрипта Яндекс.Метрики в
         // index.html не считать этот заход реальным визитом (см.
@@ -983,11 +1040,11 @@ async function main() {
           await new Promise((r) => setTimeout(r, 300 * attempt));
         }
       } finally {
-        if (context) {
+        if (page) {
           try {
-            await context.close(); // закрывает и страницу
+            await page.close();
           } catch {
-            // контекст мог умереть вместе с браузером — не роняем сборку
+            // страница могла умереть вместе с браузером — не роняем сборку
           }
         }
         if (ownBrowser && browser) {
@@ -1008,13 +1065,13 @@ async function main() {
   const rerenderReasons = new Map(); // причина → сколько путей
   let alwaysFullCount = 0;
 
-  async function processPathFast(path) {
+  async function processPathFast(path, workerId) {
     // ALWAYS_FULL_RENDER_PATHS — см. комментарий у самой константы: эти
     // несколько страниц правятся кодом достаточно часто, чтобы не
     // полагаться на "скачать текущую (возможно ещё старую) живую копию".
     if (ALWAYS_FULL_RENDER_PATHS.has(path)) {
       alwaysFullCount++;
-      await renderPath(path);
+      await renderPath(path, workerId);
       return;
     }
     const live = await fetchPathLive(path);
@@ -1024,21 +1081,21 @@ async function main() {
     }
     console.log(`[prerender] /${path}: ${live.reason} — рендерю заново`);
     rerenderReasons.set(live.reason, (rerenderReasons.get(live.reason) ?? 0) + 1);
-    await renderPath(path);
+    await renderPath(path, workerId);
   }
 
   try {
-    await waitForServer();
+    await waitForServer(server);
     let cursor = 0;
-    async function worker() {
+    async function worker(workerId) {
       while (cursor < paths.length) {
         const path = paths[cursor++];
-        await (fullMode ? renderPath(path) : processPathFast(path));
+        await (fullMode ? renderPath(path, workerId) : processPathFast(path, workerId));
       }
     }
-    await Promise.all(Array.from({ length: fullMode ? WORKER_COUNT : FAST_WORKER_COUNT }, worker));
+    await Promise.all(Array.from({ length: fullMode ? WORKER_COUNT : FAST_WORKER_COUNT }, (_, i) => worker(i)));
   } finally {
-    serverProc.kill();
+    server.close();
     if (sharedBrowserPromise) {
       try {
         await (await sharedBrowserPromise).close();
