@@ -807,6 +807,36 @@ function extractMeta(html: string, name: string): string {
   return cleanTitle(content) || content.replace(/\s+/g, ' ').trim().slice(0, 300);
 }
 
+// Русские сайты часто отдают windows-1251, а resp.text() всегда разбирает как
+// UTF-8 — заголовок и разделы превращаются в «?????» (2026-09-12: так пришёл
+// снимок bard.su, классификатор по нему не понял ничего). Кодировку берём из
+// заголовка Content-Type, а если её там нет — из <meta charset> в начале
+// самого документа, разбирая байты дважды.
+function decodeBytes(bytes: Uint8Array, contentType: string): string {
+  const fromHeader = /charset\s*=\s*["']?([\w-]+)/i.exec(contentType)?.[1];
+  const decode = (label: string) => {
+    try {
+      return new TextDecoder(label, { fatal: false }).decode(bytes);
+    } catch {
+      return null; // рантайм не знает такой кодировки
+    }
+  };
+  if (fromHeader && !/utf-?8/i.test(fromHeader)) {
+    const decoded = decode(fromHeader);
+    if (decoded) return decoded;
+  }
+  const utf8 = decode('utf-8') ?? '';
+  if (fromHeader) return utf8;
+  const fromMeta =
+    /<meta[^>]+charset\s*=\s*["']?\s*([\w-]+)/i.exec(utf8.slice(0, 2000))?.[1] ??
+    /<\?xml[^>]+encoding\s*=\s*["']([\w-]+)/i.exec(utf8.slice(0, 200))?.[1];
+  if (fromMeta && !/utf-?8/i.test(fromMeta)) {
+    const decoded = decode(fromMeta);
+    if (decoded) return decoded;
+  }
+  return utf8;
+}
+
 async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string | null> {
   try {
     const resp = await fetch(url, {
@@ -817,7 +847,7 @@ async function fetchSnapshotPage(url: string, timeoutMs: number): Promise<string
     if (!resp.ok) return null;
     const type = resp.headers.get('content-type') ?? '';
     if (type && !/html|xml|text/i.test(type)) return null;
-    return await resp.text();
+    return decodeBytes(new Uint8Array(await resp.arrayBuffer()), type);
   } catch {
     return null;
   }
