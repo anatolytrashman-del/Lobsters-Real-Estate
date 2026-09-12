@@ -33,7 +33,11 @@ export function ContactValue({
   const href = interactive ? buildDialogLink(contactMethod ?? '', contact) : null;
   if (href) {
     return (
-      <a href={href} target="_blank" rel="noreferrer" className="truncate text-primary hover:underline">
+      // text-primary-hover, не text-primary — тот же фикс, что уже применён
+      // для логотипа в AppLayout.tsx/DistrictGuidePage.tsx: базовый красный
+      // на этом фоне даёт контраст на грани/ниже 4,5:1 (UX-аудит, найдено на
+      // карточке лида в /admin/leads).
+      <a href={href} target="_blank" rel="noreferrer" className="truncate text-primary-hover hover:underline">
         {contact}
       </a>
     );

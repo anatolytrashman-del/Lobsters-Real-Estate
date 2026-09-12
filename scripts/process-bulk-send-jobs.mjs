@@ -34,6 +34,16 @@ const DRY_RUN = process.argv.includes('--dry-run');
 
 const RESEND_FROM_NAME = 'Redevelopment Закупки';
 const ATTACHMENTS_BUCKET = 'object-documents';
+
+// Копия письма с ведомостью владельцу — владелец, 2026-09-11: "при каждой
+// отправке уникальной ведомости копия письма с ведомостью уходила на ящик".
+// Одна копия на СОДЕРЖИМОЕ ведомости, не на письмо: дедупликация общая с
+// живым путём отправки (supabase/functions/process-bulk-send-jobs) и с
+// одиночной (api/purchase-send-email.js) — таблица material_ledger_copies,
+// вставка с ignoreDuplicates = атомарный захват, поэтому ручной прогон
+// этого скрипта поверх работающего крона копию не задвоит.
+const LEDGER_COPY_TO = process.env.LEDGER_COPY_TO || 'anatoly.trashman@gmail.com';
+const LEDGER_COPY_FROM = process.env.LEDGER_COPY_FROM || `${RESEND_FROM_NAME} <zakupki@redevelopment.pro>`;
 const MIN_DELAY_MS = 25000;
 const MAX_DELAY_MS = 35000;
 
@@ -129,7 +139,7 @@ async function uploadAttachmentToStorage(bytes, contentType, fileName) {
 
 async function fetchDocumentFileAsBase64(file) {
   const res = await fetch(file.url);
-  if (!res.ok) throw new Error('Не удалось загрузить карточку организации');
+  if (!res.ok) throw new Error('Не удалось загрузить файл юрлица');
   const buf = Buffer.from(await res.arrayBuffer());
   const ext = fileExtension(file.fileName);
   const contentType =
@@ -141,6 +151,70 @@ async function fetchDocumentFileAsBase64(file) {
           ? 'application/pdf'
           : 'application/octet-stream';
   return { fileName: file.fileName, contentType, contentBase64: buf.toString('base64') };
+}
+
+async function claimLedgerCopy(contentKey, ledgerName, context) {
+  const { data, error } = await supabase
+    .from('material_ledger_copies')
+    .upsert({ content_key: contentKey, ledger_name: ledgerName, context }, { onConflict: 'content_key', ignoreDuplicates: true })
+    .select('content_key');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+function ledgerCopyBody({ ledgerFileName, context, subject, body }) {
+  const sentAt = new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Minsk',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
+  return [
+    'Копия исходящего письма с ведомостью материалов.',
+    '',
+    `Ведомость: ${ledgerFileName}`,
+    `Кому: ${context}`,
+    `Отправлено: ${sentAt}`,
+    `Тема: ${subject}`,
+    '',
+    '— — — текст письма — — —',
+    '',
+    body,
+  ].join('\n');
+}
+
+// Best-effort, как и в Edge Function: письмо поставщику уже ушло, сбой копии
+// не должен помечать его ошибкой. Захват снимается, чтобы копия ушла со
+// следующей отправкой этой же ведомости.
+async function sendLedgerCopy({ job, request, offer, recipientsCount }) {
+  const attachment = job.attachment;
+  if (!attachment?.contentKey || !attachment?.contentBase64) return;
+  const context = `массовая рассылка по запросу «${request.title}», получателей: ${recipientsCount} (текст — как ушёл «${offer.name}»)`;
+  let claimed = false;
+  try {
+    claimed = await claimLedgerCopy(attachment.contentKey, attachment.fileName ?? '', context);
+    if (!claimed) return;
+    const subject = renderTemplate(job.subject, { offer, request }).trim() || 'Запрос цены';
+    const body = renderTemplate(job.body, { offer, request });
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: LEDGER_COPY_FROM,
+        to: [LEDGER_COPY_TO],
+        subject: `[Копия] ${subject}`,
+        html: emailHtml(ledgerCopyBody({ ledgerFileName: attachment.fileName, context, subject, body })),
+        attachments: [{ filename: attachment.fileName, content: attachment.contentBase64 }],
+      }),
+    });
+    if (!resp.ok) throw new Error(`Resend: ${(await resp.text()).slice(0, 300)}`);
+    console.log('  ✓ копия ведомости владельцу');
+  } catch (err) {
+    console.error('  копия ведомости владельцу не ушла:', err.message);
+    if (claimed) await supabase.from('material_ledger_copies').delete().eq('content_key', attachment.contentKey);
+  }
 }
 
 async function sendOneEmail({ offer, request, legalEntity, job }) {
@@ -170,14 +244,24 @@ async function sendOneEmail({ offer, request, legalEntity, job }) {
     console.error('  Не удалось сохранить ведомость в Storage:', err.message);
   }
 
-  if (isFirstOutgoing && legalEntity?.card_file) {
+  // Файлы юрлица, которые идут только первому письму конкретному поставщику:
+  // карточка организации (реквизиты) и — владелец, 2026-09-11 — "Информация
+  // по доставке" (адрес объекта, машины до 20 тонн с боковой разгрузкой,
+  // разгрузка нашими силами; текст задаётся на странице юрлица, .docx
+  // собирается там же, см. src/lib/deliveryInfoDocx.ts). Оба лежат в Storage
+  // обычным {url, fileName}, обработка одинаковая — один цикл. Сбой на одном
+  // файле не роняет письмо: уходит без него, как и раньше с карточкой.
+  const firstEmailFiles = isFirstOutgoing
+    ? [legalEntity?.card_file, legalEntity?.delivery_file].filter(Boolean)
+    : [];
+  for (const file of firstEmailFiles) {
     try {
-      const cardAttachment = await fetchDocumentFileAsBase64(legalEntity.card_file);
-      resendAttachments.push({ filename: cardAttachment.fileName, content: cardAttachment.contentBase64 });
-      const bytes = Buffer.from(cardAttachment.contentBase64, 'base64');
-      storedFiles.push(await uploadAttachmentToStorage(bytes, cardAttachment.contentType, cardAttachment.fileName));
+      const attachment = await fetchDocumentFileAsBase64(file);
+      resendAttachments.push({ filename: attachment.fileName, content: attachment.contentBase64 });
+      const bytes = Buffer.from(attachment.contentBase64, 'base64');
+      storedFiles.push(await uploadAttachmentToStorage(bytes, attachment.contentType, attachment.fileName));
     } catch (err) {
-      console.error('  Не удалось приложить карточку организации:', err.message);
+      console.error(`  Не удалось приложить файл юрлица (${file.fileName}):`, err.message);
     }
   }
 
@@ -222,6 +306,12 @@ async function sendOneEmail({ offer, request, legalEntity, job }) {
     body: rendered.body,
     files: storedFiles,
     resend_message_id: resendJson?.id ?? null,
+    // Автор рассылки переносится в каждое её письмо (владелец, 2026-09-12 —
+    // учёт работы с письмами по сотрудникам, см. Metrics.tsx): в момент
+    // фоновой отправки вошедшего пользователя уже нет, единственный
+    // достоверный источник — кто поставил задание (bulk_send_jobs).
+    sent_by_profile_id: job.created_by_profile_id ?? null,
+    sent_by_name: job.created_by_name ?? null,
   });
   if (insertEmailError) throw insertEmailError;
 }
@@ -263,14 +353,20 @@ async function fetchQueuedWork() {
       legalEntity = legalEntityRow;
     }
 
+    // Всего получателей задания (не только оставшихся) — для текста копии.
+    const { count: recipientsCount } = await supabase
+      .from('bulk_send_job_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('job_id', job.id);
+
     for (const item of items ?? []) {
-      work.push({ job, item, request: requestRow, legalEntity });
+      work.push({ job, item, request: requestRow, legalEntity, recipientsCount: recipientsCount ?? 0 });
     }
   }
   return work;
 }
 
-async function processItem({ job, item, request, legalEntity }) {
+async function processItem({ job, item, request, legalEntity, recipientsCount }) {
   const { data: offer, error: offerError } = await supabase
     .from('supplier_research_offers')
     .select('*')
@@ -297,6 +393,12 @@ async function processItem({ job, item, request, legalEntity }) {
       .update({ status: 'sent', sent_at: new Date().toISOString() })
       .eq('id', item.id);
     console.log(`  ✓ ${offer.name} <${offer.email}>`);
+    await sendLedgerCopy({
+      job,
+      request: { title: request.title, items: request.items ?? [] },
+      offer,
+      recipientsCount: recipientsCount ?? 0,
+    });
   } catch (err) {
     await supabase.from('bulk_send_job_items').update({ status: 'error', error_message: err.message }).eq('id', item.id);
     console.error(`  ✗ ${offer.name} <${offer.email}>: ${err.message}`);

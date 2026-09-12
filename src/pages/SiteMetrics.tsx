@@ -13,6 +13,8 @@ import {
 import type { MetrikaDailyStat, MetrikaTrafficSource, MetrikaTopPage, MetrikaGoalCompletion } from '../data/metrikaStats';
 import { fetchYandexWebmasterStats } from '../lib/yandexWebmasterStatsApi';
 import type { YandexWebmasterStat } from '../data/yandexWebmasterStats';
+import { fetchGoogleSearchConsoleStats } from '../lib/googleSearchConsoleStatsApi';
+import type { GoogleSearchConsoleStat } from '../data/googleSearchConsoleStats';
 
 // Показатели посещаемости сайта из Яндекс.Метрики (счётчик 111858495) —
 // не отчёт по staff-активности (это отдельная /admin/metrics, RequireSuperAdmin,
@@ -35,6 +37,26 @@ import type { YandexWebmasterStat } from '../data/yandexWebmasterStats';
 // заводить отдельную. impressions/clicks/avgPosition у молодого сайта
 // почти наверняка null (сам синк-скрипт это документирует) — компонент
 // должен честно показывать "данных пока нет", а не подставлять нули.
+//
+// Второй такой же блок — "Индексация в Google" (scripts/sync-google-
+// search-console-stats.mjs, 2026-09-10) — тот же принцип: отдельный
+// try/catch на фетч (нет токена/ещё не подключено — блок просто не
+// рендерится, не роняет страницу), pagesIndexed — состояние на сегодня,
+// не сумма по дням.
+//
+// "Проиндексировано страниц" (из Sitemaps.get) — тот же день, живой прогон
+// на реальном сайте показал 0, хотя реально уже несколько страниц в
+// индексе — известная особенность Google, число из отчёта по sitemap
+// считается отдельным, медленным конвейером и может отставать от
+// реального индекса на недели (владелец спросил "это правда 0?", проверка
+// через URL Inspection API опровергла).
+//
+// Точная проверка по каждой странице (urlInspection.index:inspect,
+// google_search_console_page_index) по-прежнему собирается тем же
+// sync-скриптом раз в сутки — 2026-09-10 владелец попросил убрать
+// соответствующий блок с этой страницы ("не нужен"), данные не удалялись,
+// просто больше не выводятся здесь; смотреть напрямую в таблице, если
+// понадобится точный статус конкретной страницы.
 
 type PeriodDays = 7 | 30 | 90;
 const PERIOD_LABELS: Record<PeriodDays, string> = { 7: '7 дней', 30: '30 дней', 90: '90 дней' };
@@ -69,6 +91,112 @@ function average(values: (number | null)[]): number | null {
   if (present.length === 0) return null;
   return sum(present) / present.length;
 }
+
+// Метрика отдаёт ym:s:lastTrafficSource английскими категориями (не
+// локализованным текстом, как ожидалось при первой реализации — см. журнал
+// docs/session-journal.md 2026-09-10) — переводим на отображении, не трогая сырое
+// значение в базе (сравнение/группировка синка остаются по нему). Ключи —
+// ровно те категории, что реально документирует Метрика; неизвестное
+// значение показывается как есть, не прячется.
+const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
+  'Direct traffic': 'Прямые заходы',
+  'Internal traffic': 'Внутренние переходы',
+  'Search engine traffic': 'Переходы из поисковых систем',
+  'Link traffic': 'Переходы по ссылкам на сайтах',
+  'Referral traffic': 'Переходы по ссылкам на сайтах',
+  'Social network traffic': 'Переходы из социальных сетей',
+  'Recommendation system traffic': 'Переходы из рекомендательных систем',
+  'Ad traffic': 'Переходы по рекламе',
+  'Messenger traffic': 'Переходы из мессенджеров',
+  'Email traffic': 'Переходы с email-рассылок',
+  'QR-code traffic': 'Переходы по QR-коду',
+  'Not determined': 'Не определено',
+  'Other traffic': 'Прочие переходы',
+};
+
+function trafficSourceLabel(source: string): string {
+  return TRAFFIC_SOURCE_LABELS[source] ?? source;
+}
+
+// Понятная подпись строки в "Топ страниц" вместо сырого пути — по известным
+// маршрутам из App.tsx, регэкспы под динамические сегменты (:slug/:token и
+// т.п.). Хэш (#якорь — попадает в данные только с ПЕРВОЙ загрузки страницы,
+// см. index.html — ym('init',{url: location.href}) включает хэш, а
+// последующие SPA-хиты в App.tsx — нет) не участвует в сопоставлении
+// маршрута, но дописывается к подписи отдельно, чтобы не терять инфу о
+// конкретном якоре. Неизвестный путь — возвращается как есть, не гадаем.
+function readablePageLabel(fullPath: string): string {
+  const hashIndex = fullPath.indexOf('#');
+  const base = hashIndex === -1 ? fullPath : fullPath.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? '' : fullPath.slice(hashIndex + 1);
+  const label = resolvePageBaseLabel(base);
+  return hash ? `${label} · #${hash}` : label;
+}
+
+function resolvePageBaseLabel(base: string): string {
+  const STATIC_LABELS: Record<string, string> = {
+    '/minsk': 'Хаб /minsk (комплексы, гиды, аналитика)',
+    '/minsk/analytics': 'Аналитика рынка — хаб',
+    '/minsk/analytics/metodika': 'Аналитика — методика',
+    '/minsk/analytics/ofisy/arenda': 'Аналитика — офисы (аренда)',
+    '/minsk/analytics/ofisy/prodazha': 'Аналитика — офисы (продажа)',
+    '/minsk/analytics/torgovye/arenda': 'Аналитика — торговые (аренда)',
+    '/minsk/analytics/torgovye/prodazha': 'Аналитика — торговые (продажа)',
+    '/minsk/analytics/sklady/arenda': 'Аналитика — склады (аренда)',
+    '/minsk/analytics/sklady/prodazha': 'Аналитика — склады (продажа)',
+    '/minsk/analytics/mashinomesta/arenda': 'Аналитика — машиноместа (аренда)',
+    '/minsk/analytics/mashinomesta/prodazha': 'Аналитика — машиноместа (продажа)',
+    '/minsk/analytics/minsk-mir': 'Аналитика — Минск Мир',
+    '/minsk/analytics/rajony': 'Аналитика — сравнение районов',
+    '/minsk/minsk-mir': 'Гид района — Минск Мир',
+    '/minsk/bcminsk': 'Каталог бизнес-центров',
+    '/minsk/bcminsk/stroyashchiesya': 'БЦ — строящиеся',
+    '/minsk/bcminsk/reyting': 'Рейтинг бизнес-центров',
+    '/rayon-minsk-mir': 'Гид района (старая ссылка)',
+    '/business-upload': 'Форма загрузки организаций',
+  };
+  if (STATIC_LABELS[base]) return STATIC_LABELS[base];
+
+  // Известные объекты — с человеческим названием, остальные лендинги
+  // объектов (/minsk/:slug) — общим шаблоном по слагу.
+  const KNOWN_OBJECT_LABELS: Record<string, string> = {
+    one: 'Лендинг Red One',
+    redstorage: 'Лендинг Red Storage',
+  };
+
+  const patterns: [RegExp, (m: RegExpMatchArray) => string][] = [
+    [/^\/minsk\/minsk-mir\/([^/]+)$/, (m) => `Гид района — тема «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/class\/([^/]+)\/raion\/([^/]+)$/, (m) => `БЦ — класс «${m[1]}», район «${m[2]}»`],
+    [/^\/minsk\/bcminsk\/class\/([^/]+)$/, (m) => `БЦ — класс «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/raion\/([^/]+)$/, (m) => `БЦ — район «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/microrayon\/([^/]+)$/, (m) => `БЦ — микрорайон «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/metro\/([^/]+)$/, (m) => `БЦ — метро «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/ulitsa\/([^/]+)$/, (m) => `БЦ — улица «${m[1]}»`],
+    [/^\/minsk\/bcminsk\/([^/]+)$/, (m) => `Бизнес-центр «${m[1]}»`],
+    [/^\/minsk\/analytics\/([^/]+)$/, (m) => `Аналитика — район «${m[1]}»`],
+    [/^\/plan\/[^/]+$/, () => 'Бронирование по ссылке'],
+    [/^\/tz\/[^/]+$/, () => 'ТЗ по ссылке'],
+    [/^\/summary\/[^/]+$/, () => 'Саммери встречи по ссылке'],
+    [/^\/estimate\/[^/]+$/, () => 'Смета по ссылке'],
+    [/^\/minsk\/([^/]+)$/, (m) => KNOWN_OBJECT_LABELS[m[1]] ?? `Лендинг «${m[1]}»`],
+  ];
+  for (const [pattern, build] of patterns) {
+    const m = base.match(pattern);
+    if (m) return build(m);
+  }
+  return base;
+}
+
+function pluralPages(n: number): string {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return 'страниц';
+  if (mod10 === 1) return 'страница';
+  if (mod10 >= 2 && mod10 <= 4) return 'страницы';
+  return 'страниц';
+}
+
+const VISIBLE_TOP_PAGES = 5;
 
 interface ChangeBadgeProps {
   current: number;
@@ -123,8 +251,9 @@ interface SparkbarsProps {
 
 // Один ряд тонких столбиков (магнитуда одной серии — свой акцентный цвет,
 // легенда не нужна, заголовок карточки уже называет серию). Подсказка —
-// нативный title, без отдельного компонента тултипа: страница внутренняя,
-// не публичная витрина.
+// видимая при наведении карточка со значением (не только нативный title,
+// который показывается с задержкой и не всегда заметен) — владелец прямо
+// попросил, чтобы число было видно при наведении.
 function Sparkbars({ data }: SparkbarsProps) {
   const max = Math.max(1, ...data.map((d) => d.value));
   return (
@@ -132,14 +261,23 @@ function Sparkbars({ data }: SparkbarsProps) {
     // явно): если обернуть столбик ещё одним div без своей высоты, процент
     // не от чего считать (родитель — auto) и столбик схлопывается в 0 —
     // столбик обязан быть САМИМ флекс-элементом, не вложенным в обёртку.
+    // Тултип — абсолютно спозиционированный ребёнок ВНУТРИ этого же
+    // элемента (не в отдельной обёртке снаружи) — abs-позиционирование
+    // вынимает его из потока, на расчёт высоты столбика не влияет.
     <div className="flex h-24 items-end gap-px">
       {data.map((d) => (
         <div
           key={d.date}
-          className="flex-1 rounded-t bg-primary/70 transition-colors hover:bg-primary"
+          className="group relative flex-1 rounded-t bg-primary/70 transition-colors hover:bg-primary"
           style={{ height: `${Math.max(2, (d.value / max) * 100)}%` }}
-          title={`${formatDateShort(d.date)}: ${d.value.toLocaleString('ru-RU')}`}
-        />
+        >
+          <span
+            className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-ink px-2 py-1 text-xs font-medium text-bg opacity-0 shadow-lg transition-opacity group-hover:opacity-100"
+            role="tooltip"
+          >
+            {formatDateShort(d.date)}: {d.value.toLocaleString('ru-RU')}
+          </span>
+        </div>
       ))}
     </div>
   );
@@ -175,8 +313,10 @@ export function SiteMetrics() {
   const [topPages, setTopPages] = useState<MetrikaTopPage[] | null>(null);
   const [goalCompletions, setGoalCompletions] = useState<MetrikaGoalCompletion[] | null>(null);
   const [webmasterStats, setWebmasterStats] = useState<YandexWebmasterStat[] | null>(null);
+  const [googleStats, setGoogleStats] = useState<GoogleSearchConsoleStat[] | null>(null);
   const [error, setError] = useState('');
   const [periodDays, setPeriodDays] = useState<PeriodDays>(30);
+  const [topPagesExpanded, setTopPagesExpanded] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -184,17 +324,20 @@ export function SiteMetrics() {
       fetchMetrikaTrafficSources(),
       fetchMetrikaTopPages(),
       fetchMetrikaGoalCompletions(),
-      // Отдельный try/catch: если синк Вебмастера ещё ни разу не прошёл
-      // или упал, это не должно ронять всю страницу — её главный предмет
+      // Отдельный try/catch на каждый источник поисковой индексации: если
+      // синк ещё ни разу не прошёл, упал, или сервис ещё не подключён
+      // (Google), это не должно ронять всю страницу — её главный предмет
       // всё равно Метрика.
       fetchYandexWebmasterStats().catch(() => []),
+      fetchGoogleSearchConsoleStats().catch(() => []),
     ])
-      .then(([daily, traffic, pages, goals, webmaster]) => {
+      .then(([daily, traffic, pages, goals, webmaster, google]) => {
         setDailyStats(daily);
         setTrafficSources(traffic);
         setTopPages(pages);
         setGoalCompletions(goals);
         setWebmasterStats(webmaster);
+        setGoogleStats(google);
       })
       .catch(() => setError('Не удалось загрузить показатели.'));
   }, []);
@@ -224,6 +367,16 @@ export function SiteMetrics() {
     return null;
   }, [currentWebmaster]);
   const hasSearchQueryData = currentWebmaster.some((d) => d.impressions !== null || d.clicks !== null);
+
+  const currentGoogle = useMemo(() => (googleStats ?? []).slice(-periodDays), [googleStats, periodDays]);
+  const latestGoogleCoverage = useMemo(() => {
+    for (let i = currentGoogle.length - 1; i >= 0; i--) {
+      const d = currentGoogle[i];
+      if (d.pagesIndexed !== null || d.pagesSubmitted !== null) return d;
+    }
+    return null;
+  }, [currentGoogle]);
+  const hasGoogleQueryData = currentGoogle.some((d) => d.impressions !== null || d.clicks !== null);
 
   const maxUpdatedAt = useMemo(() => {
     const dates = (trafficSources ?? []).map((s) => s.updatedAt);
@@ -397,6 +550,58 @@ export function SiteMetrics() {
             </Card>
           )}
 
+          {currentGoogle.length > 0 && (
+            <Card className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-ink">Индексация в Google (Search Console)</h3>
+                <p className="text-xs text-ink-muted">
+                  «Проиндексировано» — по данным Sitemap в Search Console, не по всем URL сайта, а по тем, что перечислены
+                  в sitemap.xml.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiTile
+                  label="Проиндексировано страниц"
+                  value={
+                    latestGoogleCoverage?.pagesIndexed !== null && latestGoogleCoverage?.pagesIndexed !== undefined
+                      ? latestGoogleCoverage.pagesIndexed.toLocaleString('ru-RU')
+                      : '—'
+                  }
+                />
+                <KpiTile
+                  label="Отправлено в sitemap"
+                  value={
+                    latestGoogleCoverage?.pagesSubmitted !== null && latestGoogleCoverage?.pagesSubmitted !== undefined
+                      ? latestGoogleCoverage.pagesSubmitted.toLocaleString('ru-RU')
+                      : '—'
+                  }
+                />
+                {hasGoogleQueryData ? (
+                  <>
+                    <KpiTile label="Показы в поиске" value={sum(currentGoogle.map((d) => d.impressions)).toLocaleString('ru-RU')} />
+                    <KpiTile label="Клики из поиска" value={sum(currentGoogle.map((d) => d.clicks)).toLocaleString('ru-RU')} />
+                  </>
+                ) : (
+                  <div className="flex items-center sm:col-span-2">
+                    <p className="text-sm text-ink-muted">
+                      Данных по показам/кликам пока нет — сайт ещё молодой в поиске Google, либо запросов слишком мало.
+                    </p>
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-ink-muted">
+                «Проиндексировано страниц» считается по отдельному, медленному отчёту Google и может отставать от
+                реального индекса на недели — реальный статус страницы может быть точнее, чем показывает эта цифра.
+              </p>
+            </Card>
+          )}
+          {webmasterStats !== null && googleStats !== null && currentWebmaster.length > 0 && currentGoogle.length === 0 && (
+            <Card className="text-sm text-ink-muted">
+              Google Search Console пока не подключён — данные по индексации в Google появятся здесь, как только
+              владелец пройдёт разовую авторизацию (см. scripts/get-google-search-console-refresh-token.mjs).
+            </Card>
+          )}
+
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card className="flex flex-col gap-3">
               <div>
@@ -409,7 +614,7 @@ export function SiteMetrics() {
                 {(trafficSources ?? []).map((s) => (
                   <div key={s.source} className="flex flex-col gap-1">
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-ink">{s.source}</span>
+                      <span className="text-ink">{trafficSourceLabel(s.source)}</span>
                       <span className="text-ink-muted">
                         {s.visits.toLocaleString('ru-RU')}
                         {totalTrafficVisits > 0 && (
@@ -439,20 +644,31 @@ export function SiteMetrics() {
                 </p>
               </div>
               <div className="flex flex-col divide-y divide-border">
-                {(topPages ?? []).map((p) => (
+                {(topPagesExpanded ? (topPages ?? []) : (topPages ?? []).slice(0, VISIBLE_TOP_PAGES)).map((p) => (
                   <div key={p.path} className="relative flex items-center justify-between gap-3 py-2 text-sm">
                     <div
                       className="absolute inset-y-0 left-0 -z-10 rounded bg-primary/10"
                       style={{ width: `${(p.pageviews / maxTopPageviews) * 100}%` }}
                     />
                     <span className="truncate text-ink" title={p.path}>
-                      {p.path}
+                      {readablePageLabel(p.path)}
                     </span>
                     <span className="shrink-0 font-medium text-ink">{p.pageviews.toLocaleString('ru-RU')}</span>
                   </div>
                 ))}
                 {(topPages ?? []).length === 0 && <p className="text-sm text-ink-muted">Пока нет данных по страницам.</p>}
               </div>
+              {(topPages ?? []).length > VISIBLE_TOP_PAGES && (
+                <button
+                  type="button"
+                  onClick={() => setTopPagesExpanded((v) => !v)}
+                  className="self-start text-sm text-primary-hover hover:underline"
+                >
+                  {topPagesExpanded
+                    ? 'Свернуть'
+                    : `Показать ещё ${(topPages ?? []).length - VISIBLE_TOP_PAGES} ${pluralPages((topPages ?? []).length - VISIBLE_TOP_PAGES)}`}
+                </button>
+              )}
             </Card>
           </div>
         </div>

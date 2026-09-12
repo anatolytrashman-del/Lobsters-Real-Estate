@@ -8,7 +8,7 @@
 // external_api_tokens (service='yandex', RLS закрыт для всех кроме
 // service_role) и читается отсюда каждый прогон. Так его не нужно
 // перевставлять в GitHub Actions при перевыпуске — достаточно один раз
-// обновить строку в базе (см. CLAUDE.md, если появится инструмент/страница
+// обновить строку в базе (см. docs/session-journal.md, если появится инструмент/страница
 // для этого). У Яндекс-API свой формат заголовка авторизации — именно
 // `Authorization: OAuth <токен>`, не Bearer, это не опечатка.
 //
@@ -33,6 +33,37 @@
 //
 // Флаги: --dry-run (не пишет в Supabase, только печатает сводку),
 // --json (печатает сырые ответы API целиком, для отладки).
+//
+// 2026-09-10 — исключение /admin/* (владелец: «нужна только клиентская
+// часть», внутренняя CRM не должна попадать в статистику посещаемости).
+// Основная защита теперь на уровне отправки хитов (App.tsx/index.html —
+// с /admin счётчик вообще не шлёт события в Метрику), но ЭТОТ фильтр в
+// самих запросах к Stats API нужен отдельно и не лишний: он же чистит уже
+// накопленную ДО этой правки историю визитов внутри WINDOW_DAYS (Метрика
+// хранит сырые данные по визиту независимо от того, что мы решили дальше с
+// ними не делать хитов) — без него старые admin-визиты продолжали бы
+// искажать «Показатели» ещё 90 дней.
+//
+// Первая версия ("NOT EXISTS ym:pv:...", без скобок) была НЕВЕРНОЙ —
+// Метрика API реально отвечала 400 "Incorrectly specified filter for
+// segmentation, error code 4003" на каждом прогоне, но ошибка тихо
+// глоталась try/catch на уровне раздела (main()) — «визиты по дням»/
+// «источники трафика»/«достижения целей» молча не обновлялись НИ РАЗУ с
+// момента добавления фильтра, старые (домер-фикса) числа просто
+// продолжали лежать в Supabase. Владелец поймал это на живых цифрах
+// (список страниц очистился, а общая сумма визитов — нет) — см.
+// --debug-filter ниже, которым и было подтверждено. Правильный синтаксис
+// для session-уровневых (`ym:s:*`) запросов, где нужно условие по
+// pageview-уровню (`ym:pv:*`) — ОТДЕЛЬНЫЙ оператор `NONE(...)` (не
+// `NOT EXISTS`), обязательно со скобками вокруг условия: NONE(ym:pv:X)
+// значит «нет ни одного просмотра страницы, удовлетворяющего условию»
+// (см. WebSearch по официальной документации `yandex.ru/dev/metrika/ru/
+// stat/segmentation` — сам домен закрыт прокси песочницы напрямую, но
+// сниппеты поиска дали точный пример `filters=NONE(ym:pv:URL=@'x')`).
+// Для pageview-уровневого запроса (топ страниц) — прямой `!~`, тот
+// работал и раньше без изменений, не трогаем.
+const ADMIN_EXCLUDE_FILTER_SESSION = "NONE(ym:pv:URLPathFull=~'^/admin')";
+const ADMIN_EXCLUDE_FILTER_PAGEVIEW = "ym:pv:URLPathFull!~'^/admin'";
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -41,6 +72,13 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const PRINT_JSON = process.argv.includes('--json');
+// 2026-09-10 — живая A/B-проверка ADMIN_EXCLUDE_FILTER_SESSION: печатает
+// сумму визитов ЗА ОДИН И ТОТ ЖЕ период с фильтром и без — единственный
+// способ убедиться, реально ли Метрика исключает сессии с /admin, а не
+// молча игнорирует непонятный ей синтаксис EXISTS (что и произошло —
+// владелец поймал на живых цифрах: список страниц очистился, а общее
+// число визитов — нет). Ничего не пишет в Supabase, только печатает.
+const DEBUG_FILTER = process.argv.includes('--debug-filter');
 
 if (!SUPABASE_SERVICE_ROLE_KEY) {
   console.error('Не задана переменная окружения SUPABASE_SERVICE_ROLE_KEY');
@@ -121,6 +159,7 @@ async function syncDailyStats(token) {
     dimensions: 'ym:s:date',
     sort: 'ym:s:date',
     limit: WINDOW_DAYS + 10,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('daily-stats raw:', JSON.stringify(body, null, 2));
@@ -149,7 +188,7 @@ async function syncDailyStats(token) {
 // быть уже готовым текстом (у trafficSource — локализованное имя вроде
 // "Переходы из поисковых систем", у URLPathFull — сам путь) — так это
 // исторически работает у Stats API, но живьём не проверено (домен закрыт
-// прокси песочницы, см. журнал CLAUDE.md за 2026-09-10). Если после первого
+// прокси песочницы, см. журнал docs/session-journal.md за 2026-09-10). Если после первого
 // реального прогона в логе GitHub Actions (--json) окажется, что там id/код,
 // а не читаемое имя — поправить на row.dimensions[0].id или завести словарь
 // кодов здесь же, не трогая остальной скрипт.
@@ -160,6 +199,7 @@ async function syncTrafficSources(token) {
     dimensions: 'ym:s:lastTrafficSource',
     sort: '-ym:s:visits',
     limit: 30,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('traffic-sources raw:', JSON.stringify(body, null, 2));
@@ -189,6 +229,7 @@ async function syncTopPages(token) {
     dimensions: 'ym:pv:URLPathFull',
     sort: '-ym:pv:pageviews',
     limit: 30,
+    filters: ADMIN_EXCLUDE_FILTER_PAGEVIEW,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('top-pages raw:', JSON.stringify(body, null, 2));
@@ -221,6 +262,7 @@ async function syncGoalCompletions(token) {
     dimensions: 'ym:s:date',
     sort: 'ym:s:date',
     limit: WINDOW_DAYS + 10,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
     ...windowDateParams(),
   });
   if (PRINT_JSON) console.log('goal-completions raw:', JSON.stringify(body, null, 2));
@@ -243,8 +285,46 @@ async function syncGoalCompletions(token) {
   if (error) throw error;
 }
 
+async function debugAdminFilter(token) {
+  const params = {
+    ids: COUNTER_ID,
+    metrics: 'ym:s:visits',
+    dimensions: 'ym:s:date',
+    sort: 'ym:s:date',
+    limit: WINDOW_DAYS + 10,
+    ...windowDateParams(),
+  };
+
+  const withoutFilter = await metrikaFetch(token, '/stat/v1/data', params);
+  const withFilter = await metrikaFetch(token, '/stat/v1/data', {
+    ...params,
+    filters: ADMIN_EXCLUDE_FILTER_SESSION,
+  });
+
+  const sumVisits = (body) => (body.data ?? []).reduce((acc, row) => acc + (row.metrics[0] ?? 0), 0);
+  const totalWithout = sumVisits(withoutFilter);
+  const totalWith = sumVisits(withFilter);
+
+  console.log(`Визиты БЕЗ фильтра (${WINDOW_DAYS} дней): ${totalWithout}`);
+  console.log(`Визиты С фильтром "${ADMIN_EXCLUDE_FILTER_SESSION}" (${WINDOW_DAYS} дней): ${totalWith}`);
+  console.log(
+    totalWith === totalWithout
+      ? 'ФИЛЬТР НЕ ДАЛ ЭФФЕКТА — либо синтаксис не поддержан API, либо реально нет ни одной сессии с /admin в окне.'
+      : `Фильтр реально исключил ${totalWithout - totalWith} визитов.`,
+  );
+  if (PRINT_JSON) {
+    console.log('without-filter raw:', JSON.stringify(withoutFilter, null, 2));
+    console.log('with-filter raw:', JSON.stringify(withFilter, null, 2));
+  }
+}
+
 async function main() {
   const token = await fetchYandexToken();
+
+  if (DEBUG_FILTER) {
+    await debugAdminFilter(token);
+    return;
+  }
 
   const sections = [
     ['визиты по дням', () => syncDailyStats(token)],

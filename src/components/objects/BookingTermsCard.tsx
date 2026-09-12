@@ -101,7 +101,7 @@ export function BookingTermsCard({ agreement }: BookingTermsCardProps) {
                     <button
                       type="button"
                       onClick={scrollToUnits}
-                      className="w-fit text-sm font-semibold text-primary hover:underline"
+                      className="w-fit text-sm font-semibold text-primary-hover hover:underline"
                     >
                       Смотреть кабинеты ↑
                     </button>
@@ -111,7 +111,7 @@ export function BookingTermsCard({ agreement }: BookingTermsCardProps) {
                       <button
                         type="button"
                         onClick={() => setPreviewOpen(true)}
-                        className="w-fit text-sm font-semibold text-primary hover:underline"
+                        className="w-fit text-sm font-semibold text-primary-hover hover:underline"
                       >
                         Посмотреть шаблон
                       </button>
@@ -122,7 +122,7 @@ export function BookingTermsCard({ agreement }: BookingTermsCardProps) {
                     <button
                       type="button"
                       onClick={scrollToUnits}
-                      className="w-fit text-sm font-semibold text-primary hover:underline"
+                      className="w-fit text-sm font-semibold text-primary-hover hover:underline"
                     >
                       Забронировать кабинет ↑
                     </button>
@@ -131,7 +131,7 @@ export function BookingTermsCard({ agreement }: BookingTermsCardProps) {
                     <button
                       type="button"
                       onClick={scrollToPurchaseOptions}
-                      className="w-fit text-sm font-semibold text-primary hover:underline"
+                      className="w-fit text-sm font-semibold text-primary-hover hover:underline"
                     >
                       Смотреть варианты ↑
                     </button>

@@ -62,10 +62,10 @@ const Transactions = lazy(() => import('./pages/Transactions').then((m) => ({ de
 const TransactionsReport = lazy(() => import('./pages/TransactionsReport').then((m) => ({ default: m.TransactionsReport })));
 const Leads = lazy(() => import('./pages/Leads').then((m) => ({ default: m.Leads })));
 const Contractors = lazy(() => import('./pages/Contractors').then((m) => ({ default: m.Contractors })));
-// "Поставщики" (была "Закупки" — владелец, 2026-09-03: "уберём Закупки, они
-// только путают") — компонент по историческим причинам называется Suppliers,
-// см. комментарий в самом файле. Purchases.tsx (embedded, вкладка "Закупки")
-// с этой правкой сюда больше не подключается.
+// "Закупки" (в меню; 2026-09-03 — 2026-09-12 пункт назывался "Поставщики",
+// см. data/pages.ts) — компонент по историческим причинам называется
+// Suppliers, см. комментарий в самом файле. Purchases.tsx (embedded, вкладка
+// "Закупки") сюда по-прежнему не подключается — вкладку убрали 2026-09-03.
 const Suppliers = lazy(() => import('./pages/Suppliers').then((m) => ({ default: m.Suppliers })));
 const Objects = lazy(() => import('./pages/Objects').then((m) => ({ default: m.Objects })));
 const ObjectDetail = lazy(() => import('./pages/ObjectDetail').then((m) => ({ default: m.ObjectDetail })));
@@ -149,6 +149,15 @@ function usePreventPageZoom() {
 // района → /minsk/one) была невидима в статистике обоих. Штатный для SPA
 // способ — вручную слать pageview на каждую смену маршрута; первую загрузку
 // пропускаем, её уже засчитал init обоих счётчиков.
+//
+// 2026-09-10: /admin/* — внутренняя CRM, не то, что владелец хочет видеть в
+// «Показателях» как клиентский трафик (Светлана/Альмира целый день листают
+// задачи/сметы — это не посетители сайта). Хиты с /admin не шлём вовсе, ни
+// в Метрику, ни в VK-пиксель (тот же принцип: retargeting-аудитория VK-рекламы
+// не должна пополняться сотрудниками CRM). Сам счётчик на /admin может быть и
+// не инициализирован (см. index.html) — тогда metrikaHit()/vkPixelHit() и так
+// молча ничего не делают (см. их же optional chaining), эта проверка не
+// единственная защита, а явная и быстрая, без похода в чужой модуль.
 function useSpaPageviewHits() {
   const location = useLocation();
   const isFirstRender = useRef(true);
@@ -157,6 +166,7 @@ function useSpaPageviewHits() {
       isFirstRender.current = false;
       return;
     }
+    if (location.pathname.startsWith('/admin')) return;
     metrikaHit(location.pathname + location.search);
     vkPixelHit();
   }, [location.pathname, location.search]);
@@ -176,7 +186,7 @@ function useVkPageGoals() {
 }
 
 // Старые ссылки без /minsk (индексировались недолго, до переезда на
-// city-scoped структуру урлов — см. CLAUDE.md) — /one, /redstorage и любой
+// city-scoped структуру урлов — см. docs/session-journal.md) — /one, /redstorage и любой
 // будущий объект по тому же паттерну автоматически редиректятся на новый
 // адрес. /rayon-minsk-mir — особый случай (слаг переименован в minsk-mir,
 // не просто добавлен префикс), у него свой отдельный редирект ниже.
@@ -324,9 +334,10 @@ export default function App() {
             </RequireSuperAdmin>
           }
         />
-        {/* Метрики Альмиры (Ресерч поставщиков) — тот же принцип, что и у
-            activity-log выше: не в меню, не в data/pages.ts, доступ только
-            по прямому урлу. */}
+        {/* Метрики сотрудников — разбивка по людям (Ресерч поставщиков,
+            письма, верификация объявлений; см. Metrics.tsx). Тот же принцип,
+            что и у activity-log выше: не в меню, не в data/pages.ts, доступ
+            только по прямому урлу. */}
         <Route
           path="metrics"
           element={

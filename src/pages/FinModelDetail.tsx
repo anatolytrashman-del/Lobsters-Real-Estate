@@ -132,7 +132,7 @@ export function FinModelDetail() {
         {id && (
           <Link
             to={`/admin/finmodels/${id}/report`}
-            className="inline-flex w-fit items-center gap-2 text-sm font-medium text-primary hover:underline"
+            className="inline-flex w-fit items-center gap-2 text-sm font-medium text-primary-hover hover:underline"
           >
             Открыть финмодель (P&L)
             <ArrowRight className="h-4 w-4" />

@@ -15,7 +15,7 @@ import {
   fetchDocumentTemplate,
   getGoogleAccessToken,
 } from './_google.js';
-import { OTP_MAX_ATTEMPTS, otpCodeMatches } from './_otp.js';
+import { evaluateOtpVerification } from './_otp.js';
 
 const MONTHS_GENITIVE = [
   'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
@@ -103,19 +103,20 @@ export default async function handler(req, res) {
       res.status(404).json({ error: 'Заявка на подписание не найдена' });
       return;
     }
-    if (row.verified_at) {
-      res.status(200).json({ documentUrl: row.document_url });
+    const verification = evaluateOtpVerification(row, code);
+    if (verification.outcome === 'already_verified') {
+      res.status(200).json({ documentUrl: verification.documentUrl });
       return;
     }
-    if (row.otp_attempts >= OTP_MAX_ATTEMPTS) {
+    if (verification.outcome === 'too_many_attempts') {
       res.status(400).json({ error: 'Слишком много попыток. Запросите новый код.' });
       return;
     }
-    if (new Date(row.otp_expires_at).getTime() < Date.now()) {
+    if (verification.outcome === 'expired') {
       res.status(400).json({ error: 'Код истёк, запросите новый' });
       return;
     }
-    if (!otpCodeMatches(code, row.otp_code_hash)) {
+    if (verification.outcome === 'invalid_code') {
       await updateSignatureRow(row.id, { otp_attempts: row.otp_attempts + 1 });
       res.status(400).json({ error: 'Неверный код' });
       return;

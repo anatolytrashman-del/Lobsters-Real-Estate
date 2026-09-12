@@ -730,7 +730,7 @@ export function BusinessCenterDetailPage() {
             данных. История правок самой таблицы (разбивка по типу
             помещения, явная строка "нет объявлений" вместо исчезновения
             секции, убранные прямые ссылки на Kufar/Realt) — см. запись
-            2026-09-05 в CLAUDE.md. */}
+            2026-09-05 в docs/session-journal.md. */}
         {offers !== null && (
           <div className={cn('mt-6 flex flex-col gap-3 p-6 sm:p-8', glassCardClass)} style={glassCardShadow}>
             <h2 className="text-lg font-bold text-ink">Объявления с Kufar и Realt</h2>
@@ -886,7 +886,7 @@ export function BusinessCenterDetailPage() {
 
 // Смысловая группировка "Технических характеристик" (см. комментарий в самом
 // рендере блока) — один и тот же фиксированный набор из 18 label'ов, которые
-// реально встречаются в спарсенных с prometr.by данных (см. журнал CLAUDE.md,
+// реально встречаются в спарсенных с prometr.by данных (см. журнал docs/session-journal.md,
 // запись про технические характеристики от 2026-09-06). style: 'tile' —
 // короткое значение (число/пара слов), 'text' — обычно перечисление,
 // удобнее строкой. hideIfDuplicate — прячет строку, только если у ЭТОЙ

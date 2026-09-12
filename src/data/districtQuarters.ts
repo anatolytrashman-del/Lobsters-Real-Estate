@@ -470,7 +470,7 @@ export interface DeliveredHouse {
 // минус дома без организаций (см. NO_ORGANIZATIONS_HOUSES выше). Единый
 // источник и для этого списка, и для будущей регенерации
 // scripts/data/district-houses.json (используется в дремлющем
-// scripts/sync-district-business-points.mjs, см. журнал CLAUDE.md
+// scripts/sync-district-business-points.mjs, см. журнал docs/session-journal.md
 // 2026-08-26 про блокировку по IP на GitHub Actions).
 export function getDeliveredHouses(): DeliveredHouse[] {
   return Object.entries(QUARTER_HOUSE_INDEX)

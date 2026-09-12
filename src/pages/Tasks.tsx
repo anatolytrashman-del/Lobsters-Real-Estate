@@ -68,7 +68,7 @@ function TaskDescription({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="mt-1 text-xs font-semibold text-primary hover:underline"
+        className="mt-1 text-xs font-semibold text-primary-hover hover:underline"
       >
         {expanded ? 'Свернуть' : 'Показать полностью'}
       </button>

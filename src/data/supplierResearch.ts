@@ -23,6 +23,25 @@ export type { ResearchContactMethod };
 // и т.п.), по умолчанию показывали/считали Россию, а не Беларусь.
 export const SUPPLIER_COUNTRIES = ['Россия', 'Беларусь'] as const;
 
+// Регион ВЕБ-ПОИСКА поставщиков — отдельно от страны самого поставщика
+// (country выше: он про то, где поставщик находится, и по нему фильтруются
+// списки/переписка). Владелец, 2026-09-11: "по грильято подтянулось много
+// поставщиков из других городов... при поиске ставь регион не Россия, а
+// именно Москва" — объекты компании в Москве и Подмосковье, а поиск "по
+// России" исправно приносил региональные сайты федеральных сетей
+// (spb./perm./nsk.-поддомены) и местные компании Новосибирска/Казани, с
+// которыми закупку не сделать. Поэтому у поиска свой список регионов, где
+// Москва — отдельное значение (и значение по умолчанию для России), а не
+// "уточнение" в свободном поле пожеланий.
+export const SUPPLIER_SEARCH_REGIONS = ['Москва', 'Россия', 'Беларусь'] as const;
+
+// Какой регион поиска подставлять, когда поиск запускается из карточки
+// категории с выбранной страной: для России — Москва (см. выше), для
+// остальных стран — сама страна.
+export function defaultSearchRegion(country: string): string {
+  return country === 'Россия' ? 'Москва' : country;
+}
+
 // Владелец, 2026-09-03: "Страницу Поставщики разбиваем на 3 логических
 // блока: Материалы и оборудование / Работы / Сервисы" — "Работы" реализована
 // отдельным независимым механизмом (ContractorsResearch, свои таблицы
@@ -62,6 +81,21 @@ export const SUPPLIER_COMPARISON_MODE_HINTS: Record<SupplierComparisonMode, stri
   lot: 'Все позиции идут одной поставкой от одного поставщика (как компоненты Грильято) — сравниваем сумму всего КП целиком, не по отдельным строкам.',
 };
 
+// Владелец, 2026-09-11: "номера в телеграме, вотапе и максе — нам
+// понадобится отдельное поле, там сейчас один номер телефона, а тут надо и
+// номер, и название мессенджера фиксировать" — в отличие от contact/
+// contactMethod (ровно ОДИН способ связи, телефон ИЛИ телеграм, см. ниже),
+// у поставщика может быть сразу несколько мессенджеров с разными номерами.
+// Жёсткий enum (не AddableSelect) — ровно те три мессенджера, что owner
+// назвал явно, не растущий пользовательский список.
+export const SUPPLIER_MESSENGER_TYPES = ['Telegram', 'WhatsApp', 'Max'] as const;
+export type SupplierMessengerType = (typeof SUPPLIER_MESSENGER_TYPES)[number];
+
+export interface SupplierMessengerContact {
+  type: SupplierMessengerType;
+  number: string;
+}
+
 // Владелец, 2026-09-03: "вместо 'Страна Беларусь'/'Страна Россия' ставь
 // просто эмодзи с флагом" — бейджи страны везде в UI показывают флаг
 // вместо текста. Для страны, добавленной вручную сверх пресета (нет в
@@ -96,6 +130,45 @@ export function guessCountryFromWebsite(websiteUrl: string): string {
   return '';
 }
 
+// Как показать и куда вести номер в мессенджере. Владелец, 2026-09-11:
+// "ID в максе непонятный, хз как ему написать — сделай или кликабельной
+// ссылкой на макс, или как-то понятно". Обогащение забирает с сайта то, что
+// там реально написано: у Telegram это обычно @ник, у WhatsApp — телефон, а
+// у Max — длинный непрозрачный идентификатор из ссылки max.ru/u/<id>,
+// который человеку сам по себе ни о чём не говорит. Поэтому показываем не
+// сырое значение, а понятную подпись + ссылку, если по ней реально можно
+// открыть диалог.
+export function messengerLink(m: SupplierMessengerContact): { href: string | null; label: string } {
+  const value = m.number.trim();
+  if (!value) return { href: null, label: '—' };
+
+  // Уже готовая ссылка (модель иногда приносит её целиком) — ведём по ней,
+  // подпись достаём из последнего сегмента пути.
+  if (/^https?:\/\//i.test(value)) {
+    const tail = value.replace(/\/+$/, '').split('/').pop() ?? '';
+    if (m.type === 'Max') return { href: value, label: 'открыть диалог' };
+    return { href: value, label: tail.startsWith('+') || /^\d/.test(tail) ? tail : `@${tail.replace(/^@/, '')}` };
+  }
+
+  const digits = value.replace(/\D/g, '');
+  const isPhone = digits.length >= 10 && digits.length <= 15 && /^[+\d\s()-]+$/.test(value);
+
+  if (m.type === 'WhatsApp') {
+    return isPhone ? { href: `https://wa.me/${digits}`, label: value } : { href: null, label: value };
+  }
+  if (m.type === 'Telegram') {
+    // По телефону диалог в Telegram ссылкой не открыть (t.me/+<номер> — это
+    // инвайт в чат, не контакт), поэтому линкуем только ники.
+    if (isPhone) return { href: null, label: value };
+    const handle = value.replace(/^@/, '');
+    return { href: `https://t.me/${handle}`, label: `@${handle}` };
+  }
+  // Max: телефон показываем как есть, длинный id — только ссылкой с
+  // человекочитаемой подписью (сам id бесполезен на экране).
+  if (isPhone) return { href: null, label: value };
+  return { href: `https://max.ru/u/${value}`, label: 'открыть диалог' };
+}
+
 // Вкладка "Поставщики" (пункт меню "Стройка") — та же механика, что и у
 // "Подрядчики → Ресерч": 1 запрос — 1 карточка, внутри — сравнение
 // предложений разных поставщиков, дешевле всех подсвечено (см. rankOffers
@@ -105,15 +178,13 @@ export function guessCountryFromWebsite(websiteUrl: string): string {
 // в каталоге (название+фото), статус переговоров (свободный текст,
 // владелец вводит вручную) и место для файлов (счета, спецификации и т.п.).
 //
-// Владелец, 2026-08-29: "получим от строителя список материалов... ещё не
-// знаем, у кого закупать, поэтому сначала ресерч, потом рассылка писем,
-// после ответов — сравнение цен". items — то, что мы просим поставщиков
-// оценить (не у каждого предложения свой список — один и тот же список
-// материалов уходит всем в письме одного запроса). Переиспользован тип
-// PurchaseItem из data/purchases.ts — тот же смысл (снимок материала на
-// момент добавления, с опциональной ссылкой sourceMaterialId на
-// EstimateMaterial), просто здесь price/note не обязательны к заполнению —
-// на этапе ресерча цену как раз узнаём у поставщиков, а не фиксируем сами.
+// Владелец, 2026-09-11: поле items ("Что просим оценить у поставщиков") —
+// удалено, оно никак не участвовало ни в логике смет, ни где-либо ещё в
+// приложении (кроме плейсхолдера {материалы} в письмах, который теперь
+// просто подставляет title запроса). Уже накопленные позиции перенесены
+// вручную в ведомость материалов "Зелёный" (см. docs/session-journal.md) —
+// колонка items в supplier_research_requests в БД не удалялась, просто
+// больше не используется приложением.
 export interface SupplierRequest {
   id: string;
   title: string;
@@ -124,7 +195,6 @@ export interface SupplierRequest {
   estimateId: string | null;
   sectionId: string | null;
   sectionTitle: string;
-  items: PurchaseItem[];
   // Владелец, 2026-09-09: "чтобы Альмира могла выбрать, что это закупки ООО
   // «Матрешка», и нужная карточка была прикреплена автоматически" — от
   // какого юрлица (data/legalEntities.ts) идёт закупка по этой категории.
@@ -147,7 +217,6 @@ export interface SupplierRequestRow {
   estimate_id: string | null;
   section_id: string | null;
   section_title: string | null;
-  items: PurchaseItem[] | null;
   legal_entity_id: string | null;
   comparison_mode: string | null;
   created_at: string;
@@ -174,6 +243,26 @@ export interface SupplierOffer {
   // цены отдельно по Беларуси и по России в рамках одной категории (запроса).
   country: string;
   websiteUrl: string;
+  // Ссылка на конкретную позицию/товар/раздел каталога на сайте (не просто
+  // главная страница сайта, как websiteUrl) — владелец, 2026-09-10:
+  // "давай добавлять... ссылку на саму позицию искомую, чтобы вручную на
+  // сайте не искать". Заполняется автоматически при добавлении из
+  // веб-поиска (см. SupplierWebSearchModal/addWebSearchResults в
+  // Suppliers.tsx), но остаётся обычным редактируемым полем.
+  listingUrl: string;
+  // Откуда автосбор взял контакты: 'сайт', 'каталоги' или 'сайт + каталоги'
+  // (пусто — заведены вручную). Нужен закупщице как мера доверия: почта из
+  // каталога при недоступном сайте может быть многолетней давности — так в
+  // базу попал sales@m-delivery.ru у компании со снятым с делегирования
+  // доменом (2026-09-11). Заполняется только обогащением и только в пустое
+  // поле, вручную не редактируется.
+  contactSource: string;
+  // Номера в мессенджерах (см. SupplierMessengerContact выше) — заполняются
+  // либо вручную, либо автообогащением (см. lib/supplierEnrichmentApi.ts).
+  // Может быть несколько записей одного типа (например, два номера
+  // WhatsApp) — не выбрасываем дубли автоматически, обогащение само не
+  // добавляет уже присутствующий тип+номер повторно.
+  messengers: SupplierMessengerContact[];
   catalogModelName: string;
   catalogModelPhoto: DocumentFile | null;
   // Итоговая цена/валюта — больше не редактируется вручную (владелец,
@@ -207,6 +296,20 @@ export interface SupplierOffer {
   // проверил данные. Пока false — предложение скрыто из вкладки "Письма"
   // (см. SupplierCorrespondenceTab.tsx).
   verified: boolean;
+  // ИНН юрлица, ВЫСТАВИВШЕГО СЧЁТ. Владелец, 2026-09-11: "нет смысла
+  // проверять ИНН с сайта, надо смотреть, на какой ИНН выставлен счет...
+  // когда поставщик прислал счет и нам стали известны реквизиты, запускать
+  // процесс верификации поставщика". Заполняется автоматически из
+  // распознанного счёта (EmailExtraction.supplierInn) в момент, когда
+  // закупщица подтверждает распознавание, либо руками в форме. null —
+  // счёта ещё не было (проверять нечего, это нормальное состояние, а не
+  // пробел в данных).
+  //
+  // Не путать с verified выше: verified — ручная отметка "данные
+  // поставщика посмотрел человек, можно писать письма"; inn — вход для
+  // АВТОМАТИЧЕСКОЙ проверки благонадёжности по госреестрам
+  // (data/supplierReliability.ts). Это разные вещи, одно не заменяет другое.
+  inn: string | null;
   createdAt: string;
 }
 
@@ -220,6 +323,9 @@ export interface SupplierOfferRow {
   manager_name: string | null;
   country: string | null;
   website_url: string;
+  listing_url: string | null;
+  contact_source: string | null;
+  messengers: SupplierMessengerContact[] | null;
   catalog_model_name: string;
   catalog_model_photo: DocumentFile | null;
   price: number;
@@ -228,6 +334,7 @@ export interface SupplierOfferRow {
   files: DocumentFile[] | null;
   short_code: string;
   verified: boolean;
+  inn: string | null;
   created_at: string;
 }
 
@@ -244,27 +351,6 @@ export interface SupplierOfferRow {
 // уже отправленным вживую письмом), просто новые больше не строятся так.
 export function supplierOfferEmailAddress(shortCode: string): string {
   return `zakupki+${shortCode}@redevelopment.pro`;
-}
-
-// Список материалов запроса одной строкой ("Керамогранит (50 м²), Клей
-// (10 кг)") — общий хелпер для веб-поиска (openWebQueryModal в
-// Suppliers.tsx) и для плейсхолдера {материалы} в шаблонах писем
-// (lib/emailTemplates.ts), раньше формировался только на месте в первом
-// случае, теперь один источник вместо двух копий.
-// Владелец, 2026-09-09: "важно не только объём, но и ряд параметров...
-// нет поля комментария, которое бы и в таблицу попадало, и в письмо"
-// (пример — Grigliato) — item.note (уже существовавшее поле, раньше нигде
-// не показывалось закупщику) теперь всегда попадает в текст письма, не
-// только объём/ед.
-export function formatRequestItemsText(items: PurchaseItem[], fallback: string): string {
-  if (items.length === 0) return fallback;
-  return items
-    .map((i) => {
-      const qty = i.quantity ? ` (${i.quantity}${i.unit ? ` ${i.unit}` : ''})` : '';
-      const note = i.note.trim() ? ` — ${i.note.trim()}` : '';
-      return `${i.name}${qty}${note}`;
-    })
-    .join(', ');
 }
 
 // Владелец, 2026-09-04: "Статус коммуникации — вполне можем определять

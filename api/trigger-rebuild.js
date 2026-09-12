@@ -45,6 +45,20 @@
 // репозиторию, permission Actions: Read and write) в Vercel env — без него
 // (или при сетевой ошибке) просто логируем и отвечаем 200, планового крона
 // это не отменяет, только не даёт дополнительного мгновенного триггера.
+//
+// 2026-09-11: тот же принцип для веб-поиска поставщиков — action
+// 'dispatch-supplier-search', дёргает process-supplier-web-search-jobs.yml.
+// Владелец: "минуту ждать перед открытой вкладкой не захочется... я
+// формирую поиск, система ищет в фоне, я закрываю вкладку, когда найдёт —
+// уведомление" — веб-поиск (2 раунда по 40-115с каждый, см. комментарий в
+// scripts/process-supplier-web-search-jobs.mjs) переведён с синхронного
+// HTTP-запроса на ту же очередь, что и массовая рассылка.
+//
+// 2026-09-11: обогащение контактов поставщиков (email для заказов/телефон/
+// мессенджеры с сайта) своего action здесь НЕ имеет специально — задания
+// создаёт сам поисковый скрипт, и тот же прогон воркфлоу их сразу
+// обрабатывает (см. .github/workflows/process-supplier-web-search-jobs.yml),
+// поэтому дёргать отдельный воркфлоу из админки незачем.
 import { requireStaffAuth } from './_auth.js';
 
 const DEBOUNCE_MS = 5 * 60_000;
@@ -53,16 +67,16 @@ const GITHUB_OWNER = 'anatolytrashman-del';
 const GITHUB_REPO = 'redevelopment';
 const GITHUB_REF = 'claude/redevelopment-platform-prototype-oodobu';
 
-async function dispatchBulkSendWorkflow(res) {
+async function dispatchWorkflow(res, workflowFile) {
   const token = process.env.GITHUB_ACTIONS_DISPATCH_TOKEN;
   if (!token) {
-    console.warn('[trigger-rebuild] GITHUB_ACTIONS_DISPATCH_TOKEN не настроен — воркфлоу рассылки не запущен, ждём планового крона');
+    console.warn(`[trigger-rebuild] GITHUB_ACTIONS_DISPATCH_TOKEN не настроен — воркфлоу ${workflowFile} не запущен, ждём планового крона`);
     res.status(200).json({ triggered: false, reason: 'no github token configured' });
     return;
   }
   try {
     const ghRes = await fetch(
-      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process-bulk-send-jobs.yml/dispatches`,
+      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${workflowFile}/dispatches`,
       {
         method: 'POST',
         headers: {
@@ -76,11 +90,11 @@ async function dispatchBulkSendWorkflow(res) {
     );
     if (!ghRes.ok) {
       const text = await ghRes.text();
-      console.error('[trigger-rebuild] workflow_dispatch отклонён GitHub:', ghRes.status, text.slice(0, 300));
+      console.error(`[trigger-rebuild] workflow_dispatch (${workflowFile}) отклонён GitHub:`, ghRes.status, text.slice(0, 300));
     }
     res.status(200).json({ triggered: ghRes.ok });
   } catch (err) {
-    console.error('[trigger-rebuild] не удалось вызвать workflow_dispatch:', err);
+    console.error(`[trigger-rebuild] не удалось вызвать workflow_dispatch (${workflowFile}):`, err);
     res.status(200).json({ triggered: false, reason: 'fetch failed' });
   }
 }
@@ -127,7 +141,11 @@ export default async function handler(req, res) {
 
   const { action } = req.body ?? {};
   if (action === 'dispatch-bulk-send') {
-    await dispatchBulkSendWorkflow(res);
+    await dispatchWorkflow(res, 'process-bulk-send-jobs.yml');
+    return;
+  }
+  if (action === 'dispatch-supplier-search') {
+    await dispatchWorkflow(res, 'process-supplier-web-search-jobs.yml');
     return;
   }
 

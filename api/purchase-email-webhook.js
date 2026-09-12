@@ -1,6 +1,6 @@
 // Vercel serverless function: приём входящих писем через Resend Inbound
 // Webhook. Домен/MX/webhook уже настроены владельцем (2026-08-28, см.
-// журнал CLAUDE.md) — этот эндпоинт зарегистрирован в кабинете Resend как
+// журнал docs/session-journal.md) — этот эндпоинт зарегистрирован в кабинете Resend как
 // единственный обработчик входящей почты на домене.
 //
 // Несмотря на название файла (осталось от первой версии — переименовывать
@@ -41,6 +41,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { extractEmailAttachments, fetchReceivedEmailBody } from './_attachments.js';
 import { recognizeInvoice, INVOICE_MAX_PAGES } from './_invoiceRecognition.js';
+import { saveReliabilityIfNew } from './_checko.js';
 
 export const config = {
   api: {
@@ -136,6 +137,44 @@ async function resolveOrderByShortCode(shortCode) {
   if (!resp.ok) return null;
   const rows = await resp.json();
   return rows[0] ? { id: rows[0].id, offerId: rows[0].offer_id } : null;
+}
+
+// Реальный случай 2026-09-10: у всех 14 предложений массовой рассылки от
+// 2026-09-09 short_code в supplier_research_offers оказался ДРУГИМ, чем тот,
+// что был зашит в адрес отправителя на момент отправки писем (сверено
+// напрямую по базе — sent-адрес из supplier_offer_emails.from_address не
+// совпал с offer.short_code НИ У ОДНОЙ из 14 записей). Ни один код проекта
+// (insertSupplierOffer/updateSupplierOffer/purchase-send-email.js/этот же
+// файл) НЕ пишет в колонку short_code после создания строки — она
+// генерируется только DEFAULT-выражением на самой колонке (см. миграцию
+// 2026-09-03). Как и почему у всех 14 записей разом разъехалось значение —
+// не установлено (не было ни одной правки схемы этой таблицы между
+// отправкой и обнаружением бага, судя по журналу docs/session-journal.md) — похоже на
+// побочный эффект какой-то структурной миграции колонки где-то между этими
+// двумя моментами, а не на баг конкретно этого файла.
+//
+// Раз причина не подтверждена и не исключён повтор — резолвим по короткому
+// коду НЕ ТОЛЬКО через текущее значение offer.short_code, но и через уже
+// реально отправленные письма: from_address исходящего письма — это
+// неизменяемая историческая запись (колонка никогда не редактируется после
+// insertEmailRow), поэтому по ней можно восстановить offer_id даже если
+// текущий short_code записи успел уйти в сторону. Вызывается ТОЛЬКО когда
+// прямой поиск по offer.short_code ничего не дал — не подменяет основной
+// путь, а подстраховывает его.
+async function resolveOfferIdByEmailHistory(shortCode) {
+  const pattern = `*+${shortCode}@*`;
+  const resp = await fetch(
+    `${process.env.SUPABASE_URL}/rest/v1/supplier_offer_emails?select=offer_id&direction=eq.out&from_address=ilike.${encodeURIComponent(pattern)}&limit=1`,
+    {
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+    },
+  );
+  if (!resp.ok) return null;
+  const rows = await resp.json();
+  return rows[0]?.offer_id ?? null;
 }
 
 // Заголовок From письма обычно приходит в одном из двух видов —
@@ -271,8 +310,15 @@ export default async function handler(req, res) {
     const purchaseId = await resolveIdByShortCode('purchases', code);
     const matchedOffer = purchaseId ? null : await resolveIdByShortCode('supplier_research_offers', code);
     const matchedOrder = purchaseId || matchedOffer ? null : await resolveOrderByShortCode(code);
-    const offerId = matchedOffer ?? matchedOrder?.offerId ?? null;
+    let offerId = matchedOffer ?? matchedOrder?.offerId ?? null;
     const orderId = matchedOrder?.id ?? null;
+
+    // Фолбэк по истории отправленных писем (см. комментарий у
+    // resolveOfferIdByEmailHistory) — только когда прямой поиск по всем
+    // трём таблицам ничего не дал.
+    if (!purchaseId && !offerId) {
+      offerId = await resolveOfferIdByEmailHistory(code);
+    }
 
     if (!purchaseId && !offerId) {
       // Код есть в адресе, но не резолвится ни в одну реальную запись —
@@ -318,6 +364,21 @@ export default async function handler(req, res) {
               sourceFile: { url: candidate.url, fileName: candidate.fileName },
               recognizedAt: new Date().toISOString(),
             };
+          }
+          // Владелец, 2026-09-12: "как только поставщик присылает счет в
+          // первый раз с новым ИНН, проверка должна автоматически
+          // запускаться и выводить на карточке поставщика" — запускаем
+          // ЗДЕСЬ, на приёме письма, а не при подтверждении распознавания
+          // закупщицей: к моменту, когда она откроет карточку, результат уже
+          // должен лежать в базе, иначе "автоматически" превращается в
+          // "после того, как я нажму подтвердить".
+          //
+          // Проверка привязана к ИНН, а не к предложению, поэтому её можно
+          // сохранять ещё до того, как закупщица примет счёт: строка в
+          // supplier_reliability ни на что не влияет, пока у предложения не
+          // появится тот же inn.
+          if (recognized.isInvoice) {
+            await saveReliabilityIfNew(recognized.supplierInn);
           }
         } catch (err) {
           console.error('Не удалось автораспознать вложение как счёт (не критично, письмо всё равно сохранится):', err);

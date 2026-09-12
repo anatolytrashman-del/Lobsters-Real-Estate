@@ -13,7 +13,7 @@ import type {
 const SCHEDULE_DAY_KEYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 
 // Разбор максимально защитный — building_only записи (37 из 143, см. журнал
-// CLAUDE.md) шлют rubrics/schedule/reviews/attribute_groups как null (нет
+// docs/session-journal.md) шлют rubrics/schedule/reviews/attribute_groups как null (нет
 // найденной организации, только геокод здания), а формат самого 2GIS нигде
 // не гарантирован документацией, только присланным примером ответа.
 function parseRubrics(raw: unknown): Gis2Rubric[] {
@@ -93,7 +93,7 @@ function fromRow(row: BusinessCenter2gisSnapshotRow): BusinessCenter2gisSnapshot
 // данные ровно ОДНОГО БЦ, тот же принцип, что и у fetchBusinessCenterOffers.
 // RLS для anon открывает только перечисленные ниже колонки — raw_item/
 // geocode_raw/gis_org_id/gis_building_id/point/id/data_quality_flag не
-// читаемы анонимным ключом вовсе (см. миграцию в журнале CLAUDE.md).
+// читаемы анонимным ключом вовсе (см. миграцию в журнале docs/session-journal.md).
 export function fetchBusinessCenter2gisSnapshot(slug: string): Promise<BusinessCenter2gisSnapshot | null> {
   return withRetry(async () => {
     const { data, error } = await supabase

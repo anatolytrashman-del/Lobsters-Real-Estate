@@ -57,7 +57,7 @@ function ResumeLink({ path, fileName }: { path: string; fileName: string }) {
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
+      className="inline-flex items-center gap-2 text-sm font-medium text-primary-hover hover:underline"
     >
       <FileText className="h-4 w-4 shrink-0" />
       {fileName || 'Открыть резюме'}

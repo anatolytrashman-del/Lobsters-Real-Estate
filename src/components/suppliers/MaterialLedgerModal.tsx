@@ -9,6 +9,24 @@ import { insertMaterialLedger, updateMaterialLedger, deleteMaterialLedger } from
 import type { PurchaseItem } from '../../data/purchases';
 import { buildMaterialLedgerXlsx, type LedgerAttachment } from '../../lib/materialLedgerXlsx';
 
+// Ключ, по которому чекбокс чек-листа связывается с уже добавленной позицией
+// ведомости. Раньше сравнивали по name — владелец, 2026-09-11: "если две
+// позиции с одинаковыми заголовками, но разными объёмами и комментариями, в
+// итоговой ведомости позиции не суммируются и идут не как две, а как одна".
+// В смете это нормальная ситуация (одна и та же краска в двух помещениях:
+// 400 м² "для подвала" и 720 м² с другим примечанием) — name совпадает, а
+// sourceMaterialId (id строки сметы) у них разный, поэтому ключом берём
+// именно его: обе позиции отмечаются и попадают в ведомость по отдельности,
+// снятие галочки с одной не уносит вторую.
+//
+// Фолбэк на name — для позиций без sourceMaterialId (позиции "Текущего
+// запроса", заведённые вручную): у них стабильного id материала нет, id
+// самой позиции тоже не годится (при добавлении в ведомость выдаётся новый
+// crypto.randomUUID()), так что там поведение остаётся прежним.
+function materialKey(item: PurchaseItem): string {
+  return item.sourceMaterialId ? `src:${item.sourceMaterialId}` : `name:${item.name}`;
+}
+
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
     return (err as { message: string }).message;
@@ -158,10 +176,10 @@ export function MaterialLedgerModal({
 
   function toggleMaterial(item: PurchaseItem, checked: boolean) {
     if (checked) {
-      if (items.some((i) => i.name === item.name)) return;
+      if (items.some((i) => materialKey(i) === materialKey(item))) return;
       setItems((prev) => [...prev, { ...item, id: crypto.randomUUID() }]);
     } else {
-      setItems((prev) => prev.filter((i) => i.name !== item.name));
+      setItems((prev) => prev.filter((i) => materialKey(i) !== materialKey(item)));
     }
   }
 
@@ -281,7 +299,7 @@ export function MaterialLedgerModal({
                     <div key={group.label} className="flex flex-col gap-1">
                       <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{group.label}</span>
                       {group.items.map((item) => {
-                        const checked = items.some((i) => i.name === item.name);
+                        const checked = items.some((i) => materialKey(i) === materialKey(item));
                         return (
                           <label
                             key={item.id}

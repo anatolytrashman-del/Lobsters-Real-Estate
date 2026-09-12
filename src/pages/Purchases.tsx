@@ -10,6 +10,7 @@ import { Select } from '../components/ui/Select';
 import { ToggleGroup } from '../components/ui/ToggleGroup';
 import { Modal } from '../components/ui/Modal';
 import { cn } from '../lib/cn';
+import { estimateOptionLabel } from '../lib/estimateDisplay';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { currencySymbols } from '../data/transactions';
 import type { Currency } from '../data/transactions';
@@ -170,7 +171,7 @@ export function Purchases({
     () =>
       estimates.map((e) => ({
         id: e.id,
-        label: `Смета — ${e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'}`,
+        label: estimateOptionLabel(e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'),
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimates, objects],
@@ -488,7 +489,7 @@ export function Purchases({
               <div className="overflow-x-auto rounded-control border border-border">
                 <table className="w-full min-w-[520px] border-collapse text-sm">
                   <thead>
-                    <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-muted">
                       <th className="px-3 py-2">Название</th>
                       <th className="px-3 py-2 text-right">Кол-во</th>
                       <th className="px-3 py-2 text-right">Цена</th>
@@ -676,7 +677,7 @@ function PurchaseDetailModal({
                           href={f.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="flex items-center gap-1.5 rounded-control border border-border bg-surface px-2.5 py-1.5 text-xs text-primary hover:underline"
+                          className="flex items-center gap-1.5 rounded-control border border-border bg-surface px-2.5 py-1.5 text-xs text-primary-hover hover:underline"
                         >
                           <Paperclip className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
                           <span className="min-w-0 flex-1 truncate">{f.fileName}</span>

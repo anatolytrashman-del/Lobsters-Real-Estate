@@ -6,6 +6,8 @@ import { cn } from '../../lib/cn';
 import { glassPillClass, glassPillShadow } from '../../lib/glass';
 import { useMarketOfferDiscussionWatcher } from '../../lib/marketOfferDiscussionWatcher';
 import { useSupplierEmailWatcher } from '../../lib/supplierEmailWatcher';
+import { useSupplierWebSearchJobWatcher } from '../../lib/supplierWebSearchJobWatcher';
+import { useSupplierEnrichmentJobWatcher } from '../../lib/supplierEnrichmentJobWatcher';
 
 // index.html — общий статический файл на все роуты (публичный SPA-фолбэк),
 // его <title> заточен под OG-превью продающей страницы (см. index.html).
@@ -21,12 +23,30 @@ export function AppLayout() {
   // Один опрос на всё приложение, не с каждой страницы — см. сами хуки.
   useMarketOfferDiscussionWatcher();
   useSupplierEmailWatcher();
+  useSupplierWebSearchJobWatcher();
+  useSupplierEnrichmentJobWatcher();
 
   useEffect(() => {
     const previousTitle = document.title;
     document.title = ADMIN_TITLE;
     return () => {
       document.title = previousTitle;
+    };
+  }, []);
+
+  // Владелец, 2026-09-11: "у Альмиры на ноуте стало видно очень мало
+  // элементов, мало поставщиков" — на её окне (~1280x620 CSS-px против
+  // ~1440x760 у владельца) админка при том же базовом кегле показывала
+  // почти вдвое меньше содержимого. Класс включает плавный масштаб
+  // интерфейса по размеру окна (см. html.admin-dense в src/index.css) —
+  // вся вёрстка в rem, поэтому кегль html ужимает разом текст, отступы,
+  // иконки и ширины колонок. Только на админке: <html> общий на все роуты,
+  // поэтому класс снимаем при уходе с /admin/* (публичные лендинги должны
+  // остаться со своей типографикой).
+  useEffect(() => {
+    document.documentElement.classList.add('admin-dense');
+    return () => {
+      document.documentElement.classList.remove('admin-dense');
     };
   }, []);
 
@@ -38,11 +58,22 @@ export function AppLayout() {
   }, [location.pathname]);
 
   return (
-    <div className="flex min-h-svh bg-bg">
+    // Владелец, 2026-09-10: "чтобы влезало полностью, вне зависимости от
+    // экрана" (композер письма поставщику упирался в нижний край окна) —
+    // раньше вся админка скроллилась одним длинным document/body, без
+    // единой ограниченной по высоте области. h-svh (было min-h-svh) + свой
+    // overflow-y-auto на <main> ниже — теперь именно <main> скроллируемый
+    // контейнер, а не документ целиком (то же самое для пользователя на
+    // страницах короче экрана — скроллбар просто переехал с окна на main).
+    // Sidebar.tsx уже был готов к этому (lg:sticky + h-svh + свой
+    // overflow-y-auto) — трогать его не пришлось. Страницы, которым нужна
+    // "заполнить всю высоту экрана" вёрстка (см. SupplierCorrespondenceTab),
+    // используют flex-1 min-h-0 вниз по дереву от .mx-auto ниже.
+    <div className="flex h-svh bg-bg">
       <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Верхняя полоса с гамбургером — только ниже lg, где сайдбар уехал в шторку. */}
-        <div className="flex items-center gap-3 border-b border-border px-4 py-3 lg:hidden">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:hidden">
           <button
             type="button"
             onClick={() => setNavOpen(true)}
@@ -53,11 +84,15 @@ export function AppLayout() {
             <Menu className="h-5 w-5" />
           </button>
           <span className="text-base font-extrabold tracking-wide text-ink">
-            <span className="font-black text-primary">RED</span>EVELOPMENT
+            {/* text-primary-hover, не text-primary — тот же фикс, что уже
+                применён на гиде района (DistrictGuidePage.tsx) для этого же
+                логотипа: базовый красный на этом фоне даёт контраст ниже
+                4,5:1 (Accessibility, UX-аудит мобильной шапки админки). */}
+            <span className="font-black text-primary-hover">RED</span>EVELOPMENT
           </span>
         </div>
-        <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
-          <div className="mx-auto flex max-w-[1400px] min-w-0 flex-col gap-6">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
+          <div className="mx-auto flex h-full min-h-0 max-w-[1400px] min-w-0 flex-col gap-6">
             <Outlet />
           </div>
         </main>

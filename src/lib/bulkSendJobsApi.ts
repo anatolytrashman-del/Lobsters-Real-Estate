@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { withRetry } from './withRetry';
 import { authFetch } from './authFetch';
+import { getCurrentProfile } from './accessProfile';
 import type { BulkSendJob, BulkSendJobRow } from '../data/bulkSendJobs';
 
 // Владелец, 2026-09-09: "при каждой отправке письма запускай костыль, после
@@ -9,7 +10,7 @@ import type { BulkSendJob, BulkSendJobRow } from '../data/bulkSendJobs';
 // сразу после постановки задания в очередь дёргаем api/trigger-rebuild.js
 // (action:'dispatch-bulk-send'), тот вызывает workflow_dispatch на
 // process-bulk-send-jobs.yml напрямую — не дожидаясь ни сломанного планового
-// крона (см. журнал CLAUDE.md), ни ручного вмешательства. Fire-and-forget —
+// крона (см. журнал docs/session-journal.md), ни ручного вмешательства. Fire-and-forget —
 // неудача не должна мешать самой постановке в очередь (плановый крон
 // остаётся подстраховкой).
 function dispatchBulkSendWorkflow() {
@@ -29,6 +30,8 @@ function fromRow(row: BulkSendJobRow): BulkSendJob {
     body: row.body,
     attachment: row.attachment,
     status: row.status === 'done' ? 'done' : 'queued',
+    createdByProfileId: row.created_by_profile_id ?? null,
+    createdByName: row.created_by_name ?? null,
     createdAt: row.created_at,
   };
 }
@@ -46,6 +49,7 @@ export function insertBulkSendJob(input: {
   offerIds: string[];
 }): Promise<BulkSendJob> {
   return withRetry(async () => {
+    const profile = getCurrentProfile();
     const { data: jobData, error: jobError } = await supabase
       .from('bulk_send_jobs')
       .insert({
@@ -54,6 +58,8 @@ export function insertBulkSendJob(input: {
         subject: input.subject,
         body: input.body,
         attachment: input.attachment,
+        created_by_profile_id: profile.id,
+        created_by_name: profile.displayName,
       })
       .select()
       .single();
@@ -67,5 +73,22 @@ export function insertBulkSendJob(input: {
 
     dispatchBulkSendWorkflow();
     return job;
+  });
+}
+
+// Поставщики, письма которым УЖЕ поставлены в очередь, но воркер (scripts/
+// process-bulk-send-jobs.mjs) до них ещё не дошёл — строки supplier_offer_emails
+// у них появятся только в момент реальной отправки, а между постановкой в
+// очередь и последним письмом проходит 25-35с × количество получателей (на
+// 20 поставщиков — минут десять). Без этого списка "кому ещё не писали" в
+// BulkSendModal считал бы их нетронутыми и владелец, поставив вторую
+// рассылку по той же категории, отправил бы части поставщиков дубль.
+// Статус 'error' сюда сознательно не попадает — письмо не ушло, повторить
+// такому поставщику как раз нужно.
+export function fetchQueuedBulkSendOfferIds(): Promise<string[]> {
+  return withRetry(async () => {
+    const { data, error } = await supabase.from('bulk_send_job_items').select('offer_id').eq('status', 'pending');
+    if (error) throw error;
+    return (data as { offer_id: string }[]).map((r) => r.offer_id);
   });
 }

@@ -12,7 +12,6 @@ import type {
 } from '../data/supplierResearch';
 import type { DocumentFile } from '../data/contractorDocuments';
 import type { Currency } from '../data/transactions';
-import type { PurchaseItem } from '../data/purchases';
 
 function requestFromRow(row: SupplierRequestRow): SupplierRequest {
   return {
@@ -22,7 +21,6 @@ function requestFromRow(row: SupplierRequestRow): SupplierRequest {
     estimateId: row.estimate_id,
     sectionId: row.section_id,
     sectionTitle: row.section_title ?? '',
-    items: row.items ?? [],
     legalEntityId: row.legal_entity_id ?? null,
     comparisonMode: (row.comparison_mode as SupplierComparisonMode) || 'material',
     createdAt: row.created_at,
@@ -40,6 +38,9 @@ function offerFromRow(row: SupplierOfferRow): SupplierOffer {
     managerName: row.manager_name ?? '',
     country: row.country ?? '',
     websiteUrl: row.website_url,
+    listingUrl: row.listing_url ?? '',
+    contactSource: row.contact_source ?? '',
+    messengers: Array.isArray(row.messengers) ? row.messengers : [],
     catalogModelName: row.catalog_model_name,
     catalogModelPhoto: row.catalog_model_photo,
     price: row.price,
@@ -48,6 +49,7 @@ function offerFromRow(row: SupplierOfferRow): SupplierOffer {
     files: row.files ?? [],
     shortCode: row.short_code,
     verified: row.verified,
+    inn: row.inn ?? null,
     createdAt: row.created_at,
   };
 }
@@ -66,7 +68,6 @@ export interface SupplierRequestInput {
   estimateId: string | null;
   sectionId: string | null;
   sectionTitle: string;
-  items: PurchaseItem[];
   legalEntityId: string | null;
   comparisonMode: SupplierComparisonMode;
 }
@@ -81,7 +82,6 @@ export function insertSupplierRequest(input: SupplierRequestInput): Promise<Supp
         estimate_id: input.estimateId,
         section_id: input.sectionId,
         section_title: input.sectionTitle,
-        items: input.items,
         legal_entity_id: input.legalEntityId,
         comparison_mode: input.comparisonMode,
       })
@@ -102,7 +102,6 @@ export function updateSupplierRequest(id: string, input: SupplierRequestInput): 
         estimate_id: input.estimateId,
         section_id: input.sectionId,
         section_title: input.sectionTitle,
-        items: input.items,
         legal_entity_id: input.legalEntityId,
         comparison_mode: input.comparisonMode,
       })
@@ -145,6 +144,8 @@ export function insertSupplierOffer(input: Omit<SupplierOffer, 'id' | 'createdAt
         manager_name: input.managerName,
         country: input.country,
         website_url: input.websiteUrl,
+        listing_url: input.listingUrl,
+        messengers: input.messengers,
         catalog_model_name: input.catalogModelName,
         catalog_model_photo: input.catalogModelPhoto,
         price: input.price,
@@ -152,6 +153,7 @@ export function insertSupplierOffer(input: Omit<SupplierOffer, 'id' | 'createdAt
         items: input.items,
         files: input.files,
         verified: input.verified,
+        inn: input.inn,
       })
       .select()
       .single();
@@ -173,6 +175,8 @@ export function updateSupplierOffer(id: string, input: Omit<SupplierOffer, 'id' 
         manager_name: input.managerName,
         country: input.country,
         website_url: input.websiteUrl,
+        listing_url: input.listingUrl,
+        messengers: input.messengers,
         catalog_model_name: input.catalogModelName,
         catalog_model_photo: input.catalogModelPhoto,
         price: input.price,
@@ -180,6 +184,7 @@ export function updateSupplierOffer(id: string, input: Omit<SupplierOffer, 'id' 
         items: input.items,
         files: input.files,
         verified: input.verified,
+        inn: input.inn,
       })
       .eq('id', id)
       .select()

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Loader2, Trash2, Pencil, Send, Phone, Globe, Paperclip, Upload, X, ImageOff, Mail, Search, Check, FileText } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ExternalLink, FileText, Globe, ImageOff, Loader2, Mail, MessageCircle, Paperclip, Pencil, Phone, Plus, Search, Send, Trash2, Upload, X } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -15,6 +15,7 @@ import { ContactValue } from '../components/ui/ContactValue';
 import { ContractorsResearch } from '../components/contractors/ContractorsResearch';
 import { cn } from '../lib/cn';
 import { formatPhoneDisplay } from '../lib/formatPhone';
+import { estimateOptionLabel } from '../lib/estimateDisplay';
 import { currencySymbols, type Currency } from '../data/transactions';
 import type { ExchangeRate } from '../data/exchangeRates';
 import { fetchTodayRate } from '../lib/exchangeRatesApi';
@@ -24,6 +25,8 @@ import {
   RESEARCH_CONTACT_METHODS,
   RESEARCH_CURRENCIES,
   SUPPLIER_COUNTRIES,
+  SUPPLIER_SEARCH_REGIONS,
+  defaultSearchRegion,
   SUPPLIER_REQUEST_GROUPS,
   SUPPLIER_REQUEST_GROUP_LABELS,
   SUPPLIER_COMPARISON_MODES,
@@ -31,15 +34,21 @@ import {
   SUPPLIER_COMPARISON_MODE_HINTS,
   guessCountryFromWebsite,
   countryFlag,
+  messengerLink,
   offerCommunicationStatus,
   OFFER_COMMUNICATION_STATUS_LABEL,
+  SUPPLIER_MESSENGER_TYPES,
   type ResearchContactMethod,
   type SupplierRequest,
   type SupplierRequestGroup,
   type SupplierComparisonMode,
   type SupplierOffer,
-  formatRequestItemsText,
+  type SupplierMessengerType,
+  type SupplierMessengerContact,
 } from '../data/supplierResearch';
+import type { SupplierReliability } from '../data/supplierReliability';
+import { fetchSupplierReliability, checkSupplierReliability } from '../lib/supplierReliabilityApi';
+import { RiskBadge } from '../components/suppliers/RiskBadge';
 import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
 import { fetchAllSupplierOfferEmails, markSupplierOfferEmailsRead } from '../lib/supplierOfferEmailsApi';
 import { EmailThread, SupplierCorrespondenceTab, countUnreadSupplierEmails } from '../components/suppliers/SupplierCorrespondenceTab';
@@ -52,6 +61,8 @@ import type { MaterialLedger } from '../data/materialLedgers';
 import { fetchMaterialLedgers, deleteMaterialLedger } from '../lib/materialLedgersApi';
 import type { SupplierOrder } from '../data/supplierOrders';
 import { fetchSupplierOrders } from '../lib/supplierOrdersApi';
+import type { SupplierQuote } from '../data/supplierQuotes';
+import { fetchSupplierQuotes, updateSupplierQuote, deleteSupplierQuote } from '../lib/supplierQuotesApi';
 import {
   fetchSupplierRequests,
   insertSupplierRequest,
@@ -65,11 +76,21 @@ import {
   type SupplierRequestInput,
 } from '../lib/supplierResearchApi';
 import {
-  searchSuppliersOnline,
+  queueSupplierWebSearch,
+  fetchSupplierWebSearchJobs,
   recognizeInvoiceFile,
-  type SupplierSearchResult,
+  type SupplierWebSearchJob,
   type RecognizedInvoiceItem,
 } from '../lib/supplierWebSearchApi';
+import {
+  fetchSupplierEnrichmentJobs,
+  enrichmentStateByOffer,
+  supplierVerificationStatus,
+  SUPPLIER_VERIFICATION_LABEL,
+  type SupplierEnrichmentJob,
+  type SupplierVerificationStatus,
+  type OfferEnrichmentState,
+} from '../lib/supplierEnrichmentApi';
 import { logActivity } from '../lib/activityLogApi';
 import { purchaseItemTotal, type PurchaseItem } from '../data/purchases';
 import { emptySection, type Estimate, type EstimateMaterial, type EstimateSection } from '../data/estimates';
@@ -99,6 +120,30 @@ function formatPrice(price: number, currency: Currency): string {
 // колонка не растягивалась длинными урлами. Если строка не парсится как URL
 // (ввели без https://), показываем как есть — свободный ввод, не хотим
 // блокировать сохранение из-за формата.
+// Сколько времени показывать баннер "Готово: добавлено N поставщиков" после
+// завершения поиска (см. latestVisibleJobForRequest).
+const DONE_BANNER_TTL_MS = 30 * 60_000;
+
+// "добавлен 31 поставщик" / "добавлено 2 поставщика" / "добавлено 5
+// поставщиков" — иначе в баннере получалось "добавлено 31 поставщиков".
+function addedSuppliersLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `добавлен ${count} поставщик`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `добавлено ${count} поставщика`;
+  return `добавлено ${count} поставщиков`;
+}
+
+// Подпись на спойлере со списком поставщиков в карточке категории
+// (владелец, 2026-09-11: "у меня стало очень много поставщиков").
+function suppliersCountLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${count} поставщик`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${count} поставщика`;
+  return `${count} поставщиков`;
+}
+
 function siteLabel(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, '');
@@ -139,9 +184,8 @@ function siteLabel(url: string): string {
 // Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
 // цен. И внутри уже группировка по запросам, как грильято" — то самое
 // сравнение "лучшая цена"/таблица по позициям, которое до этого жило только
-// внутри карточки запроса на вкладке "Поставщики" (см. PriceComparisonBlock
-// ниже — общий компонент для обоих мест), получило свою отдельную вкладку —
-// чистый вид только для сравнения, без кнопок управления запросом/
+// внутри карточки запроса на вкладке "Поставщики", получило свою отдельную
+// вкладку — чистый вид только для сравнения, без кнопок управления запросом/
 // предложением, сгруппированный по тем же категориям (Материалы и
 // оборудование/Сервисы), что и "Поставщики".
 const SUPPLIER_TABS = ['Поставщики', 'Сравнение цен', 'Ведомости материалов', 'Письма'] as const;
@@ -169,7 +213,6 @@ const emptyRequestForm = {
   estimateId: '' as string,
   sectionId: '' as string,
   sectionTitle: '',
-  items: [] as PurchaseItem[],
   legalEntityId: '' as string,
   comparisonMode: 'material' as SupplierComparisonMode,
 };
@@ -181,7 +224,6 @@ function requestToForm(r: SupplierRequest) {
     estimateId: r.estimateId ?? '',
     sectionId: r.sectionId ?? '',
     sectionTitle: r.sectionTitle,
-    items: r.items,
     legalEntityId: r.legalEntityId ?? '',
     comparisonMode: r.comparisonMode,
   };
@@ -195,6 +237,8 @@ const emptyOfferForm = {
   managerName: '',
   country: '',
   websiteUrl: '',
+  listingUrl: '',
+  messengers: [] as SupplierMessengerContact[],
   catalogModelName: '',
   catalogModelPhoto: null as DocumentFile | null,
   // Владелец, 2026-09-09: файлы теперь грузятся сразу по выбору (как и
@@ -217,6 +261,10 @@ const emptyOfferForm = {
   price: '' as string,
   currency: RESEARCH_CURRENCIES[0] as Currency,
   items: [] as PurchaseItem[],
+  // Не редактируется руками — приходит из распознанного счёта (см. inn в
+  // data/supplierResearch.ts). Живёт в форме только чтобы пережить
+  // сохранение карточки и не потеряться между распознаванием и submit.
+  inn: null as string | null,
 };
 
 // Владелец, 2026-09-09: "нам нужен интерфейс для вывода лучшей цены" — тот
@@ -227,9 +275,18 @@ const emptyOfferForm = {
 // SupplierOffer.price). Предложения без цены — в хвост списка, не участвуют
 // в сравнении (0 не должен ложно выигрывать). Лидеров может быть несколько
 // (тот же принцип, что и там же).
+//
+// Владелец, 2026-09-11: "если указано, что это альтернатива, давай прямо возле
+// поставки выводить уведомление" — предложение, все КП которого помечены как
+// аналог (alternativeOfferIds), в борьбе за "лучшую цену" не участвует: оно
+// почти всегда дешевле просто потому, что это другой товар (реальный случай —
+// ГРИЛЬЯТО-Мастер со стальным h30 против алюминиевого h40 у остальных), и
+// зелёный бейдж на нём means "сравнили разное". В списке оно остаётся и цену
+// показывает, рядом — предупреждение.
 function rankOffersByPrice(
   offers: SupplierOffer[],
   rate: ExchangeRate | undefined,
+  alternativeOfferIds: Set<string> = new Set(),
 ): { sorted: SupplierOffer[]; cheapestIds: Set<string> } {
   const withUsd = offers.map((o) => ({
     offer: o,
@@ -237,9 +294,12 @@ function rankOffersByPrice(
   }));
   const priced = withUsd.filter((x) => x.usd != null).sort((a, b) => a.usd! - b.usd!);
   const unpriced = withUsd.filter((x) => x.usd == null);
-  const minUsd = priced[0] ? Math.round(priced[0].usd! * 100) : null;
+  // Место в списке альтернатива занимает по своей цене, как все — прячем от
+  // неё только бейдж "дешевле всех".
+  const comparable = priced.filter((x) => !alternativeOfferIds.has(x.offer.id));
+  const minUsd = comparable[0] ? Math.round(comparable[0].usd! * 100) : null;
   const cheapestIds = new Set(
-    minUsd == null ? [] : priced.filter((x) => Math.round(x.usd! * 100) === minUsd).map((x) => x.offer.id),
+    minUsd == null ? [] : comparable.filter((x) => Math.round(x.usd! * 100) === minUsd).map((x) => x.offer.id),
   );
   return { sorted: [...priced, ...unpriced].map((x) => x.offer), cheapestIds };
 }
@@ -252,25 +312,51 @@ function rankOffersByPrice(
 // один и тот же компонент дословно одинаково, более умный матчинг здесь не
 // Владелец, 2026-09-09: "нам как будто нужна отдельная вкладка Сравнение
 // цен. И внутри уже группировка по запросам, как грильято" — вынесено из
-// RequestCard в отдельный переиспользуемый блок: сам RequestCard (вкладка
-// "Поставщики", с кнопками управления запросом/предложением) и новая
-// вкладка "Сравнение цен" (только просмотр, сгруппировано по категориям)
-// показывают ровно один и тот же блок сравнения, не две разные реализации.
+// Статус поставщика в конвейере "нашли → добавили → обогатили → проверил
+// человек" (владелец, 2026-09-11) — один бейдж на все три места, где он
+// показывается (список предложений категории, разбивка по материалам в
+// "Сравнении цен", детальная карточка), чтобы не расходились подписи.
+function VerificationBadge({
+  offer,
+  enrichmentState,
+}: {
+  offer: { id: string; verified: boolean; email: string; contact: string };
+  enrichmentState: Map<string, OfferEnrichmentState>;
+}) {
+  const status = supplierVerificationStatus(offer, enrichmentState);
+  // Владелец, 2026-09-11: "измени красный цвет надписи Готово к верификации
+  // на жёлтый" — светофор по смыслу «что требуется от человека»: серый —
+  // ничего (данные ещё собираются или собирать нечего), жёлтый — готово,
+  // ждём проверки, зелёный — проверено.
+  const tone = status === 'verified' ? 'success' : status === 'ready' ? 'warning' : 'neutral';
+  return <Badge tone={tone}>{SUPPLIER_VERIFICATION_LABEL[status]}</Badge>;
+}
+
+// Владелец, 2026-09-11: "давай выводить цены и статус «лучшая цена» на
+// странице сравнения цен, а в списке поставщиков просто оставим самих
+// поставщиков со статусом Верифицировано/Нет" — раньше и здесь, и на
+// вкладке "Сравнение цен" рисовался один и тот же OfferTotalComparison
+// (цены, бейдж "лучшая цена", статус переписки, разбивка по КП). Теперь
+// сравнение цен живёт ровно в одном месте — на своей вкладке, а вкладка
+// "Поставщики" отвечает только за состав списка: кто у нас есть по этой
+// категории и в каком состоянии его проверка. Отсюда и новое имя
+// компонента — сравнением он больше не является.
 // Свой стейт страны — самодостаточный компонент, реюзабельный без прокидки
 // состояния через родителя.
-function PriceComparisonBlock({
+function SupplierListBlock({
   offers,
-  emails,
-  rate,
   onOpenDetail,
   emptyHint,
   country: controlledCountry,
   onCountryChange,
+  showCountryToggle = true,
+  enrichmentState,
+  reliabilityByInn,
 }: {
   offers: SupplierOffer[];
-  emails: SupplierOfferEmail[];
-  rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
+  enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
   // Владелец, 2026-09-03: "для материалов и сервисов мне нужно список — для
   // Беларуси и для России... в идеале переключение списков прямо внутри
   // самого блока" — подсказка для пустого списка отличается в зависимости
@@ -280,25 +366,60 @@ function PriceComparisonBlock({
   // RequestCard (вкладка "Поставщики") использует этот же переключатель
   // страны и для кнопки "Найти в сети" — там страна контролируется
   // родителем (controlled), чтобы оба места читали одно и то же значение.
-  // На вкладке "Сравнение цен" переключатель не нужен нигде, кроме самого
-  // блока — там он остаётся несвязанным (uncontrolled), свой на каждую
-  // карточку категории.
   country?: string;
   onCountryChange?: (country: string) => void;
+  // Владелец, 2026-09-11: "у меня стало очень много поставщиков" — в
+  // RequestCard список спрятан под спойлер, а переключатель страны вынесен
+  // во всегда видимую шапку карточки (он общий с кнопкой "Найти в сети",
+  // прятать его вместе со списком нельзя — поиск ушёл бы в невидимую
+  // пользователю страну). Здесь он в этом случае просто не рисуется второй раз.
+  showCountryToggle?: boolean;
 }) {
   const [internalCountry, setInternalCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
   const country = controlledCountry ?? internalCountry;
   const setCountry = onCountryChange ?? setInternalCountry;
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
 
+  // Сортировки по цене здесь больше нет (как и самих цен) — порядок по
+  // состоянию проверки: проверенные сверху, за ними те, где ход за
+  // человеком, и только потом ещё собираемые; внутри статуса — по алфавиту.
+  const verificationOrder: Record<SupplierVerificationStatus, number> = {
+    verified: 0,
+    ready: 1,
+    needs_verification: 2,
+    enriching: 3,
+  };
+  const sortedOffers = [...offersInCountry].sort((a, b) => {
+    const diff =
+      verificationOrder[supplierVerificationStatus(a, enrichmentState)] -
+      verificationOrder[supplierVerificationStatus(b, enrichmentState)];
+    return diff !== 0 ? diff : a.name.localeCompare(b.name, 'ru');
+  });
+
   return (
     <>
-      <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
+      {showCountryToggle && <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />}
 
-      {offersInCountry.length === 0 ? (
+      {sortedOffers.length === 0 ? (
         <p className="text-sm text-ink-faint">{offers.length === 0 ? 'Пока нет предложений.' : `Нет предложений из «${country}» — ${emptyHint}`}</p>
       ) : (
-        <OfferTotalComparison offers={offersInCountry} emails={emails} rate={rate} onOpenDetail={onOpenDetail} showItemsSpoiler={false} />
+        <div className="flex flex-col gap-2">
+          {sortedOffers.map((o) => (
+            <div
+              key={o.id}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-3"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium text-ink">{o.name}</span>
+                <VerificationBadge offer={o} enrichmentState={enrichmentState} />
+                <RiskBadge inn={o.inn} reliabilityByInn={reliabilityByInn} />
+              </div>
+              <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
+                Подробнее
+              </Button>
+            </div>
+          ))}
+        </div>
       )}
     </>
   );
@@ -310,39 +431,56 @@ function PriceComparisonBlock({
 // равенстве) подсвечена зелёным + бейдж "лучшая цена" — тот же принцип, что
 // и у сравнения предложений подрядчиков (ContractorsResearch.tsx). Плюс
 // разбивка по компонентам снизу, если у сравниваемых КП есть построчная
-// структура. Вынесено в отдельный компонент — используется и в
-// PriceComparisonBlock (вкладка "Поставщики", весь список), и в
-// MaterialPriceComparisonCard для категорий с comparisonMode:'lot' (вкладка
-// "Сравнение цен", только confirmed — владелец, 2026-09-09: "Грильято, где
-// есть комплектующие, нужно оценивать полностью... мы не будем заказывать
+// структура. Используется на вкладке "Сравнение цен" — в
+// MaterialPriceComparisonCard для категорий с comparisonMode:'lot' (только
+// confirmed — владелец, 2026-09-09: "Грильято, где есть комплектующие,
+// нужно оценивать полностью... мы не будем заказывать
 // несущие в одном месте, а подвесы в другом" — там сравнение "лучшая цена
 // по каждой позиции" вводило бы в заблуждение, реальный выбор — это ОДИН
 // поставщик на всю поставку целиком).
 function OfferTotalComparison({
   offers,
   emails,
+  quotes,
   rate,
   onOpenDetail,
-  // Владелец, 2026-09-09: "в общем списке поставщиков убирай эту таблицу" —
-  // список позиций (в любом виде) нужен только на вкладке "Сравнение цен"
-  // (там это и есть смысл lot-режима — детализация того, из чего сложилась
-  // общая сумма), на "Поставщики" (весь список, включая ещё не ответивших)
-  // он только загромождает карточку категории.
-  showItemsSpoiler = true,
+  enrichmentState,
+  reliabilityByInn,
 }: {
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  quotes: SupplierQuote[];
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
-  showItemsSpoiler?: boolean;
+  enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
 }) {
-  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offers, rate);
+  const quotesByOffer = useMemo(() => {
+    const map = new Map<string, SupplierQuote[]>();
+    quotes.forEach((q) => map.set(q.offerId, [...(map.get(q.offerId) ?? []), q]));
+    return map;
+  }, [quotes]);
+
+  // Поставщик считается "предложил аналог" только когда ВСЕ его КП помечены
+  // альтернативой: если рядом есть хоть одно КП ровно по заявке, сравнивать
+  // его с остальными честно.
+  const alternativeOfferIds = useMemo(() => {
+    const ids = new Set<string>();
+    quotesByOffer.forEach((list, offerId) => {
+      if (list.length > 0 && list.every((q) => q.isAlternative)) ids.add(offerId);
+    });
+    return ids;
+  }, [quotesByOffer]);
+
+  const { sorted: sortedOffers, cheapestIds } = rankOffersByPrice(offers, rate, alternativeOfferIds);
 
   return (
     <div className="flex flex-col gap-2">
       {sortedOffers.map((o) => {
         const status = offerCommunicationStatus(o, emails);
         const isCheapest = cheapestIds.has(o.id);
+        const offerQuotes = quotesByOffer.get(o.id) ?? [];
+        const alternativeQuotes = offerQuotes.filter((q) => q.isAlternative);
         return (
           <div
             key={o.id}
@@ -354,11 +492,8 @@ function OfferTotalComparison({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-medium text-ink">{o.name}</span>
-                {o.verified ? (
-                  <Badge tone="success">Верифицирован</Badge>
-                ) : (
-                  <Badge tone="warning">Требуется верификация</Badge>
-                )}
+                <VerificationBadge offer={o} enrichmentState={enrichmentState} />
+                <RiskBadge inn={o.inn} reliabilityByInn={reliabilityByInn} />
                 {isCheapest && (
                   <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
                     лучшая цена
@@ -376,6 +511,48 @@ function OfferTotalComparison({
               </div>
             </div>
 
+            {/* Владелец, 2026-09-11: "надо бы показывать все" — поставщик может
+                прислать в одну ветку несколько счетов, раньше в карточке
+                оставался только последний. Показываем, когда их правда
+                несколько; одно КП и так уже видно ценой выше. */}
+            {offerQuotes.length > 1 && (
+              <div className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted/40 px-3 py-2">
+                <span className="text-xs font-medium text-ink-muted">Получено КП: {offerQuotes.length}</span>
+                {offerQuotes.map((q) => (
+                  <div key={q.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                    <span className="min-w-0 flex-1 truncate text-ink">{q.title}</span>
+                    {q.isAlternative && (
+                      <span className="rounded-full bg-warning-bg px-2 py-0.5 text-[11px] font-semibold text-warning">
+                        аналог
+                      </span>
+                    )}
+                    <span className="tabular-nums font-medium text-ink">
+                      {q.price > 0 ? formatPrice(q.price, q.currency) : '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Само уведомление — рядом с ценой, а не внутри карточки: решение
+                принимают, глядя на эту строку. */}
+            {alternativeQuotes.length > 0 && (
+              <div className="flex flex-col gap-0.5 rounded-control border border-warning/30 bg-warning-bg px-3 py-2 text-sm text-ink">
+                <span className="font-medium">
+                  {alternativeQuotes.length === offerQuotes.length
+                    ? 'Это аналог, а не то, что запрашивали — цены сопоставимы не напрямую'
+                    : 'Среди КП есть аналог — не то, что запрашивали'}
+                </span>
+                {alternativeQuotes
+                  .filter((q) => q.alternativeNote.trim())
+                  .map((q) => (
+                    <span key={q.id} className="text-ink-muted">
+                      {q.title}: {q.alternativeNote}
+                    </span>
+                  ))}
+              </div>
+            )}
+
             {/* Владелец, 2026-09-09: "названия позиций будут 100% отличаться,
                 ты перекрестные сравнения не найдешь" — раньше здесь строилась
                 ОБЩАЯ таблица, сопоставляющая позиции разных поставщиков по
@@ -383,7 +560,7 @@ function OfferTotalComparison({
                 каждого поставщика свои формулировки в счёте. Теперь список
                 позиций — под спойлером и СТРОГО отдельно на каждого
                 поставщика, без попытки свести их в одну таблицу. */}
-            {showItemsSpoiler && o.items.length > 0 && (
+            {o.items.length > 0 && (
               <details className="group">
                 <summary className="cursor-pointer text-xs font-medium text-ink-muted">
                   Список материалов ({o.items.length} поз.)
@@ -391,7 +568,7 @@ function OfferTotalComparison({
                 <div className="mt-2 overflow-x-auto rounded-control border border-border">
                   <table className="w-full min-w-[360px] border-collapse text-sm">
                     <thead>
-                      <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                      <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-muted">
                         <th className="px-3 py-2">Название</th>
                         <th className="px-3 py-2 text-right">Кол-во</th>
                         <th className="px-3 py-2 text-right">Цена</th>
@@ -429,12 +606,12 @@ function OfferTotalComparison({
 // Владелец, 2026-09-09: "В сравнении цен нужно добавлять только тех, кто
 // уже прислал КП" + "не списки поставщиков, а материал — КП по убыванию" —
 // вкладка "Сравнение цен" перестроена целиком под этот принцип, отдельно от
-// PriceComparisonBlock (тот остаётся как был для вкладки "Поставщики" — там
-// нужен весь список, включая ещё не ответивших, это управление запросом, а
-// не сравнение готовых цен). Здесь: (1) только offerCommunicationStatus ===
-// 'confirmed' — offer.items или offer.price уже зафиксированы, счёт реально
+// списка на вкладке "Поставщики" (SupplierListBlock — там нужен весь состав,
+// включая ещё не ответивших, это управление запросом, а не сравнение цен;
+// с 2026-09-11 цен там нет вовсе). Здесь: (1) только
+// offerCommunicationStatus === 'confirmed' — offer.items или offer.price уже зафиксированы, счёт реально
 // получен, не просто отправлено письмо; (2) единица сравнения — не
-// поставщик, а МАТЕРИАЛ: позиция самого запроса (request.items[0]) плюс
+// поставщик, а МАТЕРИАЛ: заголовок самого запроса (request.title) плюс
 // любые доп. компоненты, обнаруженные в разбивке присланных счетов (см.
 // точку 3 из истории про Грильято — сложное КП это не 1 цена, а много
 // строк). Под каждым материалом — список полученных КП по убыванию (не по
@@ -445,6 +622,14 @@ interface MaterialQuote {
   offerId: string;
   offerName: string;
   verified: boolean;
+  // Нужны только бейджу статуса (см. supplierVerificationStatus): без
+  // собранных контактов поставщик остаётся "Требуется верификация".
+  offerEmail: string;
+  offerContact: string;
+  // ИНН из счёта — для восклицательного знака благонадёжности. Владелец,
+  // 2026-09-11: знак нужен в том числе "в сравнении цен", а разбивка по
+  // материалам — это оно и есть, поэтому ИНН нужен и на уровне строки КП.
+  offerInn: string | null;
   amount: number;
   currency: Currency;
   usd: number | null;
@@ -473,16 +658,20 @@ function buildMaterialQuotes(request: SupplierRequest, confirmedOffers: Supplier
       offerId: offer.id,
       offerName: offer.name,
       verified: offer.verified,
+      offerEmail: offer.email,
+      offerContact: offer.contact,
+      offerInn: offer.inn,
       amount,
       currency: offer.currency,
       usd: convertToUsd(amount, offer.currency, rate),
     });
   }
 
-  // Если у запроса нет собственных позиций — сам request.title и есть
-  // "материал", про который вообще идёт речь (запрос без разбивки на items).
-  const fallbackName = request.items[0]?.name || request.title;
-  const fallbackUnit = request.items[0]?.unit || '';
+  // У запроса больше нет собственных позиций (поле удалено, владелец,
+  // 2026-09-11) — сам request.title и есть "материал", про который вообще
+  // идёт речь, когда счёт поставщика распознан только итогом без разбивки.
+  const fallbackName = request.title;
+  const fallbackUnit = '';
 
   for (const offer of confirmedOffers) {
     if (offer.items.length > 0) {
@@ -524,14 +713,20 @@ function MaterialPriceComparisonCard({
   request,
   offers,
   emails,
+  quotes,
   rate,
   onOpenDetail,
+  enrichmentState,
+  reliabilityByInn,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
+  quotes: SupplierQuote[];
   rate: ExchangeRate | undefined;
   onOpenDetail: (o: SupplierOffer) => void;
+  enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
 }) {
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
   const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
@@ -565,7 +760,15 @@ function MaterialPriceComparisonCard({
         confirmedOffers.length === 0 ? (
           <p className="text-sm text-ink-faint">Пока никто из «{country}» не прислал КП — переключите страну выше.</p>
         ) : (
-          <OfferTotalComparison offers={confirmedOffers} emails={emails} rate={rate} onOpenDetail={onOpenDetail} />
+          <OfferTotalComparison
+            offers={confirmedOffers}
+            emails={emails}
+            quotes={quotes}
+            rate={rate}
+            onOpenDetail={onOpenDetail}
+            enrichmentState={enrichmentState}
+            reliabilityByInn={reliabilityByInn}
+          />
         )
       ) : materialGroups.length === 0 ? (
         <p className="text-sm text-ink-faint">Пока никто из «{country}» не прислал КП — переключите страну выше.</p>
@@ -590,11 +793,11 @@ function MaterialPriceComparisonCard({
                     >
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm font-medium text-ink">{q.offerName}</span>
-                        {q.verified ? (
-                          <Badge tone="success">Верифицирован</Badge>
-                        ) : (
-                          <Badge tone="warning">Требуется верификация</Badge>
-                        )}
+                        <VerificationBadge
+                          offer={{ id: q.offerId, verified: q.verified, email: q.offerEmail, contact: q.offerContact }}
+                          enrichmentState={enrichmentState}
+                        />
+                        <RiskBadge inn={q.offerInn} reliabilityByInn={reliabilityByInn} />
                         {isCheapest && (
                           <span className="rounded-full bg-success px-2 py-0.5 text-[11px] font-semibold text-white">
                             лучшая цена
@@ -611,7 +814,7 @@ function MaterialPriceComparisonCard({
                             const offer = offers.find((o) => o.id === q.offerId);
                             if (offer) onOpenDetail(offer);
                           }}
-                          className="shrink-0 text-xs font-medium text-primary hover:underline"
+                          className="shrink-0 text-xs font-medium text-primary-hover hover:underline"
                         >
                           Подробнее
                         </button>
@@ -637,8 +840,6 @@ function MaterialPriceComparisonCard({
 function RequestCard({
   request,
   offers,
-  emails,
-  rate,
   onEditRequest,
   onDeleteRequest,
   onAddOffer,
@@ -646,11 +847,14 @@ function RequestCard({
   onWebSearch,
   onToggleComparisonMode,
   searching,
+  searchJob,
+  searchQueueError,
+  onDismissSearchJob,
+  enrichmentState,
+  reliabilityByInn,
 }: {
   request: SupplierRequest;
   offers: SupplierOffer[];
-  emails: SupplierOfferEmail[];
-  rate: ExchangeRate | undefined;
   onEditRequest: (r: SupplierRequest) => void;
   onDeleteRequest: (r: SupplierRequest) => void;
   onAddOffer: (r: SupplierRequest) => void;
@@ -658,11 +862,28 @@ function RequestCard({
   onWebSearch: (r: SupplierRequest, country: string) => void;
   onToggleComparisonMode: (r: SupplierRequest) => void;
   searching: boolean;
+  // Владелец, 2026-09-11: веб-поиск переехал на фоновую очередь (см.
+  // supplierWebSearchApi.ts) — searchJob здесь ТОЛЬКО отображает последнее
+  // ещё не скрытое задание этой категории: pending/processing — идёт поиск
+  // (можно закрыть вкладку, уведомление придёт само), done — поиск завершён
+  // и найденные поставщики уже добавлены в базу, error — поиск не удался.
+  searchJob: SupplierWebSearchJob | undefined;
+  searchQueueError: string | null;
+  onDismissSearchJob: (jobId: string) => void;
+  enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
 }) {
   // Владелец, 2026-09-03: страна выбирается ОДНИМ переключателем (см.
-  // PriceComparisonBlock ниже — здесь он controlled, значение общее и для
-  // фильтра сравнения, и для кнопки "Найти в сети").
+  // SupplierListBlock выше — здесь он controlled, значение общее и для
+  // фильтра списка, и для кнопки "Найти в сети").
   const [country, setCountry] = useState<string>(SUPPLIER_COUNTRIES[0]);
+  // Владелец, 2026-09-11: "у меня стало очень много поставщиков — давай
+  // сделаем название категории и основные кнопки видимыми, а список
+  // поставщиков будем прятать под спойлер". По умолчанию свёрнуто: страница
+  // становится компактным перечнем категорий, список раскрывается по клику
+  // и живёт только в стейте карточки (не персистится).
+  const [listOpen, setListOpen] = useState(false);
+  const offersInCountry = offers.filter((o) => (o.country || SUPPLIER_COUNTRIES[0]) === country);
 
   return (
     <Card className="flex flex-col gap-4 p-5">
@@ -684,29 +905,16 @@ function RequestCard({
               {SUPPLIER_COMPARISON_MODE_LABELS[request.comparisonMode]}
             </button>
           </div>
-          {request.items.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {request.items.map((item) => (
-                <span
-                  key={item.id}
-                  className="rounded-full bg-surface-muted px-2.5 py-0.5 text-xs text-ink-muted"
-                >
-                  {item.name}
-                  {item.quantity ? ` · ${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : ''}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <Button
             type="button"
             variant="secondary"
-            disabled={searching}
+            disabled={searching || searchJob?.status === 'pending' || searchJob?.status === 'processing'}
             icon={searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
             onClick={() => onWebSearch(request, country)}
           >
-            {searching ? 'Ищем в сети...' : 'Найти в сети'}
+            {searching ? 'Ставим в очередь...' : 'Найти в сети'}
           </Button>
           <Button type="button" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => onAddOffer(request)}>
             Добавить предложение
@@ -730,165 +938,89 @@ function RequestCard({
         </div>
       </div>
 
-      <PriceComparisonBlock
-        offers={offers}
-        emails={emails}
-        rate={rate}
-        onOpenDetail={onOpenDetail}
-        emptyHint="переключите страну выше или добавьте предложение."
-        country={country}
-        onCountryChange={setCountry}
-      />
-    </Card>
-  );
-}
+      {searchQueueError && <p className="text-sm text-danger">{searchQueueError}</p>}
 
-// Модалка результатов "Найти в сети" — владелец, 2026-08-31: "веб-поиск
-// поставщиков делай через клод, модель sonnet5". Результат ни во что не
-// сохраняется сам по себе (нет отдельной таблицы под "предложенных
-// веб-поиском") — каждый найденный вариант сразу добавляется предложением
-// (тот же insertSupplierOffer, что и у обычной формы, просто с дефолтной
-// ценой/валютой — владелец правит/уточняет цену уже в самом предложении
-// через обычный карандаш редактирования, отдельного пути правки здесь нет).
-//
-// Владелец, 2026-09-03: "оно нашло штук 5, я выбрал 1, открылась карточка
-// первого магазина, а когда я сохранил, все остальные пропали. Мне нужна
-// возможность добавлять массово" — старая версия открывала форму
-// добавления ПОВЕРХ этой модалки и закрывала саму модалку сразу по клику
-// (ещё до сохранения), теряя весь оставшийся список. Переделано: никакого
-// промежуточного окна редактирования — клик по "Добавить" (в строке или
-// массово через чекбоксы) сразу создаёт предложение и помечает строку
-// добавленной (галочка), модалка результатов при этом никогда не
-// закрывается сама — только явным "Закрыть"/крестиком.
-function SupplierWebSearchModal({
-  requestTitle,
-  results,
-  error,
-  selected,
-  added,
-  addingIndices,
-  bulkAdding,
-  addError,
-  onClose,
-  onToggleSelect,
-  onToggleSelectAll,
-  onAddOne,
-  onAddSelected,
-}: {
-  requestTitle: string;
-  results: SupplierSearchResult[];
-  error: string | null;
-  selected: Set<number>;
-  added: Set<number>;
-  addingIndices: Set<number>;
-  bulkAdding: boolean;
-  addError: string | null;
-  onClose: () => void;
-  onToggleSelect: (index: number) => void;
-  onToggleSelectAll: () => void;
-  onAddOne: (index: number) => void;
-  onAddSelected: () => void;
-}) {
-  const selectableCount = results.filter((_, i) => !added.has(i)).length;
-  const allSelected = selectableCount > 0 && selected.size === selectableCount;
+      {/* Владелец, 2026-09-11: "я формирую поиск, система ищет в фоне, я
+          закрываю вкладку, когда найдёт — уведомление" — статус фонового
+          задания веб-поиска этой категории, отдельно от кнопки "Найти в
+          сети" выше (та просто ставит в очередь и сразу освобождается). */}
+      {searchJob && (searchJob.status === 'pending' || searchJob.status === 'processing') && (
+        <div className="flex items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-2 text-sm text-ink-muted">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+          Ищем поставщиков в сети — можно закрыть вкладку, о готовности придёт уведомление.
+        </div>
+      )}
+      {/* Владелец, 2026-09-11: результаты больше НЕ открываются модалкой для
+          ручного добавления — поисковый скрипт сам создаёт предложения и сам
+          ставит их на обогащение (см. createOffersAndQueueEnrichment в
+          scripts/process-supplier-web-search-jobs.mjs), поэтому здесь просто
+          сообщение о том, что произошло: новые поставщики уже в списке ниже,
+          со статусом "Собираем данные..." → "Готово к верификации". */}
+      {searchJob && searchJob.status === 'done' && (
+        <div className="flex items-center justify-between gap-2 rounded-control border border-success/30 bg-success-bg px-3 py-2 text-sm font-medium text-success">
+          <span className="flex items-center gap-2">
+            <Check className="h-4 w-4 shrink-0" />
+            {searchJob.addedCount === 0
+              ? 'Поиск завершён — новых поставщиков не нашлось (всё найденное уже есть в списке)'
+              : `Готово: ${addedSuppliersLabel(searchJob.addedCount ?? searchJob.results.length)} — собираем их контакты`}
+          </span>
+          <button
+            type="button"
+            onClick={() => onDismissSearchJob(searchJob.id)}
+            aria-label="Скрыть сообщение"
+            className="shrink-0 rounded-full p-1 hover:bg-success/10"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+      {searchJob && searchJob.status === 'error' && (
+        <div className="flex items-center justify-between gap-2 rounded-control border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+          <span>Поиск не удался: {searchJob.error || 'см. журнал ошибок'}</span>
+          <button
+            type="button"
+            onClick={() => onDismissSearchJob(searchJob.id)}
+            aria-label="Скрыть сообщение об ошибке"
+            className="shrink-0 rounded-full p-1 hover:bg-danger/10"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
-  return (
-    <Modal open onClose={onClose} title={`Найдено в сети: ${requestTitle}`}>
-      <div className="flex flex-col gap-3">
-        {error && <p className="text-sm text-danger">{error}</p>}
-        {!error && results.length === 0 && (
-          <p className="text-sm text-ink-faint">Ничего подходящего не нашлось — попробуйте уточнить список материалов в запросе.</p>
-        )}
-
-        {results.length > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
-            <button
-              type="button"
-              onClick={onToggleSelectAll}
-              disabled={selectableCount === 0}
-              className="text-sm font-medium text-primary hover:underline disabled:opacity-50 disabled:no-underline"
-            >
-              {allSelected ? 'Снять выбор' : `Выбрать все (${selectableCount})`}
-            </button>
-            <Button
-              type="button"
-              icon={bulkAdding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              disabled={selected.size === 0 || bulkAdding}
-              onClick={onAddSelected}
-            >
-              {bulkAdding ? 'Добавляем...' : `Добавить выбранные (${selected.size})`}
-            </Button>
-          </div>
-        )}
-
-        {addError && <p className="text-sm text-danger">{addError}</p>}
-
-        {results.map((r, i) => {
-          const isAdded = added.has(i);
-          const isAdding = addingIndices.has(i);
-          return (
-            <div key={i} className={cn('flex flex-col gap-2 rounded-control border px-4 py-3', isAdded ? 'border-success/30 bg-success-bg' : 'border-border')}>
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <label className="flex min-w-0 items-start gap-2.5">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(i)}
-                    disabled={isAdded}
-                    onChange={() => onToggleSelect(i)}
-                    className="mt-1 h-4 w-4 shrink-0 rounded border-border accent-primary disabled:opacity-50"
-                  />
-                  <span className="min-w-0">
-                    <span className="block font-medium text-ink">{r.name}</span>
-                    {r.note && <span className="block text-sm text-ink-muted">{r.note}</span>}
-                  </span>
-                </label>
-                {isAdded ? (
-                  <span className="flex shrink-0 items-center gap-1 rounded-full bg-success px-2.5 py-1 text-xs font-semibold text-white">
-                    <Check className="h-3.5 w-3.5" />
-                    Добавлено
-                  </span>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    icon={isAdding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                    disabled={isAdding || bulkAdding}
-                    onClick={() => onAddOne(i)}
-                  >
-                    Добавить
-                  </Button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 pl-6 text-sm text-ink-muted">
-                {r.website && (
-                  <a
-                    href={/^https?:\/\//.test(r.website) ? r.website : `https://${r.website}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1.5 text-primary hover:underline"
-                  >
-                    <Globe className="h-3.5 w-3.5 shrink-0" />
-                    {siteLabel(r.website)}
-                  </a>
-                )}
-                {r.phone && (
-                  <span className="flex items-center gap-1.5">
-                    <Phone className="h-3.5 w-3.5 shrink-0" />
-                    {r.phone}
-                  </span>
-                )}
-                {r.email && (
-                  <span className="flex items-center gap-1.5">
-                    <Mail className="h-3.5 w-3.5 shrink-0" />
-                    {r.email}
-                  </span>
-                )}
-              </div>
-            </div>
-          );
-        })}
+      {/* Переключатель страны остаётся видимым и в свёрнутом виде: он общий
+          с кнопкой "Найти в сети" выше, и если спрятать его вместе со
+          списком, поиск уходил бы в невыбранную на глазах страну. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <ToggleGroup options={[...SUPPLIER_COUNTRIES]} value={country} onChange={setCountry} />
+        <button
+          type="button"
+          onClick={() => setListOpen((open) => !open)}
+          aria-expanded={listOpen}
+          className="flex items-center gap-1.5 text-sm font-medium text-ink-muted hover:text-primary"
+        >
+          <ChevronDown className={cn('h-4 w-4 transition-transform', listOpen ? '' : '-rotate-90')} />
+          {listOpen
+            ? 'Скрыть список'
+            : offersInCountry.length === 0
+              ? 'Показать список'
+              : `Показать ${suppliersCountLabel(offersInCountry.length)}`}
+        </button>
       </div>
-    </Modal>
+
+      {listOpen && (
+        <SupplierListBlock
+          offers={offers}
+          onOpenDetail={onOpenDetail}
+          emptyHint="переключите страну выше или добавьте предложение."
+          country={country}
+          onCountryChange={setCountry}
+          showCountryToggle={false}
+          enrichmentState={enrichmentState}
+          reliabilityByInn={reliabilityByInn}
+        />
+      )}
+    </Card>
   );
 }
 
@@ -900,6 +1032,19 @@ function OfferDetailModal({
   onEdit,
   onDelete,
   deleting,
+  onDeleteFile,
+  deletingFileIndex,
+  enrichmentState,
+  reliabilityByInn,
+  onCheckReliability,
+  checkingReliability,
+  onVerify,
+  verifying,
+  offerQuotes,
+  onQuoteAlternativeChange,
+  onQuoteDelete,
+  savingQuoteId,
+  deletingQuoteId,
 }: {
   offer: SupplierOffer;
   emails: SupplierOfferEmail[];
@@ -908,39 +1053,34 @@ function OfferDetailModal({
   onEdit: (o: SupplierOffer) => void;
   onDelete: (o: SupplierOffer) => void;
   deleting: boolean;
+  onDeleteFile: (o: SupplierOffer, index: number) => void;
+  deletingFileIndex: number | null;
+  offerQuotes: SupplierQuote[];
+  onQuoteAlternativeChange: (quote: SupplierQuote, isAlternative: boolean, note: string) => void;
+  onQuoteDelete: (quote: SupplierQuote) => void;
+  savingQuoteId: string | null;
+  deletingQuoteId: string | null;
+  enrichmentState: Map<string, OfferEnrichmentState>;
+  reliabilityByInn: Map<string, SupplierReliability>;
+  onCheckReliability: (inn: string) => void;
+  checkingReliability: boolean;
+  onVerify: (o: SupplierOffer) => void;
+  verifying: boolean;
 }) {
   const status = offerCommunicationStatus(offer, emails);
   return (
     <Modal
       open
       onClose={onClose}
-      title={
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate">{offer.name}</span>
-          {/* Владелец, 2026-09-04: "перенеси кнопку редактирования наверх" —
-              рядом с заголовком карточки, а не в футере среди остальных
-              действий. */}
-          <button
-            type="button"
-            onClick={() => onEdit(offer)}
-            aria-label="Редактировать предложение"
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-primary hover:text-primary"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-        </span>
-      }
+      title={<span className="min-w-0 truncate">{offer.name}</span>}
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <span className="tabular-nums text-lg font-semibold text-ink">
             {offer.price > 0 ? formatPrice(offer.price, offer.currency) : 'Цена не указана'}
           </span>
-          {offer.verified ? (
-            <Badge tone="success">Верифицирован</Badge>
-          ) : (
-            <Badge tone="warning">Требуется верификация</Badge>
-          )}
+          <VerificationBadge offer={offer} enrichmentState={enrichmentState} />
+          <RiskBadge inn={offer.inn} reliabilityByInn={reliabilityByInn} />
           {offer.country && (
             <span className="text-base" title={offer.country}>
               {countryFlag(offer.country)}
@@ -952,6 +1092,13 @@ function OfferDetailModal({
           <span className="text-ink-faint">Статус</span>
           <span className="text-ink">{OFFER_COMMUNICATION_STATUS_LABEL[status]}</span>
         </div>
+
+        <ReliabilityBlock
+          offer={offer}
+          reliability={offer.inn ? reliabilityByInn.get(offer.inn) ?? null : null}
+          onCheck={onCheckReliability}
+          checking={checkingReliability}
+        />
 
         <div className="flex flex-col gap-1 text-sm">
           <span className="text-ink-faint">Контакт</span>
@@ -975,7 +1122,48 @@ function OfferDetailModal({
         <div className="flex flex-col gap-1 text-sm">
           <span className="text-ink-faint">Email</span>
           <span className="text-ink">{offer.email || '—'}</span>
+          {offer.contactSource && (
+            <span className="text-xs text-ink-faint">
+              {offer.contactSource === 'каталоги'
+                ? 'Контакты из каталогов — сайт автосбору не открылся, проверьте перед отправкой'
+                : `Контакты собраны автоматически: ${offer.contactSource}`}
+            </span>
+          )}
         </div>
+
+        {offer.messengers.length > 0 && (
+          <div className="flex flex-col gap-1 text-sm">
+            <span className="text-ink-faint">Мессенджеры</span>
+            <div className="flex flex-wrap gap-1.5">
+              {offer.messengers.map((m, i) => {
+                const { href, label } = messengerLink(m);
+                const inner = (
+                  <>
+                    <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0 truncate">
+                      {m.type}: {label}
+                    </span>
+                  </>
+                );
+                return href ? (
+                  <a
+                    key={i}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-primary-hover hover:border-primary hover:underline"
+                  >
+                    {inner}
+                  </a>
+                ) : (
+                  <span key={i} className="flex max-w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-ink">
+                    {inner}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col gap-1 text-sm">
           <span className="text-ink-faint">Менеджер</span>
@@ -989,7 +1177,7 @@ function OfferDetailModal({
               href={/^https?:\/\//.test(offer.websiteUrl) ? offer.websiteUrl : `https://${offer.websiteUrl}`}
               target="_blank"
               rel="noreferrer"
-              className="flex w-fit items-center gap-1.5 text-primary hover:underline"
+              className="flex w-fit items-center gap-1.5 text-primary-hover hover:underline"
             >
               <Globe className="h-3.5 w-3.5 shrink-0" />
               {siteLabel(offer.websiteUrl)}
@@ -998,6 +1186,21 @@ function OfferDetailModal({
             <span className="text-ink">—</span>
           )}
         </div>
+
+        {offer.listingUrl && (
+          <div className="flex flex-col gap-1 text-sm">
+            <span className="text-ink-faint">Ссылка на позицию</span>
+            <a
+              href={/^https?:\/\//.test(offer.listingUrl) ? offer.listingUrl : `https://${offer.listingUrl}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex w-fit items-center gap-1.5 text-primary hover:underline"
+            >
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              Открыть позицию на сайте
+            </a>
+          </div>
+        )}
 
         {(offer.catalogModelName || offer.catalogModelPhoto) && (
           <div className="flex flex-col gap-1 text-sm">
@@ -1021,7 +1224,7 @@ function OfferDetailModal({
             <div className="overflow-x-auto rounded-control border border-border">
               <table className="w-full min-w-[420px] border-collapse text-sm">
                 <thead>
-                  <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                  <tr className="bg-surface-muted text-left text-xs font-medium uppercase tracking-wide text-ink-muted">
                     <th className="px-3 py-2">Название</th>
                     <th className="px-3 py-2 text-right">Кол-во</th>
                     <th className="px-3 py-2 text-right">Цена</th>
@@ -1050,45 +1253,253 @@ function OfferDetailModal({
           </div>
         )}
 
-        {offer.files.length > 0 && (
+        {/* Все КП этого поставщика (data/supplierQuotes.ts). Здесь же ставится
+            пометка "аналог": по данным счёта отличить его от запрошенного
+            нельзя, это знание человека — зато после пометки предупреждение
+            видно прямо в сравнении цен, где принимают решение. */}
+        {offerQuotes.length > 0 && (
           <div className="flex flex-col gap-1.5">
-            <span className="text-sm text-ink-faint">Файлы</span>
-            {offer.files.map((f, i) => (
-              <a
-                key={i}
-                href={f.url}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-control border border-border px-3 py-2 text-sm text-primary hover:underline"
-              >
-                <Paperclip className="h-3.5 w-3.5 shrink-0" />
-                <span className="min-w-0 flex-1 truncate">{f.fileName}</span>
-              </a>
+            <span className="text-sm text-ink-faint">Полученные КП</span>
+            {offerQuotes.map((q) => (
+              <div key={q.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-ink">{q.title}</span>
+                  <span className="tabular-nums font-semibold text-ink">
+                    {q.price > 0 ? formatPrice(q.price, q.currency) : '—'}
+                  </span>
+                  {/* Владелец, 2026-09-11: поставщик прислал в ту же ветку счёт
+                      "по ошибке" (не по нашей заявке), и убрать его из сравнения
+                      было нечем — строка КП рисуется и в списке "Получено КП", и
+                      в предупреждении про аналог, а удаления не существовало
+                      вовсе (deleteSupplierQuote был написан, но не вызывался
+                      ниоткуда). Крестик — тот же приём, что у файлов ниже. */}
+                  <button
+                    type="button"
+                    onClick={() => onQuoteDelete(q)}
+                    disabled={deletingQuoteId === q.id || savingQuoteId === q.id}
+                    aria-label={`Удалить КП «${q.title}»`}
+                    title="Удалить только это КП — поставщик, переписка и файлы карточки останутся"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger disabled:opacity-50"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
+                  <input
+                    type="checkbox"
+                    checked={q.isAlternative}
+                    disabled={savingQuoteId === q.id}
+                    onChange={(e) => onQuoteAlternativeChange(q, e.target.checked, q.alternativeNote)}
+                    className="h-3.5 w-3.5"
+                  />
+                  Это аналог, а не то, что запрашивали
+                </label>
+                {q.isAlternative && (
+                  <Input
+                    placeholder="Чем отличается (например: сталь h30 вместо алюминия h40)"
+                    defaultValue={q.alternativeNote}
+                    disabled={savingQuoteId === q.id}
+                    onBlur={(e) => {
+                      if (e.target.value !== q.alternativeNote) onQuoteAlternativeChange(q, true, e.target.value);
+                    }}
+                  />
+                )}
+              </div>
             ))}
           </div>
         )}
 
+        {offer.files.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-faint">Файлы</span>
+            {offer.files.map((f, i) => (
+              <div key={i} className="flex items-center gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
+                <Paperclip className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                <a href={f.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-primary-hover hover:underline">
+                  {f.fileName}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => onDeleteFile(offer, i)}
+                  disabled={deletingFileIndex === i}
+                  aria-label={`Удалить файл «${f.fileName}»`}
+                  title="Удалить только этот файл — сам поставщик и переписка не пострадают"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger disabled:opacity-50"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Владелец, 2026-09-11: "внизу три кнопки — Верифицировать кнопкой с
+            текстом, Редактировать кнопкой с текстом, Удалить иконкой корзины".
+            Карандаш из заголовка карточки при этом убран — он дублировал бы
+            кнопку "Редактировать" один в один. */}
         <div className="mt-2 flex flex-wrap items-center justify-end gap-2 border-t border-border pt-3">
-          <Button type="button" variant="ghost" icon={<Trash2 className="h-4 w-4" />} disabled={deleting} onClick={() => onDelete(offer)} className="mr-auto">
-            Удалить
-          </Button>
-          {/* Владелец, 2026-09-04: "поставщик становится доступен для
-              email-переписок" только после верификации — до этого "Написать"
-              недоступна, нужно сначала открыть форму (кнопка Редактировать
-              наверху) и сохранить известные данные. */}
-          <Button
+          {/* Текст кнопки свёрнут в иконку по просьбе владельца, но смысл из
+              параллельной правки сохранён в подсказке: это удаление ВСЕГО
+              поставщика (карточка, файлы, переписка), а не одного файла —
+              для файлов есть свой крестик в списке выше. */}
+          <button
             type="button"
-            variant="secondary"
-            icon={<Mail className="h-4 w-4" />}
-            disabled={!offer.verified}
-            title={offer.verified ? undefined : 'Сначала заполните данные через «Редактировать» и сохраните'}
-            onClick={() => onEmail(offer)}
+            onClick={() => onDelete(offer)}
+            disabled={deleting}
+            aria-label="Удалить поставщика целиком"
+            title="Удаляет всего поставщика целиком: карточку, все файлы и всю переписку с ним"
+            className="mr-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-danger hover:text-danger disabled:opacity-50"
           >
-            Написать
+            <Trash2 className="h-4 w-4" />
+          </button>
+          <Button type="button" variant="secondary" icon={<Pencil className="h-4 w-4" />} onClick={() => onEdit(offer)}>
+            Редактировать
           </Button>
+          {/* Владелец, 2026-09-11: "добавь галочку «Верифицировать» прямо в
+              карточку, чтобы даже редактирование открывать не нужно было" —
+              раньше единственным способом отметить поставщика проверенным
+              было открыть форму и сохранить её (submitOffer всегда ставит
+              verified:true). Теперь это один клик прямо здесь, карточка
+              после него закрывается. */}
+          {!offer.verified && (
+            <Button
+              type="button"
+              icon={verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              disabled={verifying}
+              onClick={() => onVerify(offer)}
+            >
+              {verifying ? 'Сохраняем...' : 'Верифицировать'}
+            </Button>
+          )}
+          {/* Владелец, 2026-09-04: "поставщик становится доступен для
+              email-переписок" только после верификации — поэтому до неё здесь
+              стоит кнопка верификации (выше), а не заблокированная "Написать":
+              две кнопки рядом всё равно не помещались в подвал карточки, а
+              смысл у них взаимоисключающий — сначала подтверди, потом пиши. */}
+          {offer.verified && (
+            <Button type="button" variant="secondary" icon={<Mail className="h-4 w-4" />} onClick={() => onEmail(offer)}>
+              Написать
+            </Button>
+          )}
         </div>
       </div>
     </Modal>
+  );
+}
+
+// Благонадёжность поставщика в детальной карточке. Владелец, 2026-09-11:
+// "Будем смотреть вообще все, что есть, прям дорабатываем подробную карточку
+// поставщика теми данными, которыми получим" — поэтому здесь, в отличие от
+// восклицательного знака в списках, показываем не только риски, но и
+// обычные реквизиты: закупщице полезно видеть, что за юрлицо выставило счёт.
+function ReliabilityBlock({
+  offer,
+  reliability,
+  onCheck,
+  checking,
+}: {
+  offer: SupplierOffer;
+  reliability: SupplierReliability | null;
+  onCheck: (inn: string) => void;
+  checking: boolean;
+}) {
+  // Нет ИНН — счёта ещё не было. Это нормальное состояние в начале работы с
+  // поставщиком (владелец: проверяем именно того, на кого выставлен счёт),
+  // поэтому объясняем словами, а не показываем пустой блок или ошибку.
+  if (!offer.inn) {
+    return (
+      <div className="flex flex-col gap-1 text-sm">
+        <span className="text-ink-faint">Благонадёжность</span>
+        <span className="text-ink-faint">Проверим автоматически, когда поставщик пришлёт счёт — ИНН берётся из него.</span>
+      </div>
+    );
+  }
+
+  const company = (reliability?.company ?? {}) as Record<string, any>;
+  const cases = (reliability?.legalCases ?? {}) as Record<string, any>;
+  const enforcements = (reliability?.enforcements ?? {}) as Record<string, any>;
+  const facts: Array<[string, string]> = [];
+  if (reliability?.found) {
+    // У ИП вместо наименования — ФИО, и это не юрлицо, поэтому и подпись
+    // другая (см. ветку по длине ИНН в api/_checko.js).
+    if (company['ФИО']) facts.push(['ИП', String(company['ФИО'])]);
+    else if (company['НаимПолн'] || company['НаимСокр']) facts.push(['Юрлицо', String(company['НаимСокр'] || company['НаимПолн'])]);
+    if (company['Статус']?.['Наим']) facts.push(['Статус в ЕГРЮЛ', String(company['Статус']['Наим'])]);
+    if (company['ДатаРег']) facts.push(['Зарегистрировано', String(company['ДатаРег'])]);
+    if (company['ЮрАдрес']?.['АдресРФ']) facts.push(['Юр. адрес', String(company['ЮрАдрес']['АдресРФ'])]);
+    else if (company['Регион'] || company['НасПункт']) facts.push(['Регион', String(company['НасПункт'] || company['Регион'])]);
+    if (company['Руковод']?.[0]?.['ФИО']) facts.push(['Руководитель', String(company['Руковод'][0]['ФИО'])]);
+    if (typeof company['СЧР'] === 'number') facts.push(['Сотрудников (ФНС)', String(company['СЧР'])]);
+    if (typeof cases['ЗапВсего'] === 'number') {
+      const sum = typeof cases['ОбщСуммИск'] === 'number' && cases['ОбщСуммИск'] > 0
+        ? ` на ${Math.round(cases['ОбщСуммИск']).toLocaleString('ru-RU')} ₽`
+        : '';
+      facts.push(['Арбитраж (ответчик)', `${cases['ЗапВсего']} дел${sum}`]);
+    }
+    if (typeof enforcements['ОбщКолич'] === 'number') {
+      facts.push(['Исполнительные производства', String(enforcements['ОбщКолич'])]);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-ink-faint">Благонадёжность · ИНН {offer.inn}</span>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={checking}
+          icon={checking ? <Loader2 className="h-4 w-4 animate-spin" /> : undefined}
+          onClick={() => onCheck(offer.inn!)}
+        >
+          {checking ? 'Проверяем...' : reliability ? 'Перепроверить' : 'Проверить'}
+        </Button>
+      </div>
+
+      {!reliability && <span className="text-ink-faint">Ещё не проверяли.</span>}
+
+      {/* Сбой проверки и "юрлица нет в ЕГРЮЛ" — принципиально разные вещи,
+          и путать их нельзя: первое означает "мы не знаем", второе — само
+          по себе серьёзный повод не платить. */}
+      {reliability?.error && <span className="text-warning">Не удалось проверить: {reliability.error}</span>}
+      {reliability && !reliability.error && !reliability.found && (
+        <span className="font-medium text-danger">Организация с таким ИНН не найдена в ЕГРЮЛ/ЕГРИП</span>
+      )}
+
+      {reliability && !reliability.error && reliability.found && (
+        <>
+          {reliability.risks.length === 0 ? (
+            <span className="text-success">Рисков не найдено</span>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {reliability.risks.map((r, i) => (
+                <li key={i} className={`flex gap-2 ${r.level === 'danger' ? 'text-danger' : 'text-warning'}`}>
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    {r.title}
+                    {r.detail && <span className="text-ink-faint"> — {r.detail}</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {facts.length > 0 && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              {facts.map(([k, v]) => (
+                <Fragment key={k}>
+                  <dt className="text-ink-faint">{k}</dt>
+                  <dd className="text-ink">{v}</dd>
+                </Fragment>
+              ))}
+            </dl>
+          )}
+          <span className="text-xs text-ink-faint">
+            Проверено {new Date(reliability.checkedAt).toLocaleDateString('ru-RU')} по данным Checko (ЕГРЮЛ, картотека
+            арбитражных судов, ФССП). Арбитраж отдаётся с задержкой 1–2 недели.
+          </span>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1171,7 +1582,6 @@ export function Suppliers() {
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [editingRequest, setEditingRequest] = useState<SupplierRequest | null>(null);
   const [requestForm, setRequestForm] = useState(emptyRequestForm);
-  const [manualItemName, setManualItemName] = useState('');
   const [savingRequest, setSavingRequest] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
 
@@ -1183,6 +1593,9 @@ export function Suppliers() {
   const [savingOffer, setSavingOffer] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
   const [deletingOfferId, setDeletingOfferId] = useState<string | null>(null);
+  const [deletingOfferFileIndex, setDeletingOfferFileIndex] = useState<number | null>(null);
+  const [savingQuoteId, setSavingQuoteId] = useState<string | null>(null);
+  const [deletingQuoteId, setDeletingQuoteId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   // Владелец, 2026-09-09: автораспознавание КП, загруженного вручную в
   // форму предложения — offerUploadingFile крутится во время загрузки
@@ -1204,6 +1617,7 @@ export function Suppliers() {
   const [offerExtraction, setOfferExtraction] = useState<{
     price: number | null;
     currency: string | null;
+    supplierInn: string | null;
     items: RecognizedInvoiceItem[];
     fileName: string;
   } | null>(null);
@@ -1224,6 +1638,9 @@ export function Suppliers() {
   // одна ветка") — все сразу, группировка по offerId на клиенте
   // (SupplierCorrespondenceTab), тот же принцип, что и у offers/emails.
   const [supplierOrders, setSupplierOrders] = useState<SupplierOrder[]>([]);
+  // Все КП поставщиков (data/supplierQuotes.ts) — несколько счетов в одной
+  // ветке переписки больше не схлопываются в карточку, см. сравнение цен.
+  const [supplierQuotes, setSupplierQuotes] = useState<SupplierQuote[]>([]);
   // Владелец, 2026-08-29: "слишком много инфы на превью, все вразнобой.
   // Давай выводить название + цену + статус + кнопка Подробнее" — остальные
   // поля (контакт/сайт/модель/срок/требования/файлы) и действия
@@ -1254,18 +1671,15 @@ export function Suppliers() {
   const [savingLedgerSection, setSavingLedgerSection] = useState(false);
 
   // "Найти в сети" (владелец, 2026-08-31) — веб-поиск поставщиков через
-  // claude-haiku-4-5 (api/supplier-web-search.js; изначально был
-  // claude-sonnet-5, переведено тем же днём из-за цены — см. подробный
-  // комментарий в самой функции). Владелец сразу же пожаловался, что клик
-  // сразу запускает поиск без возможности что-то уточнить — поэтому
-  // кнопка открывает не сам поиск, а сначала
-  // webQueryModal: список материалов (редактируемый, вдруг что-то не то
-  // подтянулось из раздела сметы) + свободное поле "Дополнительные
+  // claude-haiku-4-5 (scripts/process-supplier-web-search-jobs.mjs).
+  // Владелец сразу же пожаловался, что клик сразу запускает поиск без
+  // возможности что-то уточнить — поэтому кнопка открывает не сам поиск, а
+  // сначала webQueryModal: список материалов (редактируемый, вдруг что-то
+  // не то подтянулось из раздела сметы) + свободное поле "Дополнительные
   // пожелания" (бренд/бюджет/регион и т.п.), и только по кнопке "Искать"
   // уходит запрос. webSearchingId — id запроса, для которого сейчас идёт
-  // поиск (дизейблит кнопку именно этой карточки, не все разом);
-  // webSearchModal — какой запрос показывать в модалке результатов и сами
-  // результаты/ошибка.
+  // ПОСТАНОВКА в очередь (дизейблит кнопку именно этой карточки на время
+  // самого INSERT — доли секунды, не сам поиск).
   const [webQueryModal, setWebQueryModal] = useState<SupplierRequest | null>(null);
   // country — страна поиска (карточка запроса передаёт свою текущую
   // вкладку страны, см. RequestCard/ToggleGroup выше), но реальный баг
@@ -1274,23 +1688,61 @@ export function Suppliers() {
   // написано в "Дополнительные пожелания" (например, город "Москва").
   // Теперь страна редактируема прямо в этой форме (вдруг нужно
   // переключить перед конкретным поиском) и уходит на сервер как есть.
-  const [webQueryForm, setWebQueryForm] = useState({ itemsText: '', extra: '', country: SUPPLIER_COUNTRIES[0] as string });
+  const [webQueryForm, setWebQueryForm] = useState({
+    itemsText: '',
+    extra: '',
+    region: defaultSearchRegion(SUPPLIER_COUNTRIES[0]) as string,
+  });
   const [webSearchingId, setWebSearchingId] = useState<string | null>(null);
-  const [webSearchModal, setWebSearchModal] = useState<{
-    request: SupplierRequest;
-    results: SupplierSearchResult[];
-    error: string | null;
-  } | null>(null);
-  // Выбор/статус строк модалки результатов — индексы в webSearchModal.results.
-  // Сбрасываются при каждом новом поиске (см. submitWebQuery). added — уже
-  // созданные предложения (не снимается кликом, чтобы случайно не добавить
-  // дубль), addingIndices — идёт создание конкретной строки (свой спиннер,
-  // не блокирует остальные), bulkAdding — идёт массовое добавление.
-  const [webSearchSelected, setWebSearchSelected] = useState<Set<number>>(new Set());
-  const [webSearchAdded, setWebSearchAdded] = useState<Set<number>>(new Set());
-  const [webSearchAddingIndices, setWebSearchAddingIndices] = useState<Set<number>>(new Set());
-  const [webSearchBulkAdding, setWebSearchBulkAdding] = useState(false);
-  const [webSearchAddError, setWebSearchAddError] = useState<string | null>(null);
+  // Владелец, 2026-09-11: "минуту ждать перед открытой вкладкой не
+  // захочется... я формирую поиск, система ищет в фоне, я закрываю вкладку,
+  // когда найдёт — уведомление". Веб-поиск переведён с синхронного HTTP-
+  // запроса на асинхронную очередь (supplier_web_search_jobs, см.
+  // supplierWebSearchApi.ts) — все задания страницы разом, чтобы у каждой
+  // категории посчитать своё последнее незавершённое/неоткрытое.
+  const [webSearchJobs, setWebSearchJobs] = useState<SupplierWebSearchJob[]>([]);
+  // Владелец, 2026-09-11: обогащение контактов поставщика с его сайта (email
+  // для заказов/телефон/мессенджеры) — тот же принцип фоновой очереди, что и
+  // у веб-поиска (supplierEnrichmentApi.ts). enrichmentJobs — все задания,
+  // опрашиваются вместе с offers (см. поллинг ниже), чтобы карточка
+  // предложения сама обновилась, как только фоновый скрипт применит
+  // найденное к supplier_research_offers.
+  const [enrichmentJobs, setEnrichmentJobs] = useState<SupplierEnrichmentJob[]>([]);
+  const [verifyingOfferId, setVerifyingOfferId] = useState<string | null>(null);
+  // Ошибка ПОСТАНОВКИ в очередь (сам INSERT не прошёл — сетевая икота и
+  // т.п.), не ошибка самого поиска (та приходит как status:'error' у уже
+  // поставленного задания и показывается через searchJob на карточке).
+  const [webSearchQueueError, setWebSearchQueueError] = useState<{ requestId: string; message: string } | null>(null);
+  // Задания, чью карточку "Готово"/"Ошибка" уже открыли или явно скрыли —
+  // не показываем их бейдж повторно (если позже для той же категории
+  // появится НОВОЕ задание — оно не в этом Set, бейдж покажется снова).
+  const [dismissedJobIds, setDismissedJobIds] = useState<Set<string>>(new Set());
+
+  // Проверки благонадёжности — отдельным необязательным запросом, а не в
+  // общем Promise.all с поставщиками: если таблицы ещё нет (миграция не
+  // применена) или запрос сорвался, страница обязана открыться как прежде,
+  // просто без восклицательных знаков. Раскладка по ИНН, потому что запись
+  // одна на юрлицо, а предложений с этим ИНН может быть несколько.
+  const [reliability, setReliability] = useState<SupplierReliability[]>([]);
+  const reliabilityByInn = useMemo(() => new Map(reliability.map((r) => [r.inn, r])), [reliability]);
+  const [checkingInn, setCheckingInn] = useState<string | null>(null);
+
+  // Перепроверка вручную из карточки. Автоматическая проверка живёт не
+  // здесь, а в момент подтверждения распознанного счёта — см.
+  // SupplierCorrespondenceTab; сюда закупщица приходит, когда хочет
+  // обновить данные по уже проверенному юрлицу.
+  async function handleCheckReliability(inn: string) {
+    if (checkingInn) return;
+    setCheckingInn(inn);
+    try {
+      const updated = await checkSupplierReliability(inn);
+      setReliability((prev) => [...prev.filter((r) => r.inn !== inn), updated]);
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось проверить поставщика'));
+    } finally {
+      setCheckingInn(null);
+    }
+  }
 
   useEffect(() => {
     Promise.all([fetchSupplierRequests(), fetchSupplierOffers()])
@@ -1300,6 +1752,7 @@ export function Suppliers() {
       })
       .catch((err) => setLoadError(errorMessage(err, 'Не удалось загрузить поставщиков')))
       .finally(() => setLoading(false));
+    fetchSupplierReliability().then(setReliability).catch(() => setReliability([]));
     fetchEstimates().then(setEstimates).catch(() => setEstimates([]));
     fetchObjects().then(setObjects).catch(() => setObjects([]));
     fetchLegalEntities().then(setLegalEntities).catch(() => setLegalEntities([]));
@@ -1307,7 +1760,10 @@ export function Suppliers() {
     fetchEmailTemplates().then(setEmailTemplates).catch(() => setEmailTemplates([]));
     fetchMaterialLedgers().then(setMaterialLedgers).catch(() => setMaterialLedgers([]));
     fetchSupplierOrders().then(setSupplierOrders).catch(() => setSupplierOrders([]));
+    fetchSupplierQuotes().then(setSupplierQuotes).catch(() => setSupplierQuotes([]));
     fetchTodayRate().then(setRate).catch(() => setRate(undefined));
+    fetchSupplierWebSearchJobs().then(setWebSearchJobs).catch(() => setWebSearchJobs([]));
+    fetchSupplierEnrichmentJobs().then(setEnrichmentJobs).catch(() => setEnrichmentJobs([]));
   }, []);
 
   // Владелец, 2026-09-03: "в ведомости по умолчанию всегда выбран Red One" —
@@ -1340,6 +1796,37 @@ export function Suppliers() {
     const interval = setInterval(() => {
       fetchAllSupplierOfferEmails()
         .then(setSupplierEmails)
+        .catch(() => {});
+    }, 20000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Тот же принцип — задания веб-поиска обрабатываются фоновым GitHub
+  // Actions скриптом, не этой вкладкой (см. supplierWebSearchApi.ts).
+  // Глобальный вотчер (supplierWebSearchJobWatcher.ts) шлёт уведомление в
+  // колокольчик, но не обновляет эту страницу — лёгкий поллинг здесь
+  // держит бейджи "Ищем..."/"Готово" на карточках свежими без перезагрузки.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchSupplierWebSearchJobs()
+        .then(setWebSearchJobs)
+        .catch(() => {});
+    }, 20000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Тот же принцип для обогащения контактов — сам фоновый скрипт пишет
+  // найденное напрямую в supplier_research_offers (не только в
+  // supplier_enrichment_jobs), поэтому поллинг обновляет ОБА списка разом:
+  // иначе карточка предложения не подхватила бы новый email/телефон/
+  // мессенджеры без ручного F5.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchSupplierEnrichmentJobs()
+        .then(setEnrichmentJobs)
+        .catch(() => {});
+      fetchSupplierOffers()
+        .then(setOffers)
         .catch(() => {});
     }, 20000);
     return () => clearInterval(interval);
@@ -1398,7 +1885,7 @@ export function Suppliers() {
     () =>
       estimates.map((e) => ({
         id: e.id,
-        label: `Смета — ${e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'}`,
+        label: estimateOptionLabel(e.objectId ? objectLabel(e.objectId) : e.title || 'без объекта'),
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimates, objects],
@@ -1406,12 +1893,10 @@ export function Suppliers() {
 
   // Владелец, 2026-09-03: "у нас же загружена ведомость в платформу, давай
   // делать этот список, буду выбирать из него" — при сборке ведомости
-  // материалов для письма (MaterialLedgerModal) не все категории имеют
-  // собственные request.items (например, "Универсальные поставщики" —
-  // пустая категория без привязки к смете), выбирать позиции руками
+  // материалов для письма (MaterialLedgerModal) выбирать позиции руками
   // неудобно. Плоский список ВСЕХ материалов ВСЕХ смет (тот же источник,
   // что и у вкладки "Ведомости материалов" на этой же странице) — поиск по
-  // нему в модалке, не жёсткая привязка к текущей категории.
+  // нему в модалке.
   const allEstimateMaterials = useMemo(() => {
     const list: { item: PurchaseItem; context: string }[] = [];
     for (const e of estimates) {
@@ -1432,43 +1917,6 @@ export function Suppliers() {
   const selectedRequestEstimate = estimates.find((e) => e.id === requestForm.estimateId) ?? null;
   const selectedRequestSection = selectedRequestEstimate?.sections.find((s) => s.id === requestForm.sectionId) ?? null;
 
-  function addMaterialToRequestItems(m: EstimateMaterial) {
-    if (requestForm.items.some((i) => i.sourceMaterialId === m.id)) return;
-    const item: PurchaseItem = {
-      id: crypto.randomUUID(),
-      sourceMaterialId: m.id,
-      name: m.name,
-      unit: m.unit,
-      quantity: m.quantity,
-      price: null,
-      note: m.note,
-    };
-    setRequestForm((f) => ({ ...f, items: [...f.items, item] }));
-  }
-
-  function addManualRequestItem() {
-    if (!manualItemName.trim()) return;
-    const item: PurchaseItem = {
-      id: crypto.randomUUID(),
-      sourceMaterialId: null,
-      name: manualItemName.trim(),
-      unit: '',
-      quantity: null,
-      price: null,
-      note: '',
-    };
-    setRequestForm((f) => ({ ...f, items: [...f.items, item] }));
-    setManualItemName('');
-  }
-
-  function updateRequestItem(id: string, patch: Partial<PurchaseItem>) {
-    setRequestForm((f) => ({ ...f, items: f.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
-  }
-
-  function removeRequestItem(id: string) {
-    setRequestForm((f) => ({ ...f, items: f.items.filter((i) => i.id !== id) }));
-  }
-
   // Владелец, 2026-09-03: "будут поставщики из Беларуси и России" — пресет
   // + фактически встречающиеся значения (тот же паттерн, что и у
   // leadRequirements в Leads.tsx).
@@ -1477,6 +1925,11 @@ export function Suppliers() {
     offers.forEach((o) => o.country && set.add(o.country));
     return [...set];
   }, [offers]);
+
+  // Состояние обогащения по каждому предложению — считается один раз на все
+  // карточки/бейджи страницы (см. VerificationBadge выше), а не перебором
+  // всех заданий на каждую строку.
+  const enrichmentState = useMemo(() => enrichmentStateByOffer(enrichmentJobs), [enrichmentJobs]);
 
   // Ведомость материалов — та же логика, что у saveEstimatePatch/
   // openEditMaterial/deleteMaterial и т.п. в EstimateDetail.tsx (просто
@@ -1642,7 +2095,6 @@ export function Suppliers() {
   function openAddRequest(group: SupplierRequestGroup = 'materials') {
     setEditingRequest(null);
     setRequestForm({ ...emptyRequestForm, group });
-    setManualItemName('');
     setRequestError(null);
     setRequestModalOpen(true);
   }
@@ -1650,7 +2102,6 @@ export function Suppliers() {
   function openEditRequest(r: SupplierRequest) {
     setEditingRequest(r);
     setRequestForm(requestToForm(r));
-    setManualItemName('');
     setRequestError(null);
     setRequestModalOpen(true);
   }
@@ -1666,7 +2117,6 @@ export function Suppliers() {
       estimateId: requestForm.estimateId || null,
       sectionId: requestForm.sectionId || null,
       sectionTitle: requestForm.sectionTitle,
-      items: requestForm.items,
       legalEntityId: requestForm.legalEntityId || null,
       comparisonMode: requestForm.comparisonMode,
     };
@@ -1713,7 +2163,6 @@ export function Suppliers() {
       estimateId: r.estimateId,
       sectionId: r.sectionId,
       sectionTitle: r.sectionTitle,
-      items: r.items,
       legalEntityId: r.legalEntityId,
       comparisonMode: nextMode,
     };
@@ -1767,8 +2216,36 @@ export function Suppliers() {
   }
 
   function openWebQueryModal(request: SupplierRequest, country: string) {
-    setWebQueryForm({ itemsText: formatRequestItemsText(request.items, request.title), extra: '', country });
+    // Страна из карточки — это фильтр СПИСКА поставщиков; регион поиска из
+    // неё только подставляется по умолчанию (Россия → Москва, см.
+    // defaultSearchRegion), дальше его можно переключить в самой модалке.
+    setWebQueryForm({ itemsText: request.title, extra: '', region: defaultSearchRegion(country) });
     setWebQueryModal(request);
+  }
+
+  // Последнее ещё не скрытое задание категории — источник правды для
+  // бейджа на RequestCard (см. searchJob-проп там же). webSearchJobs уже
+  // отсортирован по created_at desc сервером, а свежепоставленные задания
+  // добавляются в НАЧАЛО массива (см. submitWebQuery/searchMoreSuppliers),
+  // поэтому первое совпадение по requestId всегда самое новое.
+  function latestVisibleJobForRequest(requestId: string): SupplierWebSearchJob | undefined {
+    const job = webSearchJobs.find((j) => j.requestId === requestId);
+    if (!job || dismissedJobIds.has(job.id)) return undefined;
+    // Владелец, 2026-09-11: "это уведомление не пропадает, хотя поставщики
+    // уже давно добавлены в базу" — крестик прятал баннер только в памяти
+    // вкладки, после F5 он возвращался снова. "Готово" — разовая новость о
+    // том, что поиск отработал, а не постоянный статус категории (сами
+    // поставщики уже видны в списке ниже), поэтому баннер живёт ограниченное
+    // время после завершения задания. Ошибку не прячем по таймеру — она
+    // требует действия и снимается только крестиком.
+    if (job.status === 'done' && job.completedAt && Date.now() - new Date(job.completedAt).getTime() > DONE_BANNER_TTL_MS) {
+      return undefined;
+    }
+    return job;
+  }
+
+  function dismissWebSearchJob(jobId: string) {
+    setDismissedJobIds((prev) => new Set(prev).add(jobId));
   }
 
   async function submitWebQuery(e: React.FormEvent) {
@@ -1777,103 +2254,35 @@ export function Suppliers() {
     if (!request || !webQueryForm.itemsText.trim()) return;
     setWebQueryModal(null);
     setWebSearchingId(request.id);
-    // Новый поиск — новые результаты, сбрасываем статус выбора/добавления
-    // от предыдущего (если это повторный поиск по тому же запросу).
-    setWebSearchSelected(new Set());
-    setWebSearchAdded(new Set());
-    setWebSearchAddingIndices(new Set());
-    setWebSearchAddError(null);
+    setWebSearchQueueError(null);
     try {
-      const results = await searchSuppliersOnline(
-        webQueryForm.itemsText.trim(),
-        request.sectionTitle || request.title,
-        webQueryForm.extra.trim(),
-        webQueryForm.country,
-      );
-      setWebSearchModal({ request, results, error: null });
+      const job = await queueSupplierWebSearch({
+        requestId: request.id,
+        itemsText: webQueryForm.itemsText.trim(),
+        sectionTitle: request.sectionTitle || request.title,
+        extra: webQueryForm.extra.trim(),
+        region: webQueryForm.region,
+        // Уже добавленные поставщики этой категории — чтобы повторный поиск
+        // искал НОВЫХ, а не приносил те же компании (раньше это работало
+        // только у отдельной кнопки "Искать ещё" в модалке результатов;
+        // теперь результаты добавляются в базу автоматически, поэтому
+        // доисключение нужно каждому поиску, а сама кнопка "Искать ещё"
+        // больше не нужна — достаточно нажать "Найти в сети" ещё раз).
+        excludeCompanies: offers
+          .filter((o) => o.requestId === request.id)
+          .map((o) => ({ name: o.name, website: o.websiteUrl })),
+      });
+      // Владелец, 2026-09-12: учёт добавления новых поставщиков по
+      // сотрудникам. Само действие человека здесь — "запустил поиск"; сколько
+      // поставщиков по нему реально добавилось, считается не отсюда, а по
+      // added_count самого задания (created_by_name в supplier_web_search_jobs,
+      // см. Metrics.tsx) — в момент постановки в очередь это ещё неизвестно.
+      logActivity('supplier_web_search_started');
+      setWebSearchJobs((prev) => [job, ...prev]);
     } catch (err) {
-      setWebSearchModal({ request, results: [], error: errorMessage(err, 'Не удалось выполнить веб-поиск') });
+      setWebSearchQueueError({ requestId: request.id, message: errorMessage(err, 'Не удалось поставить поиск в очередь') });
     } finally {
       setWebSearchingId(null);
-    }
-  }
-
-  function toggleWebSearchSelect(index: number) {
-    setWebSearchSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
-      return next;
-    });
-  }
-
-  function toggleWebSearchSelectAll() {
-    if (!webSearchModal) return;
-    const selectable = webSearchModal.results.map((_, i) => i).filter((i) => !webSearchAdded.has(i));
-    setWebSearchSelected((prev) => (prev.size === selectable.length ? new Set() : new Set(selectable)));
-  }
-
-  // Создаёт предложения напрямую (без промежуточной формы, см. комментарий
-  // у SupplierWebSearchModal) — с дефолтной ценой/валютой, владелец
-  // уточняет их потом через обычный карандаш редактирования у уже
-  // созданного предложения, как и любое другое.
-  async function addWebSearchResults(requestId: string, items: { index: number; r: SupplierSearchResult }[]) {
-    if (items.length === 0) return;
-    setWebSearchAddError(null);
-    const indices = items.map((x) => x.index);
-    if (items.length === 1) {
-      setWebSearchAddingIndices((prev) => new Set(prev).add(items[0].index));
-    } else {
-      setWebSearchBulkAdding(true);
-    }
-    try {
-      const created = await Promise.all(
-        items.map(({ r }) =>
-          insertSupplierOffer({
-            requestId,
-            name: r.name,
-            contactMethod: 'Телефон',
-            contact: r.phone,
-            email: r.email,
-            managerName: '',
-            country: guessCountryFromWebsite(r.website),
-            websiteUrl: r.website,
-            catalogModelName: '',
-            catalogModelPhoto: null,
-            price: 0,
-            currency: 'USD',
-            items: [],
-            files: [],
-            // Владелец, 2026-09-04: "когда поставщик только добавлен из
-            // поиска, ставим ему статус 'Требуется верификация'" — до тех
-            // пор скрыт из "Письма" (см. SupplierCorrespondenceTab.tsx),
-            // становится доступен после того, как кто-то откроет
-            // "Подробнее", заполнит поля и сохранит через форму (submitOffer
-            // всегда выставляет verified:true).
-            verified: false,
-          }),
-        ),
-      );
-      setOffers((prev) => [...prev, ...created]);
-      setWebSearchAdded((prev) => {
-        const next = new Set(prev);
-        indices.forEach((i) => next.add(i));
-        return next;
-      });
-      setWebSearchSelected((prev) => {
-        const next = new Set(prev);
-        indices.forEach((i) => next.delete(i));
-        return next;
-      });
-    } catch (err) {
-      setWebSearchAddError(errorMessage(err, 'Не удалось добавить предложение'));
-    } finally {
-      setWebSearchAddingIndices((prev) => {
-        const next = new Set(prev);
-        indices.forEach((i) => next.delete(i));
-        return next;
-      });
-      setWebSearchBulkAdding(false);
     }
   }
 
@@ -1881,6 +2290,7 @@ export function Suppliers() {
     setOfferRequestId(o.requestId);
     setEditingOffer(o);
     setOfferForm({
+      inn: o.inn,
       name: o.name,
       contactMethod: o.contactMethod,
       contact: o.contact,
@@ -1892,6 +2302,8 @@ export function Suppliers() {
       // только предзаполняет форму.
       country: o.country || guessCountryFromWebsite(o.websiteUrl),
       websiteUrl: o.websiteUrl,
+      listingUrl: o.listingUrl,
+      messengers: o.messengers,
       catalogModelName: o.catalogModelName,
       catalogModelPhoto: o.catalogModelPhoto,
       existingFiles: o.files,
@@ -1977,7 +2389,7 @@ export function Suppliers() {
     try {
       const result = await recognizeInvoiceFile(fileUrl, fileName);
       if (result.isInvoice) {
-        setOfferExtraction({ price: result.price, currency: result.currency, items: result.items, fileName });
+        setOfferExtraction({ price: result.price, currency: result.currency, supplierInn: result.supplierInn, items: result.items, fileName });
       } else {
         setOfferNotInvoiceFile(fileName);
       }
@@ -2008,6 +2420,10 @@ export function Suppliers() {
       ...f,
       price: offerExtraction.price != null ? String(offerExtraction.price) : f.price,
       currency: isValidOfferCurrency(offerExtraction.currency) ? offerExtraction.currency : f.currency,
+      // ИНН из счёта, загруженного руками в форму — тот же путь, что и у
+      // счёта из переписки (applyExtractionToOffer). Уже распознанный ИНН
+      // не затираем, если в новом документе его не нашлось.
+      inn: offerExtraction.supplierInn ?? f.inn,
       items: [...f.items, ...newItems],
     }));
     setOfferExtraction(null);
@@ -2034,6 +2450,7 @@ export function Suppliers() {
       offerForm.email.trim().length > 0 ||
       offerForm.country.trim().length > 0 ||
       offerForm.websiteUrl.trim().length > 0 ||
+      offerForm.listingUrl.trim().length > 0 ||
       offerForm.catalogModelName.trim().length > 0 ||
       offerForm.existingFiles.length > 0 ||
       offerForm.price.trim().length > 0 ||
@@ -2062,6 +2479,10 @@ export function Suppliers() {
         managerName: offerForm.managerName.trim(),
         country: offerForm.country,
         websiteUrl: offerForm.websiteUrl.trim(),
+        listingUrl: offerForm.listingUrl.trim(),
+        // Служебное поле автосбора, в форме его нет — переносим как есть.
+        contactSource: editingOffer?.contactSource ?? '',
+        messengers: offerForm.messengers,
         catalogModelName: offerForm.catalogModelName.trim(),
         catalogModelPhoto: offerForm.catalogModelPhoto,
         price: offerForm.price.trim() ? Number(offerForm.price) : 0,
@@ -2071,6 +2492,10 @@ export function Suppliers() {
         // а не откладываются до сабмита — тут уже готовый список.
         files: offerForm.existingFiles,
         verified: true,
+        // ИНН формой не правится (он приходит из распознанного счёта —
+        // см. data/supplierResearch.ts), поэтому при сохранении карточки
+        // сохраняем уже имеющееся значение, а не затираем его в null.
+        inn: offerForm.inn ?? editingOffer?.inn ?? null,
       };
       // Владелец, 2026-09-05: лог действий Альмиры для страницы "Метрики" —
       // те же два события, что различает комментарий выше ("верификация" vs
@@ -2095,8 +2520,31 @@ export function Suppliers() {
     }
   }
 
+  // Верификация одним кликом прямо из карточки (владелец, 2026-09-11) — тот
+  // же смысл, что и сохранение формы предложения: человек подтвердил, что
+  // данные верны. Логируем то же событие, что и submitOffer, чтобы метрика
+  // "Верифицировано поставщиков" (Metrics.tsx) считала оба пути одинаково.
+  async function handleVerifyOffer(o: SupplierOffer) {
+    setVerifyingOfferId(o.id);
+    try {
+      logActivity('supplier_offer_verified');
+      const updated = await updateSupplierOffer(o.id, { ...o, verified: true });
+      setOffers((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setDetailOfferId(null);
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось верифицировать поставщика'));
+    } finally {
+      setVerifyingOfferId(null);
+    }
+  }
+
   async function handleDeleteOffer(o: SupplierOffer) {
-    if (!window.confirm(`Удалить предложение «${o.name}»?`)) return;
+    if (
+      !window.confirm(
+        `Удалить поставщика «${o.name}» целиком? Вместе с карточкой удалятся ВСЕ файлы и ВСЯ переписка с ним — восстановить это будет нельзя.\n\nЧтобы удалить только один файл (например, ошибочный счёт), закройте это окно и нажмите ✕ рядом с нужным файлом в списке «Файлы».`,
+      )
+    )
+      return;
     setDeletingOfferId(o.id);
     try {
       await deleteSupplierOffer(o.id);
@@ -2106,6 +2554,98 @@ export function Suppliers() {
       setLoadError(errorMessage(err, 'Не удалось удалить предложение'));
     } finally {
       setDeletingOfferId(null);
+    }
+  }
+
+  async function handleQuoteAlternativeChange(quote: SupplierQuote, isAlternative: boolean, note: string) {
+    setSavingQuoteId(quote.id);
+    try {
+      const updated = await updateSupplierQuote(quote.id, {
+        offerId: quote.offerId,
+        title: quote.title,
+        price: quote.price,
+        currency: quote.currency,
+        items: quote.items,
+        files: quote.files,
+        isAlternative,
+        alternativeNote: isAlternative ? note : '',
+        sourceEmailId: quote.sourceEmailId,
+      });
+      setSupplierQuotes((prev) => prev.map((q) => (q.id === updated.id ? updated : q)));
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось сохранить пометку КП'));
+    } finally {
+      setSavingQuoteId(null);
+    }
+  }
+
+  // Владелец, 2026-09-11: "Добавь крестик для удаления КП". До этого ошибочно
+  // распознанное КП (поставщик может прислать в ту же ветку чужой счёт —
+  // реальный случай: "произошла ошибка, счет не Ваш") убиралось только
+  // SQL-запросом в supplier_offer_quotes. Удаляется ровно строка КП: цена,
+  // позиции и файлы самой карточки поставщика живут отдельно в supplier_
+  // research_offers (их наливает applyExtractionToOffer при подтверждении
+  // распознавания) и здесь не трогаются — об этом и предупреждаем в confirm,
+  // чтобы удаление КП не выглядело откатом карточки.
+  async function handleDeleteQuote(quote: SupplierQuote) {
+    if (deletingQuoteId) return;
+    if (
+      !window.confirm(
+        `Удалить КП «${quote.title}»? Оно пропадёт из сравнения цен и из пометки про аналог. ` +
+          'Сам поставщик, переписка и цена с позициями в его карточке останутся.',
+      )
+    )
+      return;
+    setDeletingQuoteId(quote.id);
+    try {
+      await deleteSupplierQuote(quote.id);
+      setSupplierQuotes((prev) => prev.filter((q) => q.id !== quote.id));
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось удалить КП'));
+    } finally {
+      setDeletingQuoteId(null);
+    }
+  }
+
+  // Владелец, 2026-09-11: раньше единственным способом убрать один ошибочно
+  // прикреплённый файл (например, задвоенный счёт) была кнопка "Удалить" на
+  // всю карточку поставщика — она удаляла не только файл, а весь supplier_
+  // research_offers, каскадом стирая переписку (supplier_offer_emails),
+  // заявки (supplier_orders) и т.п. (см. FK ON DELETE CASCADE в БД). Отдельное
+  // удаление одного файла из offer.files через updateSupplierOffer — без
+  // затрагивания самой карточки и переписки.
+  async function handleDeleteOfferFile(o: SupplierOffer, index: number) {
+    const file = o.files[index];
+    if (!file || deletingOfferFileIndex !== null) return;
+    if (!window.confirm(`Удалить файл «${file.fileName}»? Сам поставщик и переписка с ним останутся.`)) return;
+    setDeletingOfferFileIndex(index);
+    try {
+      const updated = await updateSupplierOffer(o.id, {
+        inn: o.inn,
+        requestId: o.requestId,
+        name: o.name,
+        contact: o.contact,
+        contactMethod: o.contactMethod,
+        email: o.email,
+        managerName: o.managerName,
+        messengers: o.messengers,
+        country: o.country,
+        websiteUrl: o.websiteUrl,
+        listingUrl: o.listingUrl,
+        contactSource: o.contactSource,
+        catalogModelName: o.catalogModelName,
+        catalogModelPhoto: o.catalogModelPhoto,
+        price: o.price,
+        currency: o.currency,
+        items: o.items,
+        files: o.files.filter((_, i) => i !== index),
+        verified: o.verified,
+      });
+      handleSupplierOfferUpdated(updated);
+    } catch (err) {
+      setLoadError(errorMessage(err, 'Не удалось удалить файл'));
+    } finally {
+      setDeletingOfferFileIndex(null);
     }
   }
 
@@ -2120,7 +2660,10 @@ export function Suppliers() {
 
   return (
     <>
-      <PageHeader title="Поставщики" action={supplierAddButton} />
+      {/* Заголовок совпадает с пунктом меню (data/pages.ts, 'purchases').
+          Владелец, 2026-09-12: раздел снова называется "Закупки"; вкладка
+          "Поставщики" — первая внутри него, это разные уровни. */}
+      <PageHeader title="Закупки" action={supplierAddButton} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <ToggleGroup
@@ -2171,8 +2714,6 @@ export function Suppliers() {
                       key={r.id}
                       request={r}
                       offers={offers.filter((o) => o.requestId === r.id)}
-                      emails={supplierEmails}
-                      rate={rate}
                       onEditRequest={openEditRequest}
                       onDeleteRequest={handleDeleteRequest}
                       onAddOffer={openAddOffer}
@@ -2180,6 +2721,11 @@ export function Suppliers() {
                       onWebSearch={openWebQueryModal}
                       onToggleComparisonMode={toggleComparisonMode}
                       searching={webSearchingId === r.id}
+                      searchJob={latestVisibleJobForRequest(r.id)}
+                      searchQueueError={webSearchQueueError?.requestId === r.id ? webSearchQueueError.message : null}
+                      onDismissSearchJob={dismissWebSearchJob}
+                      enrichmentState={enrichmentState}
+                      reliabilityByInn={reliabilityByInn}
                     />
                   ))}
 
@@ -2209,9 +2755,9 @@ export function Suppliers() {
           Сравнение цен... как грильято", уточнение тем же днём: "нужно
           добавлять только тех, кто уже прислал КП" + "не списки
           поставщиков, а материал — КП по убыванию" — MaterialPriceComparisonCard
-          (не PriceComparisonBlock — тот для "Поставщики", там нужен весь
-          список включая неответивших). Категория попадает сюда, только
-          если у неё есть хотя бы одно ПОДТВЕРЖДЁННОЕ предложение
+          (не SupplierListBlock — тот для "Поставщики", там просто состав
+          списка, без цен). Категория попадает сюда, только если у неё есть
+          хотя бы одно ПОДТВЕРЖДЁННОЕ предложение
           (offerCommunicationStatus === 'confirmed') хоть в одной стране —
           иначе сравнивать нечего. */}
       {tab === 'Сравнение цен' && (
@@ -2250,8 +2796,11 @@ export function Suppliers() {
                       request={r}
                       offers={offers.filter((o) => o.requestId === r.id)}
                       emails={supplierEmails}
+                      quotes={supplierQuotes}
                       rate={rate}
                       onOpenDetail={(o) => setDetailOfferId(o.id)}
+                      enrichmentState={enrichmentState}
+                      reliabilityByInn={reliabilityByInn}
                     />
                   ))}
                 </div>
@@ -2437,7 +2986,17 @@ export function Suppliers() {
       )}
 
       {tab === 'Письма' && (
-        <div className="mt-6">
+        // Владелец, 2026-09-10: "надо, чтобы влезало полностью, вне
+        // зависимости от экрана... даже если боковой список поставщиков
+        // будет как-то скрываться" — вкладка "Письма" на lg+ занимает всю
+        // высоту, доступную от AppLayout (main теперь overflow-y-auto, не
+        // документ целиком), дальше цепочка flex-1/min-h-0 идёт вниз до
+        // самого списка писем внутри SupplierCorrespondenceTab/EmailThread —
+        // композер всегда виден целиком, скроллится только лента писем.
+        // Владелец, 2026-09-11: это поведение теперь под вариантом roomy
+        // (см. src/index.css) — на невысоком окне (ноутбук закупщицы) вкладка
+        // больше не пытается уложиться в высоту экрана, а скроллится страницей.
+        <div className="mt-6 flex flex-col roomy:min-h-0 roomy:flex-1">
           <SupplierCorrespondenceTab
             requests={requests}
             offers={offers}
@@ -2455,7 +3014,10 @@ export function Suppliers() {
             onTemplatesChange={setEmailTemplates}
             onLedgersChange={setMaterialLedgers}
             onOfferUpdated={handleSupplierOfferUpdated}
+            onReliabilityChecked={(r) => setReliability((prev) => [...prev.filter((x) => x.inn !== r.inn), r])}
+            reliabilityByInn={reliabilityByInn}
             onOrdersChange={setSupplierOrders}
+            onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
             onEmailUpdated={handleSupplierEmailUpdated}
           />
         </div>
@@ -2545,93 +3107,6 @@ export function Suppliers() {
             />
           )}
 
-          {selectedRequestSection && selectedRequestSection.materials.length > 0 && (
-            <div className="flex flex-col gap-2 rounded-control bg-surface-muted p-3">
-              <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
-                Материалы раздела «{selectedRequestSection.title}»
-              </span>
-              <div className="flex flex-col gap-1.5">
-                {selectedRequestSection.materials.map((m) => {
-                  const added = requestForm.items.some((i) => i.sourceMaterialId === m.id);
-                  return (
-                    <div key={m.id} className="flex items-center justify-between gap-3 text-sm">
-                      <span className="text-ink">
-                        {m.name}
-                        {m.unit && (
-                          <span className="text-ink-faint">
-                            {' '}
-                            · {m.quantity ?? '—'} {m.unit}
-                          </span>
-                        )}
-                      </span>
-                      <Button type="button" variant="secondary" disabled={added} onClick={() => addMaterialToRequestItems(m)}>
-                        {added ? 'Добавлено' : 'Добавить'}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <div className="flex flex-col gap-2">
-            <span className="text-sm text-ink-muted">Что просим оценить у поставщиков</span>
-            {requestForm.items.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                {requestForm.items.map((item) => (
-                  <div key={item.id} className="flex flex-col gap-1.5 rounded-control border border-border px-3 py-2 text-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="flex-1 text-ink">{item.name}</span>
-                      <input
-                        type="number"
-                        placeholder="Кол-во"
-                        value={item.quantity ?? ''}
-                        onChange={(e) =>
-                          updateRequestItem(item.id, { quantity: e.target.value === '' ? null : Number(e.target.value) })
-                        }
-                        className="w-20 rounded-control border border-border bg-surface px-2 py-1 text-right text-sm outline-none focus:border-primary"
-                      />
-                      {item.unit && <span className="w-12 text-ink-faint">{item.unit}</span>}
-                      <button
-                        type="button"
-                        onClick={() => removeRequestItem(item.id)}
-                        aria-label="Удалить позицию"
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    {/* Владелец, 2026-09-09: "важно не только объём, но и ряд
-                        параметров... нет поля комментария, которое бы и в
-                        таблицу попадало, и в письмо" (пример — Grigliato:
-                        нужны не только м², но и фактура/формат и т.п.) —
-                        note у PurchaseItem уже существовал (для сопоставления
-                        счетов), просто не был виден/редактируем здесь; теперь
-                        попадает и в ведомость (materialLedgerXlsx.ts), и в
-                        текст письма ({материалы}, formatRequestItemsText). */}
-                    <input
-                      type="text"
-                      placeholder="Важные параметры — фактура, формат, цвет и т.п. (попадёт и в ведомость, и в письмо)"
-                      value={item.note}
-                      onChange={(e) => updateRequestItem(item.id, { note: e.target.value })}
-                      className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-primary"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <Input
-                placeholder="Добавить позицию вручную"
-                value={manualItemName}
-                onChange={(e) => setManualItemName(e.target.value)}
-              />
-              <Button type="button" variant="secondary" onClick={addManualRequestItem} disabled={!manualItemName.trim()}>
-                Добавить
-              </Button>
-            </div>
-          </div>
-
           {requestError && <p className="text-sm text-danger">{requestError}</p>}
           <div className="mt-2 flex justify-end gap-3">
             <Button type="button" variant="secondary" onClick={() => setRequestModalOpen(false)}>
@@ -2677,6 +3152,56 @@ export function Suppliers() {
             </div>
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-ink-muted">Мессенджеры</span>
+            {offerForm.messengers.map((m, i) => (
+              <div key={i} className="flex gap-2">
+                <div className="w-36 shrink-0">
+                  <Select
+                    options={[...SUPPLIER_MESSENGER_TYPES]}
+                    value={m.type}
+                    onChange={(v) =>
+                      setOfferForm((f) => ({
+                        ...f,
+                        messengers: f.messengers.map((x, xi) => (xi === i ? { ...x, type: v as SupplierMessengerType } : x)),
+                      }))
+                    }
+                  />
+                </div>
+                <Input
+                  placeholder="+7 9__ ..."
+                  value={m.number}
+                  onChange={(e) =>
+                    setOfferForm((f) => ({
+                      ...f,
+                      messengers: f.messengers.map((x, xi) => (xi === i ? { ...x, number: e.target.value } : x)),
+                    }))
+                  }
+                  className="flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => setOfferForm((f) => ({ ...f, messengers: f.messengers.filter((_, xi) => xi !== i) }))}
+                  aria-label="Удалить мессенджер"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-ink-muted hover:border-danger hover:text-danger"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="secondary"
+              icon={<Plus className="h-4 w-4" />}
+              className="w-fit"
+              onClick={() =>
+                setOfferForm((f) => ({ ...f, messengers: [...f.messengers, { type: SUPPLIER_MESSENGER_TYPES[0], number: '' }] }))
+              }
+            >
+              Мессенджер
+            </Button>
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input
               label="Email"
@@ -2704,6 +3229,13 @@ export function Suppliers() {
               // трогает страну, если она уже выбрана (вручную или раньше).
               setOfferForm((f) => ({ ...f, websiteUrl, country: f.country || guessCountryFromWebsite(websiteUrl) }));
             }}
+          />
+
+          <Input
+            label="Ссылка на позицию"
+            placeholder="https://... (страница конкретного товара, не главная сайта)"
+            value={offerForm.listingUrl}
+            onChange={(e) => setOfferForm((f) => ({ ...f, listingUrl: e.target.value }))}
           />
 
           <AddableSelect
@@ -2789,7 +3321,7 @@ export function Suppliers() {
                     type="button"
                     onClick={() => tryRecognizeOfferFile(file.url, file.fileName)}
                     disabled={offerExtractionBusy}
-                    className="shrink-0 text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                    className="shrink-0 text-xs font-medium text-primary-hover hover:underline disabled:opacity-50"
                   >
                     Распознать
                   </button>
@@ -2925,7 +3457,7 @@ export function Suppliers() {
                 <button
                   type="button"
                   onClick={() => setOfferForm((f) => ({ ...f, price: String(offerItemsTotal) }))}
-                  className="text-primary hover:underline"
+                  className="text-primary-hover hover:underline"
                 >
                   Подставить в итоговую цену
                 </button>
@@ -2953,6 +3485,8 @@ export function Suppliers() {
           return (
             <OfferEmailModal
               offer={offer}
+              onReliabilityChecked={(r) => setReliability((prev) => [...prev.filter((x) => x.inn !== r.inn), r])}
+              reliabilityByInn={reliabilityByInn}
               request={request}
               requests={requests}
               emails={supplierEmails.filter((e) => e.offerId === offer.id)}
@@ -2966,6 +3500,7 @@ export function Suppliers() {
               onLedgersChange={setMaterialLedgers}
               onOfferUpdated={handleSupplierOfferUpdated}
               onEmailUpdated={handleSupplierEmailUpdated}
+              onQuoteAdded={(q) => setSupplierQuotes((prev) => [...prev, q])}
               onClose={() => setEmailOfferId(null)}
             />
           );
@@ -2987,6 +3522,19 @@ export function Suppliers() {
               onEdit={openEditOffer}
               onDelete={handleDeleteOffer}
               deleting={deletingOfferId === offer.id}
+              onDeleteFile={handleDeleteOfferFile}
+              deletingFileIndex={deletingOfferId === offer.id ? null : deletingOfferFileIndex}
+              offerQuotes={supplierQuotes.filter((q) => q.offerId === offer.id)}
+              onQuoteAlternativeChange={handleQuoteAlternativeChange}
+              onQuoteDelete={handleDeleteQuote}
+              savingQuoteId={savingQuoteId}
+              deletingQuoteId={deletingQuoteId}
+              enrichmentState={enrichmentState}
+              reliabilityByInn={reliabilityByInn}
+              onVerify={handleVerifyOffer}
+              verifying={verifyingOfferId === offer.id}
+              onCheckReliability={handleCheckReliability}
+              checkingReliability={checkingInn !== null && checkingInn === offer.inn}
             />
           );
         })()}
@@ -2994,12 +3542,16 @@ export function Suppliers() {
       <Modal open={!!webQueryModal} onClose={() => setWebQueryModal(null)} title={`Найти в сети: ${webQueryModal?.title ?? ''}`}>
         <form onSubmit={submitWebQuery} className="flex flex-col gap-4">
           <div>
-            <div className="mb-1.5 text-sm font-medium text-ink">Страна поиска</div>
+            <div className="mb-1.5 text-sm font-medium text-ink">Регион поиска</div>
             <ToggleGroup
-              options={[...SUPPLIER_COUNTRIES]}
-              value={webQueryForm.country}
-              onChange={(country) => setWebQueryForm((f) => ({ ...f, country }))}
+              options={[...SUPPLIER_SEARCH_REGIONS]}
+              value={webQueryForm.region}
+              onChange={(region) => setWebQueryForm((f) => ({ ...f, region }))}
             />
+            <p className="mt-1.5 text-xs text-ink-faint">
+              «Москва» — только компании с офисом или складом в Москве и Московской области;
+              «Россия» — вся страна, включая региональные филиалы.
+            </p>
           </div>
           <Textarea
             label="Что ищем"
@@ -3014,6 +3566,9 @@ export function Suppliers() {
             value={webQueryForm.extra}
             onChange={(e) => setWebQueryForm((f) => ({ ...f, extra: e.target.value }))}
           />
+          <p className="text-xs text-ink-faint">
+            Поиск идёт в фоне — вкладку можно сразу закрыть, о готовности придёт уведомление.
+          </p>
           <div className="flex items-center justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setWebQueryModal(null)}>
               Отмена
@@ -3024,29 +3579,6 @@ export function Suppliers() {
           </div>
         </form>
       </Modal>
-
-      {webSearchModal && (
-        <SupplierWebSearchModal
-          requestTitle={webSearchModal.request.title}
-          results={webSearchModal.results}
-          error={webSearchModal.error}
-          selected={webSearchSelected}
-          added={webSearchAdded}
-          addingIndices={webSearchAddingIndices}
-          bulkAdding={webSearchBulkAdding}
-          addError={webSearchAddError}
-          onClose={() => setWebSearchModal(null)}
-          onToggleSelect={toggleWebSearchSelect}
-          onToggleSelectAll={toggleWebSearchSelectAll}
-          onAddOne={(i) => addWebSearchResults(webSearchModal.request.id, [{ index: i, r: webSearchModal.results[i] }])}
-          onAddSelected={() =>
-            addWebSearchResults(
-              webSearchModal.request.id,
-              [...webSearchSelected].map((i) => ({ index: i, r: webSearchModal.results[i] })),
-            )
-          }
-        />
-      )}
 
       <EstimateMaterialFormModal
         open={materialModalOpen}
@@ -3108,7 +3640,7 @@ export function Suppliers() {
         <MaterialLedgerModal
           open
           readyOnly
-          requestItems={bulkLedgerPickerRequest.items}
+          requestItems={[]}
           allMaterials={allEstimateMaterials}
           ledgers={materialLedgers}
           onClose={() => setBulkLedgerPickerRequest(null)}
@@ -3156,7 +3688,10 @@ function OfferEmailModal({
   onTemplateSaved,
   onLedgersChange,
   onOfferUpdated,
+  onReliabilityChecked,
+  reliabilityByInn,
   onEmailUpdated,
+  onQuoteAdded,
   onClose,
 }: {
   offer: SupplierOffer;
@@ -3172,7 +3707,10 @@ function OfferEmailModal({
   onTemplateSaved: (template: EmailTemplate) => void;
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
   onOfferUpdated: (offer: SupplierOffer) => void;
+  onReliabilityChecked: (r: SupplierReliability) => void;
+  reliabilityByInn: Map<string, SupplierReliability>;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
+  onQuoteAdded: (quote: SupplierQuote) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -3204,8 +3742,11 @@ function OfferEmailModal({
         onTemplateSaved={onTemplateSaved}
         onLedgersChange={onLedgersChange}
         onOfferUpdated={onOfferUpdated}
+        onReliabilityChecked={onReliabilityChecked}
+        reliabilityByInn={reliabilityByInn}
         onOrderUpdated={() => {}}
         onEmailUpdated={onEmailUpdated}
+        onQuoteAdded={onQuoteAdded}
       />
     </Modal>
   );

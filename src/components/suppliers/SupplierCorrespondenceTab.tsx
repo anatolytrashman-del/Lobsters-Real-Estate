@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Mail, Paperclip, Send, FileText, Save, ChevronDown, ChevronUp, Reply, FileSearch, CheckCircle2, Eye, FileSpreadsheet, X, Plus, Users } from 'lucide-react';
 import { Card } from '../ui/Card';
@@ -9,6 +9,9 @@ import { Textarea } from '../ui/Textarea';
 import { Select } from '../ui/Select';
 import { cn } from '../../lib/cn';
 import type { SupplierRequest, SupplierOffer } from '../../data/supplierResearch';
+import { RiskBadge } from './RiskBadge';
+import type { SupplierReliability } from '../../data/supplierReliability';
+import { checkSupplierReliability } from '../../lib/supplierReliabilityApi';
 import { supplierOfferEmailAddress, countryFlag, SUPPLIER_COUNTRIES } from '../../data/supplierResearch';
 import { updateSupplierOffer } from '../../lib/supplierResearchApi';
 import type { SupplierOrder } from '../../data/supplierOrders';
@@ -17,7 +20,7 @@ import type { SupplierOfferEmail, EmailExtractionItem } from '../../data/supplie
 import { isFirstOutgoingToOffer } from '../../data/supplierOfferEmails';
 import { sendSupplierOfferEmail, setSupplierOfferEmailExtractionStatus } from '../../lib/supplierOfferEmailsApi';
 import type { LegalEntity } from '../../data/legalEntities';
-import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment } from '../../lib/legalEntityAttachment';
+import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment, fileToAttachment } from '../../lib/legalEntityAttachment';
 import type { EmailTemplate } from '../../data/emailTemplates';
 import { renderEmailTemplate } from '../../lib/emailTemplates';
 import { TemplateFormModal, TemplateManagerModal } from './EmailTemplates';
@@ -25,9 +28,12 @@ import type { MaterialLedger } from '../../data/materialLedgers';
 import { MaterialLedgerModal } from './MaterialLedgerModal';
 import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import { getCurrentProfile } from '../../lib/accessProfile';
+import { logActivity } from '../../lib/activityLogApi';
 import { DocumentPreviewModal, isPreviewable, type PreviewFile } from '../documents/DocumentPreviewModal';
 import { currencies, type Currency } from '../../data/transactions';
 import type { PurchaseItem } from '../../data/purchases';
+import type { SupplierQuote } from '../../data/supplierQuotes';
+import { insertSupplierQuote } from '../../lib/supplierQuotesApi';
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
@@ -102,16 +108,27 @@ function splitQuotedReply(body: string): { visible: string; quoted: string | nul
 // Владелец, тем же сообщением: "нужна возможность отвечать на это письмо,
 // чтобы сохранялся и заголовок, и вся предыдущая история" — "Ответить" на
 // конкретном письме треда подставляет в форму тему с "Re:" (если её там ещё
-// нет) и цитату этого письма целиком (как в обычном email-клиенте, ">" на
-// каждую строку + преамбула с датой/отправителем), а не пустой черновик.
-function buildQuotedReply(e: SupplierOfferEmail): { subject: string; body: string } {
+// нет) и цитату этого письма (как в обычном email-клиенте, ">" на каждую
+// строку + преамбула с датой/отправителем).
+//
+// Владелец, 2026-09-10: реальный баг предыдущей версии — цитата
+// ВСТАВЛЯЛАСЬ прямо в поле "Сообщение" (через window.confirm "Заменить
+// черновик цитатой?"), из-за чего повторный клик на "Ответить" цитировал
+// уже процитированный текст — видимого изменения не было, выглядело как
+// "ничего не добавляется". Теперь цитата — отдельное состояние
+// (quotedReplyText, см. ниже), не смешивается с тем, что печатает
+// пользователь: поле "Сообщение" остаётся только под собственный ответ
+// (как верхняя часть письма в обычном email-клиенте), а цитата показывается
+// отдельным свёрнутым блоком под ним ("под катом") и подклеивается к телу
+// только в момент отправки (см. handleSend). Больше никакого confirm().
+function buildQuotedReply(e: SupplierOfferEmail): { subject: string; quoted: string } {
   const subject = /^re:/i.test(e.subject.trim()) ? e.subject : `Re: ${e.subject}`;
   const preamble = `${new Date(e.createdAt).toLocaleString('ru-RU')}, ${e.fromAddress} писал(а):`;
   const quotedLines = e.body
     .split('\n')
     .map((line) => `> ${line}`)
     .join('\n');
-  return { subject, body: `\n\n${preamble}\n${quotedLines}` };
+  return { subject, quoted: `${preamble}\n${quotedLines}` };
 }
 
 // Распознавание счёта/КП из вложения (владелец, 2026-09-03: "давай подумаем,
@@ -199,9 +216,37 @@ function extractionItemsToPurchaseItems(items: EmailExtractionItem[], materialMa
   });
 }
 
+// Каждое подтверждённое распознавание — отдельное КП (data/supplierQuotes.ts):
+// поставщик может прислать в одну ветку несколько счетов, и раньше они
+// схлопывались в карточку (цена от последнего, позиции от всех сразу).
+// Карточка по-прежнему показывает последнее КП, но история вариантов теперь
+// не теряется и видна в сравнении цен.
+async function saveExtractionAsQuote(
+  offerId: string,
+  email: SupplierOfferEmail,
+  extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[] },
+  items: PurchaseItem[],
+  sourceFile: { url: string; fileName: string } | null,
+  currency: Currency,
+): Promise<SupplierQuote> {
+  return insertSupplierQuote({
+    offerId,
+    title: email.subject || 'Счёт без темы',
+    price: extraction.price ?? 0,
+    currency,
+    items,
+    files: sourceFile ? [{ url: sourceFile.url, fileName: sourceFile.fileName }] : [],
+    // Ставит человек: по данным счёта не отличить "аналог" от того, что
+    // просили, — см. комментарий у SupplierQuote.isAlternative.
+    isAlternative: false,
+    alternativeNote: '',
+    sourceEmailId: email.id,
+  });
+}
+
 async function applyExtractionToOffer(
   offer: SupplierOffer,
-  extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[] },
+  extraction: { price: number | null; currency: string | null; items: EmailExtractionItem[]; supplierInn?: string | null },
   sourceFile: { url: string; fileName: string } | null,
   materialMatches: Record<number, MaterialMatch>,
 ): Promise<SupplierOffer> {
@@ -219,6 +264,9 @@ async function applyExtractionToOffer(
     managerName: offer.managerName,
     country: offer.country,
     websiteUrl: offer.websiteUrl,
+    listingUrl: offer.listingUrl,
+    contactSource: offer.contactSource,
+    messengers: offer.messengers,
     catalogModelName: offer.catalogModelName,
     catalogModelPhoto: offer.catalogModelPhoto,
     price: extraction.price ?? offer.price,
@@ -226,6 +274,13 @@ async function applyExtractionToOffer(
     items: [...offer.items, ...newItems],
     files,
     verified: offer.verified,
+    // Главный момент всей проверки благонадёжности: ИНН поставщика
+    // попадает в карточку именно здесь — когда закупщица подтверждает
+    // распознанный счёт. Владелец, 2026-09-11: "когда поставщик прислал
+    // счет и нам стали известны реквизиты, запускать процесс верификации".
+    // Уже сохранённый ИНН не затираем: если новый счёт пришёл без ИНН
+    // (модель не нашла), прежний остаётся — это не повод терять данные.
+    inn: extraction.supplierInn ?? offer.inn,
   });
 }
 
@@ -342,8 +397,10 @@ export function EmailThread({
   onTemplateSaved,
   onLedgersChange,
   onOfferUpdated,
+  onReliabilityChecked,
   onOrderUpdated,
   onEmailUpdated,
+  onQuoteAdded,
 }: {
   offer: SupplierOffer;
   // Владелец, 2026-09-03: "1 заявка на поставку — одна ветка" — null здесь
@@ -366,8 +423,11 @@ export function EmailThread({
   onTemplateSaved: (template: EmailTemplate) => void;
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
   onOfferUpdated: (offer: SupplierOffer) => void;
+  onReliabilityChecked: (r: SupplierReliability) => void;
+  reliabilityByInn: Map<string, SupplierReliability>;
   onOrderUpdated: (order: SupplierOrder) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
+  onQuoteAdded: (quote: SupplierQuote) => void;
 }) {
   // Письма именно текущего треда — основной переписки (order=null) или
   // конкретной заявки. e.orderId null и undefined тут не разводим, в базе
@@ -387,6 +447,32 @@ export function EmailThread({
   // реально уходит вместе с письмом только по нажатию "Отправить".
   const [ledgerModalOpen, setLedgerModalOpen] = useState(false);
   const [pendingLedger, setPendingLedger] = useState<LedgerAttachment | null>(null);
+  // Владелец, 2026-09-10: "мне нужна возможность прикреплять файлы к
+  // письму: картинки, таблицы, не ограничивай форматы лучше" — обычные
+  // файловые вложения, отдельно от ведомости (та собирается в своей
+  // модалке из позиций сметы) — тут просто то, что выбрали в проводнике,
+  // любых форматов, можно несколько штук подряд. Тот же принцип "черновик
+  // до отправки", что и у pendingLedger.
+  const [manualAttachments, setManualAttachments] = useState<LedgerAttachment[]>([]);
+  const [attachingFiles, setAttachingFiles] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleFilesPicked(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setAttachingFiles(true);
+    try {
+      const attached = await Promise.all(Array.from(files).map((f) => fileToAttachment(f)));
+      setManualAttachments((prev) => [...prev, ...attached]);
+    } catch {
+      setSendError('Не удалось прикрепить файл — попробуйте ещё раз');
+    } finally {
+      setAttachingFiles(false);
+    }
+  }
+
+  function removeManualAttachment(index: number) {
+    setManualAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
   // Владелец, 2026-09-06: "по умолчанию прикреплять карточку организации...
   // но только к первому письму" — isFirstOutgoingToOffer смотрит на ВСЕ
   // письма поставщика (emails, не threadEmails — карточка нужна один раз на
@@ -402,6 +488,16 @@ export function EmailThread({
   const legalEntity = resolveRequestLegalEntity(request.legalEntityId, legalEntities);
   const [skipOrgCard, setSkipOrgCard] = useState(false);
   const attachOrgCard = isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard && !!legalEntity?.cardFile;
+  // Владелец, 2026-09-11: "хочу прикреплять к поставкам вместе с ведомостью
+  // материала и карточкой организации ещё инфу по доставке" (адрес объекта,
+  // машины до 20 тонн с боковой разгрузкой и т.п.) — тот же файл юрлица и
+  // ровно то же правило, что у карточки: первому письму поставщику, со
+  // своим крестиком, если в конкретном письме не нужно. Текст/файл
+  // заводится на странице юрлица (Документы → Юрлица), нет файла — чипа
+  // нет и вложения нет.
+  const [skipDeliveryInfo, setSkipDeliveryInfo] = useState(false);
+  const attachDeliveryInfo =
+    isFirstOutgoingToOffer(emails, offer.id) && !skipDeliveryInfo && !!legalEntity?.deliveryFile;
   // Какие письма развёрнуты (показана свёрнутая цитата целиком) — по id,
   // сбрасывается сам собой при смене offer (новый emails-список).
   const [expandedQuoteIds, setExpandedQuoteIds] = useState<Set<string>>(new Set());
@@ -413,6 +509,22 @@ export function EmailThread({
   // Открыта по умолчанию только когда в треде вообще ещё нет писем — иначе
   // первое письмо было бы физически некому "ответить".
   const [composerOpen, setComposerOpen] = useState(threadEmails.length === 0);
+  // Цитата письма, на которое отвечаем (владелец, 2026-09-10: "как в
+  // обычном email-ящике: нажал ответить, оно сохранило всю переписку под
+  // катом, а сверху уже пишешь ответ свой") — отдельно от body (то, что
+  // печатает пользователь), не смешивается с ним: подклеивается к телу
+  // только в момент отправки (см. handleSend). quotedReplyExpanded —
+  // свёрнута ли цитата в форме ("под катом" по умолчанию).
+  const [quotedReplyText, setQuotedReplyText] = useState<string | null>(null);
+  const [quotedReplyExpanded, setQuotedReplyExpanded] = useState(false);
+  // Владелец, 2026-09-10: "не очевидно, что внизу появилось окошко для
+  // написания письма. Пусть страницу туда сама перебрасывает" — композер
+  // может открыться далеко под уже прочитанной лентой писем (особенно у
+  // длинных тредов), сам по себе он не попадает в область видимости.
+  // Скроллим к нему только по явному клику "Ответить" (handleReplyTo), не
+  // при обычном открытии/первом рендере — иначе страница дёргалась бы и
+  // тогда, когда композер и так уже виден.
+  const composerRef = useRef<HTMLDivElement>(null);
   // Предпросмотр вложения (владелец: "мне бы предпросмотр, как договора") —
   // просто просмотр PDF/докс/картинки прямо в приложении, без ручной кнопки
   // распознавания (была здесь, убрана владельцем 2026-09-03 — см. комментарий
@@ -444,7 +556,11 @@ export function EmailThread({
     setSelectedTemplateId('');
     setComposerOpen(!hasHistory);
     setPendingLedger(null);
+    setManualAttachments([]);
     setSkipOrgCard(false);
+    setSkipDeliveryInfo(false);
+    setQuotedReplyText(null);
+    setQuotedReplyExpanded(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offer.id, order?.id]);
 
@@ -469,12 +585,28 @@ export function EmailThread({
   }
 
   function handleReplyTo(e: SupplierOfferEmail) {
-    if ((subject.trim() || body.trim()) && !window.confirm('Заменить черновик цитатой этого письма?')) return;
+    // Не трогаем body — там только то, что печатает пользователь, цитата
+    // живёт отдельно (quotedReplyText) и подклеивается только при отправке
+    // (см. handleSend). Никакого confirm() — заменять здесь нечего.
     const quoted = buildQuotedReply(e);
     setSubject(quoted.subject);
-    setBody(quoted.body);
-    setSelectedTemplateId('');
+    setQuotedReplyText(quoted.quoted);
+    setQuotedReplyExpanded(false);
     setComposerOpen(true);
+    // requestAnimationFrame, не сразу — composerRef.current в момент этого
+    // клика ещё может быть null (композер только что открылся тем же
+    // setComposerOpen(true) выше, DOM обновится после коммита рендера).
+    // Владелец, 2026-09-10: "не видно кнопки отправки" — было block:'start'
+    // (верх композера к верху видимой области), из-за чего на невысоких
+    // экранах кнопка "Отправить" (самый низ композера) всё равно оставалась
+    // за кадром — сам композер выше доступной высоты, "верх" и "низ" не
+    // помещаются одновременно. block:'end' решает именно её жалобу: если
+    // композер целиком помещается — результат тот же, что и раньше (нечего
+    // подрезать ни сверху, ни снизу); если нет — в кадре остаётся низ с
+    // кнопкой "Отправить", а не шапка формы.
+    requestAnimationFrame(() => {
+      composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    });
   }
 
   function toggleQuoteExpanded(emailId: string) {
@@ -537,10 +669,43 @@ export function EmailThread({
       if (order) {
         onOrderUpdated(await applyExtractionToOrder(order, e.extraction, e.extraction.sourceFile ?? null, materialMatches));
       } else {
-        onOfferUpdated(await applyExtractionToOffer(offer, e.extraction, e.extraction.sourceFile ?? null, materialMatches));
+        const updated = await applyExtractionToOffer(offer, e.extraction, e.extraction.sourceFile ?? null, materialMatches);
+        onOfferUpdated(updated);
+        // Владелец, 2026-09-11: "когда поставщик прислал счет и нам стали
+        // известны реквизиты, запускать процесс верификации поставщика" —
+        // вот этот момент. Проверяем только если ИНН ПОЯВИЛСЯ или сменился:
+        // повторный счёт от того же юрлица перепроверять незачем, суточный
+        // лимит запросов к Checko не резиновый (перепроверить вручную можно
+        // кнопкой в карточке).
+        //
+        // Ошибку глотаем намеренно: подтверждение счёта — основная работа
+        // закупщицы, и она не должна падать из-за недоступности стороннего
+        // сервиса проверки. Сам сбой сохраняется в строке проверки и виден
+        // в карточке поставщика.
+        if (updated.inn && updated.inn !== offer.inn) {
+          checkSupplierReliability(updated.inn).then(onReliabilityChecked).catch(() => {});
+        }
+        onQuoteAdded(
+          await saveExtractionAsQuote(
+            offer.id,
+            e,
+            e.extraction,
+            extractionItemsToPurchaseItems(e.extraction.items, materialMatches),
+            e.extraction.sourceFile ?? null,
+            updated.currency,
+          ),
+        );
       }
       await setSupplierOfferEmailExtractionStatus(e.id, e.extraction, 'confirmed');
       onEmailUpdated({ ...e, extraction: { ...e.extraction, status: 'confirmed' } });
+      // Владелец, 2026-09-10: "Метрики" считали только submitOffer
+      // (правка/создание через форму карточки) — самая частая реальная
+      // работа Альмиры, подтверждение автораспознанного счёта прямо в
+      // переписке, не логировалась вовсе (applyExtractionToOffer/
+      // applyExtractionToOrder зовут updateSupplierOffer/updateSupplierOrder
+      // напрямую, минуя submitOffer) — со стороны выглядело так, будто она
+      // ничего не делает, хотя КП разбирались одно за другим.
+      logActivity('supplier_invoice_confirmed');
       closePreview();
     } catch (err) {
       setExtractionError(errorMessage(err, 'Не удалось применить распознанные данные'));
@@ -569,19 +734,36 @@ export function EmailThread({
     try {
       const orgCardAttachment =
         attachOrgCard && legalEntity?.cardFile ? await fetchDocumentFileAsAttachment(legalEntity.cardFile) : null;
-      const attachments = [...(pendingLedger ? [pendingLedger] : []), ...(orgCardAttachment ? [orgCardAttachment] : [])];
+      const deliveryInfoAttachment =
+        attachDeliveryInfo && legalEntity?.deliveryFile
+          ? await fetchDocumentFileAsAttachment(legalEntity.deliveryFile)
+          : null;
+      const attachments = [
+        ...(pendingLedger ? [pendingLedger] : []),
+        ...manualAttachments,
+        ...(orgCardAttachment ? [orgCardAttachment] : []),
+        ...(deliveryInfoAttachment ? [deliveryInfoAttachment] : []),
+      ];
+      // Цитата (quotedReplyText) живёт отдельно от того, что печатает
+      // пользователь, весь черновик — только теперь, на отправку, склеиваем
+      // их в одно письмо (получатель должен видеть всю историю, как и
+      // раньше, просто пока пишем ответ — не смешано в одном textarea).
+      const fullBody = quotedReplyText ? `${body.trim()}\n\n${quotedReplyText}` : body;
       const email = await sendSupplierOfferEmail({
         offerId: offer.id,
         orderId: order?.id ?? null,
         toAddress: offer.email,
         subject,
-        body,
+        body: fullBody,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
       onEmailSent(email);
       setBody('');
+      setQuotedReplyText(null);
+      setQuotedReplyExpanded(false);
       setComposerOpen(false);
       setPendingLedger(null);
+      setManualAttachments([]);
     } catch (err) {
       setSendError(errorMessage(err, 'Не удалось отправить письмо'));
     } finally {
@@ -590,7 +772,20 @@ export function EmailThread({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    // Владелец, 2026-09-10: "весь блок письма был виден на экране" — на lg+
+    // сам композер (ниже) остаётся обычным shrink-0 (не растягивается,
+    // видим целиком), а лента писем ("Переписка" ниже) забирает всю
+    // оставшуюся высоту и сама скроллится — так кнопка "Отправить" никогда
+    // не уезжает за нижний край экрана. Работает и внутри модалки быстрого
+    // "Написать" (OfferEmailModal — max-h-[90vh] + overflow-y-auto на самой
+    // модалке), не только на вкладке "Письма".
+    // Владелец, 2026-09-11: вся эта раскладка "по высоте окна" теперь только
+    // под roomy (см. src/index.css) — на невысоком окне она ужимала ленту
+    // писем в ноль, см. комментарий у самой ленты ниже. Внутри roomy цепочка
+    // min-h-0 осталась (без неё лента не прокручивается внутри себя, а растёт
+    // по содержимому и уводит композер за экран), а от схлопывания страхует
+    // пол высоты на блоке "Переписка" ниже.
+    <div className="flex flex-col gap-4 roomy:min-h-0 roomy:flex-1">
       {/* Владелец, 2026-09-03: флаг страны из заголовка карточки убран
           (слишком много флагов на экране, см. запись про список слева),
           категория (раньше отдельным бейджем у заголовка выше, см.
@@ -605,12 +800,21 @@ export function EmailThread({
         {offer.country && <span title={offer.country}>{countryFlag(offer.country)}</span>}
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2 roomy:min-h-60 roomy:flex-1">
         <span className="text-sm font-semibold text-ink">Переписка</span>
         {extractionError && <p className="text-sm text-danger">{extractionError}</p>}
         {threadEmails.length === 0 && <p className="text-sm text-ink-faint">Писем пока нет.</p>}
         {threadEmails.length > 0 && (
-          <div className="flex flex-col gap-2">
+          // Владелец, 2026-09-11: "зажато размерами экрана, а не скроллится
+          //     разумно вниз" — у закупщицы (окно ~570 px по высоте) этот блок
+          //     получал ровно 0 px. Своя прокрутка у ленты осталась (она и
+          //     держит композер на виду), но включается только под roomy —
+          //     на невысоком окне письма идут натуральной высотой и вниз
+          //     скроллится сама страница. Пол высоты стоит на родителе
+          //     ("Переписка" выше, roomy:min-h-60), а не здесь: на самой
+          //     ленте он вылезал за сжатого min-h-0 родителя и налезал на
+          //     композер (проверено на макете со скомпилированным CSS).
+          <div className="flex flex-col gap-2 roomy:min-h-0 roomy:flex-1 roomy:overflow-y-auto">
             {/* Владелец, 2026-09-03: "когда много писем, приходится листать в
                 самый низ... я бы делал обратную хронологию — последнее письмо
                 наверху" — [...emails] копия перед reverse(), исходный emails
@@ -792,7 +996,7 @@ export function EmailThread({
       {!offer.email ? (
         <p className="text-sm text-ink-faint">У предложения не указан email — добавьте его через «Редактировать», чтобы писать отсюда.</p>
       ) : !composerOpen ? null : (
-        <div className="flex flex-col gap-2 border-t border-border pt-3">
+        <div ref={composerRef} className="flex flex-col gap-2 border-t border-border pt-3">
           {orderedTemplates.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <span className="text-sm text-ink-muted">Шаблон</span>
@@ -816,6 +1020,40 @@ export function EmailThread({
 
           <Input label="Тема" value={subject} onChange={(e) => setSubject(e.target.value)} />
           <Textarea label="Сообщение" rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
+
+          {/* Владелец, 2026-09-10: "как в обычном email-ящике: нажал
+              ответить, оно сохранило всю переписку под катом, а сверху уже
+              пишешь ответ свой" — цитата письма, на которое отвечаем,
+              показана отдельным свёрнутым блоком под полем "Сообщение", не
+              смешана с тем, что печатает пользователь (см. quotedReplyText).
+              Разворачивается тем же паттерном, что и цитаты внутри самих
+              писем выше (toggleQuoteExpanded). Крестик снимает цитирование
+              вовсе — письмо уйдёт без истории, если она не нужна. */}
+          {quotedReplyText && (
+            <div className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setQuotedReplyExpanded((v) => !v)}
+                  className="flex items-center gap-1 text-xs text-ink-faint hover:text-ink"
+                >
+                  {quotedReplyExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  {quotedReplyExpanded ? 'Скрыть историю переписки' : 'Показать историю переписки'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuotedReplyText(null)}
+                  aria-label="Не прикреплять историю переписки к ответу"
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {quotedReplyExpanded && (
+                <div className="whitespace-pre-wrap border-l-2 border-border pl-2 text-xs text-ink-faint">{quotedReplyText}</div>
+              )}
+            </div>
+          )}
 
           {/* Владелец, 2026-09-03: "функционал прикрепления ведомостей
               материалов к письму" — ведомость выбирается/собирается в
@@ -848,6 +1086,56 @@ export function EmailThread({
             </Button>
           )}
 
+          {/* Владелец, 2026-09-10: "мне нужна возможность прикреплять файлы
+              к письму: картинки, таблицы, не ограничивай форматы лучше. Как
+              прикрепить ведомость, только кнопка Прикрепить файл" — обычный
+              файловый инпут без accept (любой формат), можно выбрать сразу
+              несколько; каждый выбранный файл — своя пилюля с крестиком,
+              список растёт при повторном клике (не заменяет уже выбранные).
+              Реально уходят вместе с письмом только на "Отправить" (см.
+              handleSend) — здесь только черновик вложений. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void handleFilesPicked(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          {manualAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {manualAttachments.map((att, i) => (
+                <div
+                  key={`${att.fileName}-${i}`}
+                  className="flex w-fit items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-1.5 text-sm text-ink"
+                >
+                  <Paperclip className="h-4 w-4 shrink-0 text-ink-faint" />
+                  <span className="max-w-[220px] truncate">{att.fileName}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeManualAttachment(i)}
+                    aria-label={`Убрать вложение ${att.fileName}`}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <Button
+            type="button"
+            variant="secondary"
+            icon={<Paperclip className="h-4 w-4" />}
+            className="w-fit"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={attachingFiles}
+          >
+            {attachingFiles ? 'Прикрепляем...' : 'Прикрепить файл'}
+          </Button>
+
           {/* Владелец, 2026-09-06: "пусть это будет видно в интерфейсе, что
               она прикреплена" — карточка организации прикладывается
               автоматически к первому письму поставщику (isFirstOutgoingToOffer
@@ -871,6 +1159,21 @@ export function EmailThread({
               </button>
             </div>
           )}
+          {attachDeliveryInfo && legalEntity?.deliveryFile && (
+            <div className="flex w-fit items-center gap-2 rounded-control border border-border bg-surface-muted px-3 py-1.5 text-sm text-ink">
+              <Paperclip className="h-4 w-4 shrink-0 text-ink-faint" />
+              {legalEntity.deliveryFile.fileName}
+              <span className="text-xs text-ink-faint">(условия доставки, прикрепится автоматически)</span>
+              <button
+                type="button"
+                onClick={() => setSkipDeliveryInfo(true)}
+                aria-label="Не прикреплять адрес доставки к этому письму"
+                className="flex h-5 w-5 items-center justify-center rounded-full text-ink-faint hover:text-danger"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           {isFirstOutgoingToOffer(emails, offer.id) && !skipOrgCard && legalEntity && !legalEntity.cardFile && (
             <p className="text-xs text-ink-faint">
               Юрлицо категории — «{legalEntity.shortName || legalEntity.name}», но карточка организации для него ещё не
@@ -880,7 +1183,17 @@ export function EmailThread({
 
           {sendError && <p className="text-sm text-danger">{sendError}</p>}
           <div className="flex items-center justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setComposerOpen(false)} disabled={sending}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setComposerOpen(false);
+                setQuotedReplyText(null);
+                setQuotedReplyExpanded(false);
+                setManualAttachments([]);
+              }}
+              disabled={sending}
+            >
               Отмена
             </Button>
             <Button
@@ -911,7 +1224,7 @@ export function EmailThread({
 
       <MaterialLedgerModal
         open={ledgerModalOpen}
-        requestItems={request.items}
+        requestItems={[]}
         allMaterials={allMaterials}
         ledgers={ledgers}
         onClose={() => setLedgerModalOpen(false)}
@@ -1117,8 +1430,11 @@ export function SupplierCorrespondenceTab({
   onTemplatesChange,
   onLedgersChange,
   onOfferUpdated,
+  onReliabilityChecked,
+  reliabilityByInn,
   onOrdersChange,
   onEmailUpdated,
+  onQuoteAdded,
 }: {
   requests: SupplierRequest[];
   offers: SupplierOffer[];
@@ -1149,8 +1465,11 @@ export function SupplierCorrespondenceTab({
   onTemplatesChange: (templates: EmailTemplate[]) => void;
   onLedgersChange: (ledgers: MaterialLedger[]) => void;
   onOfferUpdated: (offer: SupplierOffer) => void;
+  onReliabilityChecked: (r: SupplierReliability) => void;
+  reliabilityByInn: Map<string, SupplierReliability>;
   onOrdersChange: (orders: SupplierOrder[]) => void;
   onEmailUpdated: (email: SupplierOfferEmail) => void;
+  onQuoteAdded: (quote: SupplierQuote) => void;
 }) {
   // Владелец, 2026-09-04: "сидишь на странице конкретной переписки,
   // обновляешь — и всё слетело... кастомный урл даже на переписки с
@@ -1425,9 +1744,16 @@ export function SupplierCorrespondenceTab({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-4 lg:flex-row">
-        <div className="flex flex-col gap-3 lg:w-80 lg:shrink-0">
+    // Владелец, 2026-09-10: "весь блок письма должен быть виден на экране,
+    // вне зависимости от экрана... даже если список поставщиков как-то
+    // скроется" — цепочка roomy:flex-1 вниз до EmailThread не растягивает
+    // список поставщиков поверх экрана, а даёт ему свою прокрутку (см. ниже),
+    // композер письма остаётся всегда видимым целиком.
+    // Вне roomy (узкое ИЛИ невысокое окно — правка 2026-09-11) — как было до
+    // 2026-09-10: обычная прокрутка страницы, ничего не ужимается.
+    <div className="flex flex-col gap-4 roomy:min-h-0 roomy:flex-1">
+      <div className="flex flex-col gap-4 lg:flex-row roomy:min-h-0 roomy:flex-1">
+        <div className="flex flex-col gap-3 lg:w-80 lg:shrink-0 roomy:min-h-60">
           <Select
             label="Категория"
             options={categoryOptions.map((o) => o.label)}
@@ -1483,7 +1809,12 @@ export function SupplierCorrespondenceTab({
             </Button>
           )}
 
-          <div className="flex flex-col gap-1">
+          {/* Владелец, 2026-09-10: "боковой список поставщиков будет как-то
+              скрываться за кнопку" — сюда список не влезал бы полностью,
+              поэтому вместо скрытия за кнопкой (список нужен сразу) он
+              просто получил свою прокрутку — Select/тумблер страны/кнопка
+              рассылки сверху всегда на виду. */}
+          <div className="flex flex-col gap-1 roomy:min-h-0 roomy:flex-1 roomy:overflow-y-auto">
             {isUnreadView
               ? unreadEntries.map((entry) => {
                   const key = `${entry.offer.id}:${entry.orderId ?? 'main'}`;
@@ -1500,6 +1831,7 @@ export function SupplierCorrespondenceTab({
                     >
                       <span className="flex w-full items-center justify-between gap-2">
                         <span className="min-w-0 flex-1 truncate font-medium text-ink">{entry.offer.name}</span>
+                        <RiskBadge inn={entry.offer.inn} reliabilityByInn={reliabilityByInn} />
                         <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-danger px-1 text-[11px] font-bold text-white">
                           {entry.unreadCount}
                         </span>
@@ -1527,6 +1859,7 @@ export function SupplierCorrespondenceTab({
                         )}
                       >
                         <span className="min-w-0 flex-1 truncate font-medium text-ink">{offer.name}</span>
+                        <RiskBadge inn={offer.inn} reliabilityByInn={reliabilityByInn} />
                         <span className="flex shrink-0 items-center gap-1.5">
                           {unreadCount > 0 && (
                             <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1 text-[11px] font-bold text-white">
@@ -1541,15 +1874,16 @@ export function SupplierCorrespondenceTab({
           </div>
         </div>
 
-        <Card className="flex-1 p-5">
+        <Card className="flex-1 p-5 roomy:flex roomy:min-h-0 roomy:flex-col roomy:overflow-y-auto">
           {!selected ? (
             <p className="text-sm text-ink-faint">Выберите поставщика слева, чтобы открыть переписку.</p>
           ) : (
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 roomy:min-h-0 roomy:flex-1">
               {/* Владелец, 2026-09-03: флаг и бейдж категории убраны отсюда —
                   флаг был лишним (слишком много флагов на экране), категория
                   переехала в блок реквизитов внутри EmailThread. */}
               <span className="text-lg font-bold text-ink">{selected.offer.name}</span>
+              <RiskBadge inn={selected.offer.inn} reliabilityByInn={reliabilityByInn} />
 
               {/* Владелец, 2026-09-03: "1 заявка на поставку — одна ветка" —
                   чипы переключают тред: "Основная" (та переписка, что была
@@ -1600,8 +1934,11 @@ export function SupplierCorrespondenceTab({
                 onTemplateSaved={handleTemplateSaved}
                 onLedgersChange={onLedgersChange}
                 onOfferUpdated={onOfferUpdated}
+                onReliabilityChecked={onReliabilityChecked}
+                reliabilityByInn={reliabilityByInn}
                 onOrderUpdated={handleOrderUpdated}
                 onEmailUpdated={onEmailUpdated}
+                onQuoteAdded={onQuoteAdded}
               />
             </div>
           )}

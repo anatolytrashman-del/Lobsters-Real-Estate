@@ -1,0 +1,29 @@
+name: CI
+
+# P1.2 аудита безопасности — раньше сломанный тайпчек/тесты можно было
+# замержить и узнать об этом только от Vercel после деплоя. Запускается и
+# на pull request (как просил документ), и на пуш в прод-ветку (реальный
+# рабочий процесс в этом репозитории — фичи пушатся туда напрямую, без PR,
+# см. CLAUDE.md "Workflow при внесении изменений") — иначе проверка почти
+# никогда бы не срабатывала на практике.
+on:
+  pull_request:
+  push:
+    branches:
+      - claude/redevelopment-platform-prototype-oodobu
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc -b
+      - run: npm test
+      - run: npm run build
+      - run: npm run audit:rls

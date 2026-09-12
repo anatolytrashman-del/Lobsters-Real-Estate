@@ -141,7 +141,13 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass,
   // их ниже в списке параметров.
   const zoneModalTitleText = (() => {
     if (!selectedZone) return '';
-    const base = `${zoneTypeLabels[selectedZone.zoneType]} ${selectedZone.label}`.trim();
+    // Как и везде в проекте (AvailableUnitsTable/BuildingPlanCanvas/Leads) —
+    // label уже содержит нужное название ("Кабинет 201"), typeLabel только
+    // запасной вариант при пустом label, не префикс к нему. Раньше это было
+    // безусловной конкатенацией ("Кабинет" + label) — если сотрудник уже
+    // вписал в label слово "Кабинет", заголовок дублировал его: "Кабинет
+    // Кабинет 201" (найдено UX-аудитом).
+    const base = (selectedZone.label || zoneTypeLabels[selectedZone.zoneType]).trim();
     if (!isRoom) return base;
     const parts = [base, plan?.name];
     if (!isWorkstation && selectedZone.area != null) parts.push(`${selectedZone.area} м²`);

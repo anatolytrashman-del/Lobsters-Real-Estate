@@ -17,6 +17,8 @@ function fromRow(row: SupplierOfferEmailRow): SupplierOfferEmail {
     resendMessageId: row.resend_message_id,
     readAt: row.read_at ?? null,
     extraction: row.extraction ?? null,
+    sentByProfileId: row.sent_by_profile_id ?? null,
+    sentByName: row.sent_by_name ?? null,
     createdAt: row.created_at,
   };
 }

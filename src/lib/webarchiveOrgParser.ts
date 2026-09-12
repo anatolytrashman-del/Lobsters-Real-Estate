@@ -2,7 +2,7 @@ import { parseBplist } from './bplist';
 import type { ParsedBusinessEntry } from './districtBusinessPointsApi';
 
 // Разбор .webarchive-выгрузки карточки дома с Яндекс.Карт (владелец прислал
-// реальный пример через Cmd+S в Safari, см. журнал CLAUDE.md, 2026-08-26 —
+// реальный пример через Cmd+S в Safari, см. журнал docs/session-journal.md, 2026-08-26 —
 // предполагавшийся простой .txt оказался не тем, чем Светлана реально
 // пользуется). Внутри — binary plist (см. lib/bplist.ts), WebMainResource.
 // WebResourceData — это HTML-снимок страницы В МОМЕНТ СОХРАНЕНИЯ (Safari

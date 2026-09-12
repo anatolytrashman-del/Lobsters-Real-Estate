@@ -59,7 +59,7 @@
 // даже в быстром режиме, без полного прогона всех ~250 путей ради одной.
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT_DIR = new URL('..', import.meta.url).pathname;
@@ -84,7 +84,7 @@ const SITE_ORIGIN = 'https://redevelopment.pro';
 // рованные html/sitemap), которые все идут ДО prerender.mjs.
 const FORCE_FULL_RECENT_MS = 15 * 60_000;
 
-// Все публичные страницы теперь под /minsk/... (см. CLAUDE.md, урл-
+// Все публичные страницы теперь под /minsk/... (см. docs/session-journal.md, урл-
 // структура) — переменная переименована из STATIC_SLUGS в STATIC_PATHS:
 // это уже полные пути от корня, не голые слаги (у хабов их и не может
 // быть, они не привязаны к одному сегменту). Добавлять сюда каждую новую
@@ -568,12 +568,50 @@ async function shouldForceFullPrerender() {
 // что renderPath ждёт от headless-рендера) — «голый» SPA-шелл (например,
 // если путь на проде почему-то ещё не был пререндерен) не проходит, и
 // вызывающий код делает настоящий рендер именно для этого пути.
+// Имя входного чанка (assets/index-<hash>.js) в переданном HTML. Хэш в имени
+// считается от содержимого бандла, поэтому он меняется при ЛЮБОЙ правке кода
+// фронта — по нему и сверяем, из той ли сборки снапшот.
+function entryAssetOf(html) {
+  const m = html.match(/assets\/index-[A-Za-z0-9_-]+\.js/);
+  return m ? m[0] : null;
+}
+
+// Входной чанк ТЕКУЩЕЙ сборки (читается один раз, лениво — dist/index.html
+// к этому моменту уже собран vite).
+let currentEntryAssetCache;
+function currentEntryAsset() {
+  if (currentEntryAssetCache === undefined) {
+    try {
+      currentEntryAssetCache = entryAssetOf(readFileSync(join(DIST_DIR, 'index.html'), 'utf8'));
+    } catch {
+      currentEntryAssetCache = null;
+    }
+  }
+  return currentEntryAssetCache;
+}
+
 async function fetchPathLive(path) {
   try {
     const res = await fetch(`${SITE_ORIGIN}/${path}`, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return false;
     const html = await res.text();
     if (!/<h1[\s>]/i.test(html)) return false;
+    // 2026-09-11, прод лёг после первого же быстрого деплоя с правкой кода:
+    // копия страницы с прода тащит с собой и её <script src="/assets/
+    // index-<старый хэш>.js">, а в НОВОМ деплое файлов с такими именами нет
+    // (хэш пересчитался) — SPA-рерайт vercel.json отдавал на них index.html,
+    // браузер отказывался исполнять HTML как модуль, и все ~285 публичных
+    // страниц оставались статикой без приложения. Поэтому снапшот с прода
+    // годится, только если он ссылается на входной чанк этой же сборки;
+    // иначе — честный рендер (то есть при любой правке кода фронта быстрый
+    // путь сам собой вырождается в полный, что и требуется).
+    const expected = currentEntryAsset();
+    if (expected && !html.includes(expected)) {
+      console.log(
+        `[prerender] /${path}: живая копия от другой сборки (${entryAssetOf(html) ?? 'чанк не найден'} вместо ${expected}) — рендерю заново`,
+      );
+      return false;
+    }
     const dir = join(DIST_DIR, path);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'index.html'), html);
@@ -586,6 +624,18 @@ async function fetchPathLive(path) {
 }
 
 async function main() {
+  // PRERENDER_SKIP=1 — полностью пропустить пререндер (2026-09-11, владелец:
+  // «меняю админку, мне не нужна повторная регенерация страниц маркетинга»).
+  // Локальный прогон идёт в ПОЛНОМ режиме (см. shouldForceFullPrerender) —
+  // это ~285 путей по headless-браузеру на каждый, минут двадцать, тогда как
+  // весь остальной билд (tsc + vite + sitemap + preview-html) укладывается в
+  // ~10 секунд. Для проверки правок админки/CRM пререндер не нужен вообще:
+  // `npm run build:app` (см. package.json) просто не доходит до этого шага,
+  // а этот env — тот же выход для тех, кто всё же зовёт `npm run build`.
+  if (process.env.PRERENDER_SKIP === '1') {
+    console.log('[prerender] PRERENDER_SKIP=1 — пропускаю пререндер целиком');
+    return;
+  }
   if (!existsSync(DIST_DIR)) throw new Error('dist/ не найден — запускать после vite build');
 
   const landingPaths = await fetchLandingPaths();
@@ -656,6 +706,13 @@ async function main() {
       ? '[prerender] ПОЛНЫЙ режим — рендерю каждый путь headless-браузером (реальное изменение данных или ручной прогон)'
       : '[prerender] БЫСТРЫЙ режим — копирую уже живые страницы с прода, рендерю только то, чего там ещё нет',
   );
+  if (fullMode && !process.env.VERCEL) {
+    console.warn(
+      `[prerender] это локальный полный прогон: ${paths.length} путей по отдельному headless-браузеру на каждый — ` +
+        'десятки минут. Если правились только админка/CRM/api — прерывайте и используйте `npm run build:app` ' +
+        '(тот же tsc + vite build + sitemap, без пререндера) либо `PRERENDER_SKIP=1 npm run build`.',
+    );
+  }
 
   const serverProc = startPreviewServer();
 

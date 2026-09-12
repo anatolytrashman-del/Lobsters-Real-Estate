@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react';
+import { captureException } from '../lib/sentry';
 
 // Владелец, 2026-09-09: "при скролле на 2/3 страницы у меня упало всё
 // содержание, страница стала серой... при обновлении случилось то же самое"
@@ -60,6 +61,7 @@ export class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: unknown, info: { componentStack?: string }) {
     // eslint-disable-next-line no-console
     console.error('[ErrorBoundary] непойманная ошибка рендера:', error, info?.componentStack);
+    captureException(error, { componentStack: info?.componentStack });
     if (hasAlreadyTriedReload()) return;
     try {
       sessionStorage.setItem(RELOAD_ONCE_KEY, '1');

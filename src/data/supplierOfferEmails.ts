@@ -24,6 +24,11 @@ export interface EmailExtraction {
   price: number | null;
   currency: string | null;
   items: EmailExtractionItem[];
+  // ИНН поставщика, выставившего счёт (не наш, не покупателя — см. промпт
+  // в api/_invoiceRecognition.js, там про это отдельно). null — в счёте не
+  // нашёлся, или модель не смогла уверенно отличить его от ИНН покупателя.
+  // Проверен на контрольный разряд ещё на сервере, до записи сюда.
+  supplierInn: string | null;
   sourceFile: { url: string; fileName: string } | null;
   recognizedAt: string;
 }
@@ -60,6 +65,15 @@ export interface SupplierOfferEmail {
   // (src/pages/Suppliers.tsx) и колокольчик уведомлений.
   readAt: string | null;
   extraction: EmailExtraction | null;
+  // Кто отправил письмо (владелец, 2026-09-12 — учёт работы с письмами по
+  // сотрудникам, см. Metrics.tsx). Только у исходящих: у входящих автор —
+  // сам поставщик, он не наш профиль. Заполняется сервером (api/purchase-
+  // send-email.js — по реально вошедшему пользователю из токена, не по
+  // присланному клиентом имени) и обработчиком массовой рассылки (берёт
+  // автора самого задания). null — письмо до появления колонки, кроме
+  // разобранных бэкфиллом по подписи в теле (см. журнал 2026-09-12).
+  sentByProfileId: string | null;
+  sentByName: string | null;
   createdAt: string;
 }
 
@@ -87,5 +101,7 @@ export interface SupplierOfferEmailRow {
   resend_message_id: string | null;
   read_at: string | null;
   extraction: EmailExtraction | null;
+  sent_by_profile_id: string | null;
+  sent_by_name: string | null;
   created_at: string;
 }

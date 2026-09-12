@@ -52,7 +52,7 @@ export function MinskHub() {
       <main className="mx-auto flex max-w-5xl flex-col gap-10 px-4 py-12 sm:px-8">
         <div className="flex flex-col gap-2">
           <h1 className="text-2xl font-extrabold text-ink sm:text-3xl">Коммерческая недвижимость в Минске</h1>
-          <p className="max-w-2xl text-ink-muted">Гиды по районам для арендаторов и собственников коммерческой недвижимости.</p>
+          <p className="max-w-2xl text-ink">Гиды по районам для арендаторов и собственников коммерческой недвижимости.</p>
         </div>
 
         <section className="flex flex-col gap-4">

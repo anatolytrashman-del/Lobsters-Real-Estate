@@ -56,7 +56,7 @@ function AgreementLink({ agreement }: { agreement: SignedAgreementSummary | unde
       href={agreement.documentUrl}
       target="_blank"
       rel="noreferrer"
-      className="flex w-fit items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+      className="flex w-fit items-center gap-1.5 text-sm font-medium text-primary-hover hover:underline"
     >
       <Download className="h-3.5 w-3.5" />
       Подписано
@@ -69,7 +69,7 @@ function PlanLink({ object }: { object: RealtyObject | undefined }) {
   return (
     <Link
       to={`/admin/objects/${object.landingSlug || object.id}`}
-      className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+      className="flex items-center gap-1 text-sm font-medium text-primary-hover hover:underline"
     >
       На план
       <ArrowRight className="h-3.5 w-3.5" />
