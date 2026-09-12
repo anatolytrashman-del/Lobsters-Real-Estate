@@ -8,9 +8,7 @@ import { Select } from '../ui/Select';
 import { ToggleGroup } from '../ui/ToggleGroup';
 import {
   countryFlag,
-  isUniversalRequest,
   SUPPLIER_COUNTRIES,
-  UNIVERSAL_SUPPLIERS_TITLE,
   type SupplierRequest,
   type SupplierOffer,
 } from '../../data/supplierResearch';
@@ -19,8 +17,6 @@ import type { LedgerAttachment } from '../../lib/materialLedgerXlsx';
 import type { LegalEntity } from '../../data/legalEntities';
 import type { EmailTemplate } from '../../data/emailTemplates';
 import { insertBulkSendJob, fetchQueuedBulkSendOfferIds } from '../../lib/bulkSendJobsApi';
-import { buildMaterialLedgerXlsx } from '../../lib/materialLedgerXlsx';
-import type { MaterialLedger } from '../../data/materialLedgers';
 import { emailSignature } from './SupplierCorrespondenceTab';
 import { TemplateFormModal } from './EmailTemplates';
 
@@ -169,7 +165,6 @@ export function BulkSendModal({
   request,
   requests,
   attachment,
-  masterLedgers,
   offers,
   emails,
   templates,
@@ -187,14 +182,6 @@ export function BulkSendModal({
   // категории кликнули "Массовая отправка" снаружи.
   requests: SupplierRequest[];
   attachment: LedgerAttachment;
-  // Мастер-ведомости (сводные по смете, см. lib/masterLedger.ts) — владелец,
-  // 2026-09-12: "универсальным поставщикам будет уходить она". Профильному
-  // поставщику незачем видеть весь объём закупки, а универсальный как раз
-  // может дать цену по всему сразу, поэтому файл у двух групп получателей
-  // разный — см. handleQueue ниже, рассылка встаёт в очередь двумя
-  // заданиями. Пусто (ни одной мастер-ведомости ещё не сложилось) — всё
-  // работает как раньше, одним заданием с одним вложением.
-  masterLedgers: MaterialLedger[];
   offers: SupplierOffer[];
   emails: SupplierOfferEmail[];
   templates: EmailTemplate[];
@@ -239,24 +226,21 @@ export function BulkSendModal({
   // вкладке "Письма" целиком. Владелец, 2026-09-09: страна теперь ФИЛЬТРУЕТ
   // список — пока страна не выбрана, получателей не показываем вовсе
   // (не смысла демонстрировать список, который может тут же перефильтроваться).
-  // Владелец, 2026-09-12: "категорию универсальных поставщиков также
-  // добавляй в массовую отправку, им будут отправляться мастер-ведомости".
-  // Универсальный поставщик (Лемана Про, Петрович, Сатурн) с этого же дня
-  // живёт ОДНОЙ карточкой — в категории "Универсальные поставщики", и в
-  // профильных категориях его больше нет (см. data/supplierResearch.ts).
-  // Значит рассылка по профильной категории без него была бы неполной:
-  // он торгует всем и по ведомости этой категории отвечает так же, как
-  // профильные. Поэтому его карточки подмешиваются в получателей —
-  // отдельной группой, которую видно и можно выключить галочкой.
-  const universalRequest = useMemo(() => requests.find((r) => isUniversalRequest(r)) ?? null, [requests]);
-  const universalIsSelected = !!universalRequest && universalRequest.id === selectedRequestId;
-  const [includeUniversal, setIncludeUniversal] = useState(true);
-  // Какая именно мастер-ведомость уйдёт универсальным: их по одной на смету
-  // (Red One, Зелёный...), поэтому при нескольких выбор виден в модалке, при
-  // одной — просто подпись. Пустая строка — "как всем", отдельного задания
-  // не будет.
-  const [masterLedgerId, setMasterLedgerId] = useState(() => masterLedgers[0]?.id ?? '');
-  const masterLedger = masterLedgers.find((l) => l.id === masterLedgerId) ?? null;
+  // Владелец, 2026-09-12 (утром): "категорию универсальных поставщиков также
+  // добавляй в массовую отправку" — универсальные подмешивались в получателей
+  // ЛЮБОЙ профильной категории отдельной группой, с галочкой и своей
+  // мастер-ведомостью. Он же, тот же день (вечером): "когда я отправляю
+  // рассылку узким поставщикам (например, краска), мне в общем списке в
+  // рассылке не нужны универсальные поставщики вообще. Мы же удаляли дубли.
+  // Универсальную ведомость я буду рассылать отдельно" — подмешивание
+  // убрано целиком. Рассылка по категории = ровно карточки этой категории;
+  // универсальным уходит своя рассылка, для которой в селекте "Категория
+  // поставщиков" выбирается "Универсальные поставщики", а мастер-ведомость
+  // прикладывается на шаге выбора ведомости (MaterialLedgerModal показывает
+  // мастер-ведомости в общем списке, см. Suppliers.tsx). Не возвращать
+  // подмешивание без явной просьбы: для владельца универсальный в списке
+  // профильной категории читается как тот самый дубль, который мы
+  // объединением карточек и убирали.
 
   const matchesFilters = useMemo(
     () => (o: SupplierOffer) =>
@@ -264,25 +248,9 @@ export function BulkSendModal({
     [selectedCountry],
   );
 
-  const universalCandidates = useMemo(
-    () =>
-      countryChosen && universalRequest && !universalIsSelected
-        ? offers.filter((o) => o.requestId === universalRequest.id && matchesFilters(o))
-        : [],
-    [offers, countryChosen, universalRequest, universalIsSelected, matchesFilters],
-  );
-
-  const universalIds = useMemo(() => new Set(universalCandidates.map((o) => o.id)), [universalCandidates]);
-
   const candidates = useMemo(
-    () =>
-      countryChosen
-        ? [
-            ...offers.filter((o) => o.requestId === selectedRequestId && matchesFilters(o)),
-            ...(includeUniversal ? universalCandidates : []),
-          ]
-        : [],
-    [offers, countryChosen, selectedRequestId, matchesFilters, includeUniversal, universalCandidates],
+    () => (countryChosen ? offers.filter((o) => o.requestId === selectedRequestId && matchesFilters(o)) : []),
+    [offers, countryChosen, selectedRequestId, matchesFilters],
   );
 
   // Письма, уже стоящие в очереди рассылки (ещё не отправленные воркером) —
@@ -404,7 +372,7 @@ export function BulkSendModal({
   useEffect(() => {
     setSelected(new Set(visible.filter((o) => statusOf(o).kind === 'none').map((o) => o.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRequestId, selectedCountry, filter, queuedOfferIds, includeUniversal]);
+  }, [selectedRequestId, selectedCountry, filter, queuedOfferIds]);
 
   const [subject, setSubject] = useState(() => request.title || 'Поставка материалов');
   const [body, setBody] = useState(() => defaultBulkBody());
@@ -459,38 +427,19 @@ export function BulkSendModal({
   // рендера на это закладывать не стоит).
   const recipients = visible.filter((o) => selected.has(o.id));
 
-  // Универсальные получатели идут отдельным заданием — с мастер-ведомостью
-  // вместо ведомости категории (см. коммент у пропа masterLedgers). Если
-  // мастер-ведомости нет или универсальных в списке не оказалось, деление
-  // вырождается в одно задание, как было раньше.
-  const universalRecipients = masterLedger ? recipients.filter((o) => universalIds.has(o.id)) : [];
-  const mainRecipients = recipients.filter((o) => !universalRecipients.some((u) => u.id === o.id));
-
   async function handleQueue() {
     if (queuing || recipients.length === 0 || !subject.trim() || !body.trim() || !legalEntityChosen || !countryChosen) return;
     setQueuing(true);
     setQueueError(null);
     try {
-      const common = { legalEntityId: legalEntity?.id ?? null, subject, body };
-      if (mainRecipients.length > 0) {
-        await insertBulkSendJob({
-          ...common,
-          requestId: selectedRequestId,
-          attachment,
-          offerIds: mainRecipients.map((o) => o.id),
-        });
-      }
-      if (universalRecipients.length > 0 && masterLedger) {
-        // .xlsx собираем здесь, а не заранее: мастер-ведомость вычисляемая
-        // (в базе её нет), и до постановки в очередь файл никому не нужен.
-        const masterAttachment = await buildMaterialLedgerXlsx(masterLedger.name, masterLedger.items);
-        await insertBulkSendJob({
-          ...common,
-          requestId: universalRequest?.id ?? selectedRequestId,
-          attachment: masterAttachment,
-          offerIds: universalRecipients.map((o) => o.id),
-        });
-      }
+      await insertBulkSendJob({
+        legalEntityId: legalEntity?.id ?? null,
+        subject,
+        body,
+        requestId: selectedRequestId,
+        attachment,
+        offerIds: recipients.map((o) => o.id),
+      });
       setQueuedCount(recipients.length);
     } catch (err) {
       setQueueError(errorMessage(err, 'Не удалось поставить рассылку в очередь'));
@@ -573,36 +522,6 @@ export function BulkSendModal({
                   onChange={setFilter}
                 />
 
-                {/* Универсальные поставщики идут в рассылку по любой
-                    категории (см. комментарий у universalCandidates выше).
-                    Галочка — на случай узкой рассылки, где они не нужны. */}
-                {universalCandidates.length > 0 && (
-                  <label className="-mt-1 flex items-start gap-2.5 text-sm text-ink-muted">
-                    <input
-                      type="checkbox"
-                      checked={includeUniversal}
-                      onChange={() => setIncludeUniversal((v) => !v)}
-                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-primary"
-                    />
-                    <span>
-                      Добавить «{UNIVERSAL_SUPPLIERS_TITLE}» ({universalCandidates.length}) — они торгуют всем, поэтому им
-                      уйдёт не ведомость категории, а мастер-ведомость со всеми позициями.
-                    </span>
-                  </label>
-                )}
-
-                {/* Мастер-ведомость на каждую смету своя (Red One, Зелёный) —
-                    при нескольких показываем выбор, при одной она и так
-                    видна в списке вложений ниже. */}
-                {includeUniversal && universalCandidates.length > 0 && masterLedgers.length > 1 && (
-                  <Select
-                    label="Мастер-ведомость для универсальных"
-                    options={masterLedgers.map((l) => l.name)}
-                    value={masterLedger?.name ?? ''}
-                    onChange={(label) => setMasterLedgerId(masterLedgers.find((l) => l.name === label)?.id ?? '')}
-                  />
-                )}
-
                 {unverifiedCount > 0 && (
                   <p className="-mt-1 text-xs text-ink-faint">
                     Ещё {unverifiedCount} с email в этой категории не прошли верификацию — в рассылку они не попадают.
@@ -656,7 +575,6 @@ export function BulkSendModal({
                         />
                         <span className="min-w-0 flex-1 truncate text-ink">
                           <span title={o.country || SUPPLIER_COUNTRIES[0]}>{countryFlag(o.country || SUPPLIER_COUNTRIES[0])}</span> {o.name}
-                          {universalIds.has(o.id) && <span className="text-ink-faint"> · универсальный</span>}
                           {status.kind === 'sent' && <span className="text-ink-faint"> · писали {formatDay(status.at)}</span>}
                           {status.kind === 'queued' && <span className="text-warning"> · письмо уже в очереди</span>}
                           {status.kind === 'quoted' && <span className="text-ink-faint"> · есть КП, уже работаем</span>}
@@ -711,20 +629,9 @@ export function BulkSendModal({
                   <div className="flex items-center gap-2">
                     <Paperclip className="h-4 w-4 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">
-                      {attachment.fileName} — уйдёт вложением{universalRecipients.length > 0 ? ' профильным поставщикам' : ' каждому получателю'}
+                      {attachment.fileName} — уйдёт вложением каждому получателю
                     </span>
                   </div>
-                  {/* Универсальным — мастер-ведомость (владелец, 2026-09-12).
-                      Показываем только когда такие получатели реально
-                      отмечены: иначе это строка про то, чего не произойдёт. */}
-                  {universalRecipients.length > 0 && masterLedger && (
-                    <div className="flex items-center gap-2">
-                      <Paperclip className="h-4 w-4 shrink-0" />
-                      <span className="min-w-0 flex-1 truncate">
-                        {masterLedger.name}.xlsx — уйдёт универсальным ({universalRecipients.length})
-                      </span>
-                    </div>
-                  )}
                   {/* Владелец, 2026-09-09: "в прикреплённых файлах вижу только
                       ведомость материала, но не реквизиты" — карточка
                       организации теперь всегда отдельной строкой, если у
