@@ -115,7 +115,11 @@ for the client-license prototype (separate repo + Supabase project)", то ес�
   (обе записи сохранять). Код трогает `src/lib/ledgerSync.ts` (новый),
   `src/data/purchases.ts`, `src/pages/Suppliers.tsx` (два memo вокруг
   ведомостей), `src/components/suppliers/MaterialLedgerModal.tsx`.
-- **Публикация:** PR из `claude/release-2026-09-12-5` в `oodobu`.
+- **Опубликовано:** PR #57 смерджен в `oodobu`, прод-деплой READY за 58с
+  (быстрый режим пререндера: путей 286, скопировано с прода 284, браузером
+  отрендерено 2 по списку ALWAYS_FULL_RENDER_PATHS, «из-за непригодной
+  копии: 0»). Ветки `claude/bold-noether-qrzr3l` и
+  `claude/release-2026-09-12-5` можно удалять.
 
 Что НЕ вошло и почему:
 
