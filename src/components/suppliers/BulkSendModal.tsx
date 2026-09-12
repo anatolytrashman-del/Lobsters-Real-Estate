@@ -23,6 +23,7 @@ import {
   cancelQueuedBulkSendItems,
   type PastBulkSend,
 } from '../../lib/bulkSendJobsApi';
+import { DEFAULT_MATERIALS_SUBJECT } from '../../lib/emailTemplates';
 import { emailSignature } from './SupplierCorrespondenceTab';
 import { TemplateFormModal } from './EmailTemplates';
 
@@ -484,7 +485,14 @@ export function BulkSendModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRequestId, selectedCountry, filter, queuedOfferIds, repeatJobId, cancelledOfferIds]);
 
-  const [subject, setSubject] = useState(() => request.title || 'Поставка материалов');
+  // Тема по умолчанию — общая «Закупка материалов», НЕ название категории
+  // (владелец, 2026-09-12: "Я рассылал ведомость не только по Alma"). Раньше
+  // сюда подставлялся request.title — а он про поисковый запрос по
+  // поставщикам ("Керамогранит Alma серая"), тогда как вложенная ведомость
+  // почти всегда шире одной позиции: получатель видел тему про один
+  // конкретный материал и файл с десятком других. Название категории при
+  // необходимости всегда можно дописать руками в поле «Тема» ниже.
+  const [subject, setSubject] = useState(DEFAULT_MATERIALS_SUBJECT);
   const [body, setBody] = useState(defaultBulkBody);
   // Текст, который подставили мы сами (дефолт, шаблон, повторяемая рассылка) —
   // пока владелец его не трогал, подстановка при выборе прошлой рассылки

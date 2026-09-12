@@ -23,7 +23,7 @@ import { sendSupplierOfferEmail, setSupplierOfferEmailExtractionStatus } from '.
 import type { LegalEntity } from '../../data/legalEntities';
 import { resolveRequestLegalEntity, fetchDocumentFileAsAttachment, fileToAttachment } from '../../lib/legalEntityAttachment';
 import type { EmailTemplate } from '../../data/emailTemplates';
-import { renderEmailTemplate } from '../../lib/emailTemplates';
+import { renderEmailTemplate, DEFAULT_MATERIALS_SUBJECT } from '../../lib/emailTemplates';
 import { TemplateFormModal, TemplateManagerModal } from './EmailTemplates';
 import type { MaterialLedger } from '../../data/materialLedgers';
 import { MaterialLedgerModal } from './MaterialLedgerModal';
@@ -438,9 +438,9 @@ export function emailSignature(): string {
 // идёт не в "основной" переписке офера, а в дополнительной заявке (владелец,
 // 2026-09-03: "1 заявка на поставку — одна ветка") — тема первого письма
 // такой заявки по умолчанию берёт её название ("Окна"), а не общее
-// "Поставка материалов".
+// "Закупка материалов".
 function defaultSubject(hasHistory: boolean, orderTitle: string): string {
-  return hasHistory ? '' : orderTitle || 'Поставка материалов';
+  return hasHistory ? '' : orderTitle || DEFAULT_MATERIALS_SUBJECT;
 }
 
 function defaultBody(hasHistory: boolean): string {
