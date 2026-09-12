@@ -34,6 +34,24 @@ const dictSource = fs.readFileSync(path.join(process.cwd(), 'src/data/supplyCate
 const known = new Set([...dictSource.matchAll(/name:\s*'([^']+)'/g)].map((m) => m[1]));
 if (known.size === 0) throw new Error('справочник src/data/supplyCategories.ts не прочитался');
 
+// Названия, которые классификаторы устойчиво выдумывают вместо справочных.
+// Держим здесь, а не расширяем справочник: это те же группы под другим
+// именем, а не новые (в отличие от «Гидроизоляции», которая стала своей
+// группой — см. supplyCategories.ts).
+const ALIASES = new Map([
+  ['Строительный инструмент', 'Инструмент и оборудование'],
+  ['Инструменты', 'Инструмент и оборудование'],
+  ['Мебель для ванной', 'Сантехническое оборудование'],
+  ['Сантехника', 'Сантехническое оборудование'],
+  ['Керамическая плитка', 'Плитка керамическая'],
+  ['Лакокрасочные материалы', 'Краски и ЛКМ'],
+  ['Краски и лаки', 'Краски и ЛКМ'],
+  ['Сухие смеси', 'Сухие строительные смеси'],
+  ['Освещение', 'Светильники и освещение'],
+  ['Крепёж', 'Крепёж и метизы'],
+  ['Крепеж и метизы', 'Крепёж и метизы'],
+]);
+
 const results = new Map();
 const unknown = new Map();
 for (const f of fs.readdirSync(outDir).filter((f) => /^result-.*\.json$/.test(f)).sort()) {
@@ -43,8 +61,9 @@ for (const f of fs.readdirSync(outDir).filter((f) => /^result-.*\.json$/.test(f)
     if (!host) continue;
     const categories = [];
     for (const raw of Array.isArray(item.categories) ? item.categories : []) {
-      const c = String(raw).trim();
-      if (!c) continue;
+      const trimmed = String(raw).trim();
+      if (!trimmed) continue;
+      const c = ALIASES.get(trimmed) ?? trimmed;
       if (known.has(c)) {
         if (!categories.includes(c)) categories.push(c);
       } else {

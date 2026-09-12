@@ -342,6 +342,69 @@ function VerificationBadge({
   return <Badge tone={tone}>{SUPPLIER_VERIFICATION_LABEL[status]}</Badge>;
 }
 
+// «Кто у нас закрывает эту группу» — поиск по товарным группам поперёк
+// категорий закупок. Один и тот же поставщик может лежать в нескольких
+// категориях, поэтому строка результата показывает, в какой именно он
+// заведён: писать ему нужно из его карточки.
+function SupplyGroupLookup({
+  options,
+  value,
+  onChange,
+  matches,
+  onOpenDetail,
+  requestTitleById,
+}: {
+  options: { name: string; count: number }[];
+  value: string;
+  onChange: (v: string) => void;
+  matches: SupplierOffer[];
+  onOpenDetail: (o: SupplierOffer) => void;
+  requestTitleById: Map<string, string>;
+}) {
+  return (
+    <Card className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="font-medium text-ink">Кто закрывает товарную группу</span>
+        <div className="min-w-[280px] flex-1">
+          <Select
+            placeholder="Выберите группу"
+            options={options.map((o) => `${o.name} (${o.count})`)}
+            value={value ? `${value} (${options.find((o) => o.name === value)?.count ?? 0})` : ''}
+            onChange={(v) => onChange(options.find((o) => `${o.name} (${o.count})` === v)?.name ?? '')}
+          />
+        </div>
+        {value && (
+          <Button type="button" variant="secondary" onClick={() => onChange('')}>
+            Сбросить
+          </Button>
+        )}
+      </div>
+
+      {value && (
+        <div className="flex flex-col gap-2">
+          {matches.length === 0 ? (
+            <p className="text-sm text-ink-faint">Среди заведённых поставщиков таких нет — эту группу придётся искать в сети.</p>
+          ) : (
+            matches.map((o) => (
+              <div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border px-4 py-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="truncate font-medium text-ink">{o.name}</span>
+                  <span className="text-xs text-ink-faint">
+                    {countryFlag(o.country)} {requestTitleById.get(o.requestId) ?? 'категория неизвестна'}
+                  </span>
+                </div>
+                <Button type="button" variant="secondary" onClick={() => onOpenDetail(o)}>
+                  Подробнее
+                </Button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // Что поставляет компания — товарные группы из снимка её сайта (см.
 // data/supplierSiteSnapshots.ts). Владелец, 2026-09-12: "каждый поставщик
 // поставляет только свой спектр товара... у кого-то десятки категорий, у
@@ -1840,6 +1903,28 @@ export function Suppliers() {
   // data/supplierSiteSnapshots.ts; карточка находит свой по websiteUrl.
   const [siteSnapshots, setSiteSnapshots] = useState<SupplierSiteSnapshot[]>([]);
   const snapshotByHost = useMemo(() => new Map(siteSnapshots.map((s) => [s.host, s])), [siteSnapshots]);
+  // Поиск «кто закрывает группу»: список групп собирается из того, что
+  // реально встретилось у поставщиков (а не из всего справочника — половина
+  // его позиций у нас пока никем не закрыта), с числом компаний рядом.
+  const [supplyGroupFilter, setSupplyGroupFilter] = useState('');
+  const supplyGroupOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    const hostsWithOffers = new Set(offers.map((o) => supplierWebsiteHost(o.websiteUrl)).filter(Boolean));
+    for (const s of siteSnapshots) {
+      if (!hostsWithOffers.has(s.host)) continue;
+      for (const c of s.categories) counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+    return [...counts]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+  }, [offers, siteSnapshots]);
+  const supplyGroupMatches = useMemo(() => {
+    if (!supplyGroupFilter) return [];
+    return offers
+      .filter((o) => snapshotByHost.get(supplierWebsiteHost(o.websiteUrl))?.categories.includes(supplyGroupFilter))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [offers, snapshotByHost, supplyGroupFilter]);
+  const requestTitleById = useMemo(() => new Map(requests.map((r) => [r.id, r.title])), [requests]);
   const [checkingInn, setCheckingInn] = useState<string | null>(null);
 
   // Перепроверка вручную из карточки. Автоматическая проверка живёт не
@@ -2954,6 +3039,22 @@ export function Suppliers() {
           </Card>
         )}
         {!loading && loadError && <Card className="py-10 text-center text-sm text-danger">{loadError}</Card>}
+
+        {/* Ради этого вся затея с товарными группами и делалась: прежде чем
+            заказывать веб-поиск по новой категории (одно задание через
+            ProxyAPI стоило ~195 ₽, см. журнал 2026-09-11), видно, кто из УЖЕ
+            заведённых поставщиков её закрывает. Группы берутся из снимков
+            сайтов, см. data/supplierSiteSnapshots.ts. */}
+        {!loading && !loadError && supplyGroupOptions.length > 0 && (
+          <SupplyGroupLookup
+            options={supplyGroupOptions}
+            value={supplyGroupFilter}
+            onChange={setSupplyGroupFilter}
+            matches={supplyGroupMatches}
+            onOpenDetail={(o) => setDetailOfferId(o.id)}
+            requestTitleById={requestTitleById}
+          />
+        )}
 
         {/* Владелец, 2026-09-03: "Страницу Поставщики разбиваем на 3
             логических блока — Материалы и оборудование, Работы, Сервисы".
