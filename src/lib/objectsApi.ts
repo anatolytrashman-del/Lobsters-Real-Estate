@@ -2,16 +2,14 @@ import { supabase } from './supabase';
 import { withRetry, UPLOAD_TIMEOUT_MS } from './withRetry';
 import { compressImageIfNeeded } from './imageCompress';
 import { queueImageCompression } from './tinypngCompress';
-import { authFetch } from './authFetch';
+import { triggerPublicRebuild as triggerPublicPagesRebuild } from './publicRebuild';
 import type { ContactChannel, RealtyObject, RealtyObjectRow } from '../data/objects';
 
-// Пререндеренный при сборке HTML публичных лендингов (scripts/prerender.mjs,
-// SEO_PLAN.md Э2-1) хранит title/meta/цену объекта на момент последней
-// сборки — без этого хука они протухали бы до следующего обычного пуша.
-// Best-effort, не блокирует сохранение объекта в админке: ошибку/недоступный
-// хук просто глотаем, api/trigger-rebuild.js сам логирует детали.
+// Сохранение объекта → пересборка публичных лендингов (scope 'objects': заново
+// рендерятся только они, остальные страницы копируются с прода) — см.
+// lib/publicRebuild.ts и scripts/prerender.mjs.
 function triggerPublicRebuild() {
-  authFetch('/api/trigger-rebuild', { method: 'POST' }).catch(() => {});
+  triggerPublicPagesRebuild('objects');
 }
 
 function fromRow(row: RealtyObjectRow): RealtyObject {

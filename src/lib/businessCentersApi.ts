@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { withRetry } from './withRetry';
+import { triggerPublicRebuild } from './publicRebuild';
 import type { BusinessCenter, BusinessCenterRow } from '../data/businessCenters';
 
 function fromRow(row: BusinessCenterRow): BusinessCenter {
@@ -70,25 +71,34 @@ function toPayload(input: Partial<BusinessCenterInput>) {
   return payload;
 }
 
-export function insertBusinessCenter(input: BusinessCenterInput): Promise<BusinessCenter> {
-  return withRetry(async () => {
+// Правка бизнес-центра в админке → пересборка каталога БЦ на проде (scope
+// 'business_centers' — карточки и хабы БЦ, см. lib/publicRebuild.ts). До
+// 2026-09-12 правки БЦ пересборку не запускали вовсе и попадали на прод
+// только попутно, с ближайшим полным рендером по другой причине.
+export async function insertBusinessCenter(input: BusinessCenterInput): Promise<BusinessCenter> {
+  const created = await withRetry(async () => {
     const { data, error } = await supabase.from('business_centers').insert(toPayload(input)).select().single();
     if (error) throw error;
     return fromRow(data as BusinessCenterRow);
   });
+  triggerPublicRebuild('business_centers');
+  return created;
 }
 
-export function updateBusinessCenter(id: string, input: Partial<BusinessCenterInput>): Promise<BusinessCenter> {
-  return withRetry(async () => {
+export async function updateBusinessCenter(id: string, input: Partial<BusinessCenterInput>): Promise<BusinessCenter> {
+  const updated = await withRetry(async () => {
     const { data, error } = await supabase.from('business_centers').update(toPayload(input)).eq('id', id).select().single();
     if (error) throw error;
     return fromRow(data as BusinessCenterRow);
   });
+  triggerPublicRebuild('business_centers');
+  return updated;
 }
 
-export function deleteBusinessCenter(id: string): Promise<void> {
-  return withRetry(async () => {
+export async function deleteBusinessCenter(id: string): Promise<void> {
+  await withRetry(async () => {
     const { error } = await supabase.from('business_centers').delete().eq('id', id);
     if (error) throw error;
   });
+  triggerPublicRebuild('business_centers');
 }
