@@ -170,6 +170,29 @@ export async function fetchSupplierWebSearchJobs(): Promise<SupplierWebSearchJob
   return (data as SupplierWebSearchJobRow[]).map(fromRow);
 }
 
+// То же, но только три поля, нужные странице метрик (/admin/metrics): она
+// опрашивает данные раз в минуту, а в строке задания лежит ещё и results —
+// весь JSON найденного поиском, десятки килобайт на задание. См. такой же
+// облегчённый fetchOutgoingEmailMetrics в supplierOfferEmailsApi.ts.
+export interface SupplierWebSearchJobMetric {
+  createdAt: string;
+  createdByName: string | null;
+  addedCount: number | null;
+}
+
+export async function fetchSupplierWebSearchJobMetrics(): Promise<SupplierWebSearchJobMetric[]> {
+  const { data, error } = await supabase
+    .from('supplier_web_search_jobs')
+    .select('created_at, created_by_name, added_count')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data as Pick<SupplierWebSearchJobRow, 'created_at' | 'created_by_name' | 'added_count'>[]).map((row) => ({
+    createdAt: row.created_at,
+    createdByName: row.created_by_name,
+    addedCount: row.added_count,
+  }));
+}
+
 // Ставит задание в очередь и best-effort дёргает мгновенный
 // workflow_dispatch (api/trigger-rebuild.js, action:'dispatch-supplier-search'),
 // чтобы не ждать планового крона (раз в 5 минут). Неудача дёргания —

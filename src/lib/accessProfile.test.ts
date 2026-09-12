@@ -3,6 +3,7 @@ import {
   getCurrentProfile,
   isPageAllowed,
   isSuperAdminAllowed,
+  isTaskVisible,
   setAccessProfilesCache,
   setCurrentUserId,
 } from './accessProfile';
@@ -67,5 +68,25 @@ describe('getCurrentProfile', () => {
     setAccessProfilesCache([first, second]);
     setCurrentUserId('unknown-user-id');
     expect(getCurrentProfile()).toBe(first);
+  });
+});
+
+describe('isTaskVisible', () => {
+  it('супер-админ видит любую задачу, включая чужую', () => {
+    const p = profile({ isSuperAdmin: true, displayName: 'Трэшмен' });
+    expect(isTaskVisible(p, ['Светлана'])).toBe(true);
+    expect(isTaskVisible(p, [])).toBe(true);
+  });
+
+  it('обычный профиль видит только задачи, где он в ответственных', () => {
+    const p = profile({ displayName: 'Светлана' });
+    expect(isTaskVisible(p, ['Светлана'])).toBe(true);
+    expect(isTaskVisible(p, ['Альмира', 'Светлана'])).toBe(true);
+    expect(isTaskVisible(p, ['Альмира'])).toBe(false);
+    expect(isTaskVisible(p, [])).toBe(false);
+  });
+
+  it('pages:"all" сам по себе не открывает чужие задачи', () => {
+    expect(isTaskVisible(profile({ pages: 'all', displayName: 'Светлана' }), ['Альмира'])).toBe(false);
   });
 });

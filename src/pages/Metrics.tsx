@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Loader2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Loader2, RefreshCw } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
@@ -8,9 +8,8 @@ import { cn } from '../lib/cn';
 import { glassCardClass, glassCardShadow } from '../lib/glass';
 import { fetchActivityLog } from '../lib/activityLogApi';
 import type { ActivityLogEntry } from '../data/activityLog';
-import { fetchAllSupplierOfferEmails } from '../lib/supplierOfferEmailsApi';
-import type { SupplierOfferEmail } from '../data/supplierOfferEmails';
-import { fetchSupplierWebSearchJobs, type SupplierWebSearchJob } from '../lib/supplierWebSearchApi';
+import { fetchOutgoingEmailMetrics, type OutgoingEmailMetric } from '../lib/supplierOfferEmailsApi';
+import { fetchSupplierWebSearchJobMetrics, type SupplierWebSearchJobMetric } from '../lib/supplierWebSearchApi';
 
 // Владелец, 2026-09-05: "давай трекать Альмиру" (по аналогии с Activity Log
 // Светланы — см. data/activityLog.ts/ActivityLog.tsx). Страница НЕ в меню и
@@ -74,7 +73,21 @@ import { fetchSupplierWebSearchJobs, type SupplierWebSearchJob } from '../lib/su
 //     автором задания у массовой рассылки; историю разобрали бэкфиллом по
 //     подписи в теле письма (см. docs/session-journal.md, 2026-09-12).
 
+// 2026-09-12 — владелец: "можем автоматически обновлять цифры раз в минуту
+// без необходимости перезагружать страницу?". Страница теперь сама
+// перезапрашивает данные каждые REFRESH_INTERVAL_MS, не сбрасывая при этом
+// показанные цифры (никакого мигания "Загрузка…" на фоновом заходе). Ради
+// этого же оба тяжёлых источника читаются облегчёнными запросами
+// (fetchOutgoingEmailMetrics / fetchSupplierWebSearchJobMetrics) — раньше
+// тянулись `select('*')`, то есть body каждого письма и весь JSON
+// результатов каждого поиска; на разовом открытии страницы это было
+// незаметно, на ежеминутном опросе — уже нет.
+
 type Period = 'today' | 'week' | 'month' | 'custom';
+
+// Раз в минуту — как просил владелец. Тик пропускается, когда вкладка
+// скрыта (см. useEffect ниже).
+const REFRESH_INTERVAL_MS = 60_000;
 
 const PERIOD_LABELS: Record<Period, string> = {
   today: 'Сегодня',
@@ -198,22 +211,63 @@ interface PersonStats {
 
 export function Metrics() {
   const [entries, setEntries] = useState<ActivityLogEntry[] | null>(null);
-  const [emails, setEmails] = useState<SupplierOfferEmail[] | null>(null);
-  const [searchJobs, setSearchJobs] = useState<SupplierWebSearchJob[] | null>(null);
+  const [emails, setEmails] = useState<OutgoingEmailMetric[] | null>(null);
+  const [searchJobs, setSearchJobs] = useState<SupplierWebSearchJobMetric[] | null>(null);
   const [error, setError] = useState('');
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const inFlight = useRef(false);
 
   const [period, setPeriod] = useState<Period>('today');
   const [customMonth, setCustomMonth] = useState(currentMonthStr());
 
-  useEffect(() => {
-    Promise.all([fetchActivityLog(), fetchAllSupplierOfferEmails(), fetchSupplierWebSearchJobs()])
-      .then(([logEntries, offerEmails, jobs]) => {
-        setEntries(logEntries);
-        setEmails(offerEmails);
-        setSearchJobs(jobs);
-      })
-      .catch(() => setError('Не удалось загрузить метрики.'));
+  // Одна загрузка всех трёх источников — и при открытии страницы, и на каждом
+  // тике автообновления. Показанные данные при этом не сбрасываются в null:
+  // на фоновом заходе цифры не должны мигать "Загрузка…", а при неудачном
+  // запросе (тот же холодный старт Supabase, из-за которого существует
+  // withRetry) — не должны пропадать вовсе, поэтому старое значение остаётся
+  // на экране, а ошибка показывается строкой сверху.
+  const load = useCallback(async () => {
+    if (inFlight.current) return; // предыдущий заход ещё идёт — пропускаем тик, а не копим параллельные запросы
+    inFlight.current = true;
+    setRefreshing(true);
+    try {
+      const [logEntries, offerEmails, jobs] = await Promise.all([
+        fetchActivityLog(),
+        fetchOutgoingEmailMetrics(),
+        fetchSupplierWebSearchJobMetrics(),
+      ]);
+      setEntries(logEntries);
+      setEmails(offerEmails);
+      setSearchJobs(jobs);
+      setLastUpdatedAt(new Date());
+      setError('');
+    } catch {
+      setError('Не удалось загрузить метрики.');
+    } finally {
+      inFlight.current = false;
+      setRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+    // Пока вкладка скрыта, базу не дёргаем вообще (в фоне цифры всё равно
+    // никто не смотрит, да и таймеры в неактивной вкладке браузер троттлит
+    // сам) — вместо этого обновляемся сразу при возврате на вкладку, чтобы
+    // первый же взгляд на страницу видел свежие данные, а не часовой давности.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load();
+    }, REFRESH_INTERVAL_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [load]);
 
   const { start, end } = useMemo(() => periodRange(period, customMonth), [period, customMonth]);
   const inRange = useMemo(() => {
@@ -227,10 +281,9 @@ export function Metrics() {
 
   const entriesInRange = useMemo(() => (entries ?? []).filter((e) => inRange(e.createdAt)), [entries, inRange]);
 
-  const outgoingEmailsInRange = useMemo(
-    () => (emails ?? []).filter((e) => e.direction === 'out' && inRange(e.createdAt)),
-    [emails, inRange],
-  );
+  // Направление письма отфильтровано уже в запросе (direction = 'out'),
+  // здесь остаётся только период.
+  const outgoingEmailsInRange = useMemo(() => (emails ?? []).filter((e) => inRange(e.createdAt)), [emails, inRange]);
 
   // Задание веб-поиска относим к периоду по времени ПОСТАНОВКИ В ОЧЕРЕДЬ —
   // это и есть момент действия человека. Обработчик дописывает added_count
@@ -315,7 +368,15 @@ export function Metrics() {
               />
             )}
           </div>
-          <p className="text-xs text-ink-faint">{formatPeriodCaption(period, start, end)}</p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-faint">
+            <span>{formatPeriodCaption(period, start, end)}</span>
+            <span className="inline-flex items-center gap-1">
+              <RefreshCw className={cn('h-3 w-3', refreshing && 'animate-spin')} />
+              {lastUpdatedAt
+                ? `обновлено в ${lastUpdatedAt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · автоматически раз в минуту`
+                : 'обновление…'}
+            </span>
+          </div>
 
           {people.map((p) => (
             <PersonSection
