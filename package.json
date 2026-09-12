@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run build:app && node scripts/prerender.mjs",
-    "build:app": "tsc -b && vite build && node scripts/generate-sitemap.mjs && node scripts/notify-indexnow.mjs && node scripts/defer-entry-script.mjs && cp dist/index.html dist/404.html && node scripts/generate-tz-preview-html.mjs && node scripts/generate-estimate-preview-html.mjs && node scripts/generate-plan-preview-html.mjs && node scripts/generate-summary-preview-html.mjs && node scripts/generate-business-upload-preview-html.mjs",
+    "build": "npm run build:app && node scripts/prerender.mjs && node scripts/generate-og-cards.mjs",
+    "build:app": "tsc -b && vite build && node scripts/generate-sitemap.mjs && node scripts/notify-indexnow.mjs && node scripts/defer-entry-script.mjs && cp dist/index.html dist/404.html && node scripts/generate-tz-preview-html.mjs && node scripts/generate-estimate-preview-html.mjs && node scripts/generate-plan-preview-html.mjs && node scripts/generate-summary-preview-html.mjs && node scripts/generate-business-upload-preview-html.mjs && node scripts/generate-admin-shells.mjs",
     "lint": "oxlint",
     "preview": "vite preview",
     "audit:rls": "node scripts/audit-rls.mjs",

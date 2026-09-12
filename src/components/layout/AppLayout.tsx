@@ -8,13 +8,32 @@ import { useMarketOfferDiscussionWatcher } from '../../lib/marketOfferDiscussion
 import { useSupplierEmailWatcher } from '../../lib/supplierEmailWatcher';
 import { useSupplierWebSearchJobWatcher } from '../../lib/supplierWebSearchJobWatcher';
 import { useSupplierEnrichmentJobWatcher } from '../../lib/supplierEnrichmentJobWatcher';
+import { ADMIN_PAGES } from '../../data/pages';
 
 // index.html — общий статический файл на все роуты (публичный SPA-фолбэк),
 // его <title> заточен под OG-превью продающей страницы (см. index.html).
 // Для админки просто подменяем document.title на время жизни этого layout
 // и возвращаем как было при уходе — без завязки на конкретный текст
 // публичного тайтла, чтобы не дублировать его здесь на будущее.
+//
+// 2026-09-12 — заголовок теперь по разделу, а не общий на всю CRM: у
+// сотрудников по полдюжины вкладок админки разом, и все назывались
+// одинаково. Тот же текст, что в статических шеллах разделов (см.
+// scripts/generate-admin-shells.mjs) — что видно в превью ссылки, то и во
+// вкладке. Совпадение обеспечивается общим источником адресов
+// (data/pages.ts), сам текст дублируется: шеллы собираются голым node,
+// импортировать оттуда .ts нельзя.
 const ADMIN_TITLE = 'Админка Redevelopment';
+
+// Самое длинное совпадение, а не первое: /admin/objects/123 должен
+// попадать в «Объекты», а не мимо, и при этом /admin/design-projects не
+// должен перехватываться более коротким соседом.
+function adminTitleFor(pathname: string): string {
+  const page = ADMIN_PAGES.filter((p) => pathname === p.to || pathname.startsWith(`${p.to}/`)).sort(
+    (a, b) => b.to.length - a.to.length,
+  )[0];
+  return page ? `${page.label} — админка Redevelopment` : ADMIN_TITLE;
+}
 
 export function AppLayout() {
   const [navOpen, setNavOpen] = useState(false);
@@ -28,11 +47,14 @@ export function AppLayout() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = ADMIN_TITLE;
     return () => {
       document.title = previousTitle;
     };
   }, []);
+
+  useEffect(() => {
+    document.title = adminTitleFor(location.pathname);
+  }, [location.pathname]);
 
   // Владелец, 2026-09-11: "у Альмиры на ноуте стало видно очень мало
   // элементов, мало поставщиков" — на её окне (~1280x620 CSS-px против

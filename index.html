@@ -36,6 +36,14 @@
     <meta property="og:title" content="Офисы и помещения в Минск Мире — деловой центр Red One" />
     <meta property="og:description" content="Приватные кабинеты и фиксированные рабочие места от $12 000 в клубном деловом центре Red One рядом с Минск Миром" />
     <meta property="og:image" content="https://redevelopment.pro/og-image.png" />
+    <!-- Размеры обложки — подсказка краулерам (Telegram/VK/Facebook), чтобы
+         карточка рисовалась широкой сразу, не дожидаясь скачивания картинки.
+         Все обложки проекта одного размера — 1200×630: и заглушка
+         og-image.png, и генерируемые под каждую публичную страницу
+         (scripts/generate-og-cards.mjs, они же стоят на лендингах объектов
+         вместо фото — решение владельца от 2026-09-12). -->
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:url" content="https://redevelopment.pro/minsk/one" />
 
     <meta name="twitter:card" content="summary_large_image" />
