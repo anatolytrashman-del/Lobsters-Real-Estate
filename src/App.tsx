@@ -25,6 +25,7 @@ import { MeetingSummaryPublicPage } from './pages/MeetingSummaryPublicPage';
 import { NotFound } from './pages/NotFound';
 import { metrikaHit } from './lib/metrika';
 import { vkPixelHit, vkPixelGoal, vkPageGoalForPath } from './lib/vkPixel';
+import { useOnlinePresenceTracker } from './lib/onlinePresence';
 
 // Вся админка (CRM с десятком разделов — финмодели, сметы, документы и т.д.)
 // нужна только за PasswordGate на /admin/*, но раньше грузилась тем же JS-
@@ -185,6 +186,16 @@ function useVkPageGoals() {
   }, [location.pathname]);
 }
 
+// Индикатор "сколько человек онлайн" в админке (Sidebar, только для
+// Трэшмена) — джойним presence-канал на всех маркетинговых страницах, тот
+// же критерий "не /admin", что и у pageview-хитов выше. Флаг, а не
+// pathname целиком, чтобы не перезаходить в канал на каждый переход внутри
+// публичной части — только когда реально пересекаем границу с /admin.
+function useOnlineVisitorPresence() {
+  const location = useLocation();
+  useOnlinePresenceTracker(!location.pathname.startsWith('/admin'));
+}
+
 // Старые ссылки без /minsk (индексировались недолго, до переезда на
 // city-scoped структуру урлов — см. docs/session-journal.md) — /one, /redstorage и любой
 // будущий объект по тому же паттерну автоматически редиректятся на новый
@@ -209,6 +220,7 @@ export default function App() {
   usePreventPageZoom();
   useSpaPageviewHits();
   useVkPageGoals();
+  useOnlineVisitorPresence();
   return (
     <Routes>
       {/* Публичная часть — без AppLayout и без пароля, для клиентов и рекламы.

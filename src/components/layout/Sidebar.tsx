@@ -9,6 +9,7 @@ import { getLeadsLastViewedAt, onLeadsViewed } from '../../lib/leadsSeen';
 import { fetchContractorsWithBirthdayToday } from '../../lib/contractorsApi';
 import { SIDEBAR_LAYOUT, findPage } from '../../data/pages';
 import { getCurrentProfile, isPageAllowed, isSuperAdminAllowed, signOutAndClearCache } from '../../lib/accessProfile';
+import { useOnlineVisitorsCount } from '../../lib/onlinePresence';
 
 const backlogPage = findPage('backlog');
 
@@ -39,6 +40,11 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   // недоступен, а не рисуется вовсе — чтобы не палить сам факт существования
   // страницы с трекингом чужих действий.
   const metricsAllowed = isSuperAdminAllowed(profile);
+  // Индикатор "N онлайн на сайте" — тот же гейт (только Трэшмен), см.
+  // комментарий у metricsAllowed. Канал не джойним вовсе для остальных
+  // профилей — не только чтобы не палить фичу, но и не открывать лишний
+  // сокет там, где он никому не нужен.
+  const onlineVisitors = useOnlineVisitorsCount(metricsAllowed);
 
   // Не считаем непрочитанные бэклог/лиды и дни рождения подрядчиков для
   // профиля, которому эти разделы всё равно недоступны — не только чтобы
@@ -171,7 +177,18 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               <span className="text-lg font-extrabold tracking-wide text-ink">
                 <span className="font-black text-primary">RED</span>EVELOPMENT
               </span>
-              <span className="truncate text-xs font-medium text-ink-faint">{profile.displayName}</span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs font-medium text-ink-faint">{profile.displayName}</span>
+                {metricsAllowed && onlineVisitors !== null && (
+                  <span
+                    className="flex shrink-0 items-center gap-1 text-xs font-semibold text-ink-faint"
+                    title="Сейчас на сайте (маркетинговые страницы)"
+                  >
+                    <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500" />
+                    {onlineVisitors}
+                  </span>
+                )}
+              </div>
             </div>
             <button
               type="button"
