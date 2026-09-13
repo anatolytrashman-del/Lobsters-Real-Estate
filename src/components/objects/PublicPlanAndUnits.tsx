@@ -39,6 +39,12 @@ function formatMoney(value: number) {
   return `$${Math.round(value).toLocaleString('ru-RU')}`;
 }
 
+// Аренда — ежемесячный платёж, не разовая цена владения — суффикс к сумме
+// (см. тот же приём в ObjectLandingPage.tsx, formatDealMoney).
+function formatDealMoney(dealMode: DealMode, value: number) {
+  return dealMode === 'rent' ? `${formatMoney(value)}/мес` : formatMoney(value);
+}
+
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
     return (err as { message: string }).message;
@@ -403,7 +409,7 @@ export function PublicPlanAndUnits({
                     </div>
                     <div className="flex items-center justify-between gap-3 py-2">
                       <span className="text-ink-muted">Цена за место</span>
-                      <span className="font-medium text-ink">{formatMoney(workstationPriceForDeal(dealMode))}</span>
+                      <span className="font-medium text-ink">{formatDealMoney(dealMode, workstationPriceForDeal(dealMode))}</span>
                     </div>
                   </div>
                 ) : (
@@ -427,7 +433,7 @@ export function PublicPlanAndUnits({
                         <div className="flex items-center justify-between gap-3 py-2">
                           <span className="text-ink-muted">Общая стоимость</span>
                           <span className="font-medium text-ink">
-                            {formatMoney(priceForDeal(dealMode, selectedZone.area, selectedZone.features))}
+                            {formatDealMoney(dealMode, priceForDeal(dealMode, selectedZone.area, selectedZone.features))}
                           </span>
                         </div>
                         {/* Первый взнос — только для покупки (рассрочка/лизинг/кредит).
@@ -517,7 +523,8 @@ export function PublicPlanAndUnits({
                             {wetPointAddon && selectedZone.area != null && (
                               <p className="pl-6 text-xs text-ink-muted">
                                 Итого с допоплатой:{' '}
-                                {formatMoney(
+                                {formatDealMoney(
+                                  dealMode,
                                   priceForDeal(dealMode, selectedZone.area, selectedZone.features) + WET_POINT_ADDON_PRICE,
                                 )}
                               </p>

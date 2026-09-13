@@ -31,6 +31,12 @@ function formatMoney(value: number) {
   return `$${Math.round(value).toLocaleString('ru-RU')}`;
 }
 
+// Аренда — ежемесячный платёж, не разовая цена владения — суффикс к сумме
+// (см. тот же приём в ObjectLandingPage.tsx, formatDealMoney).
+function formatDealMoney(dealMode: DealMode, value: number) {
+  return dealMode === 'rent' ? `${formatMoney(value)}/мес` : formatMoney(value);
+}
+
 // Общая таблица свободных кабинетов — используется и во внутренней карточке
 // объекта (после BuildingPlanWidget), и на публичной странице для клиента,
 // с одинаковыми фильтрами и расчётом цены (см. zonePrice в data/buildingPlans).
@@ -202,7 +208,7 @@ export function AvailableUnitsTable({
                 <span className="min-w-0 truncate text-ink">
                   {u.isWorkstation ? `Свободно ${u.remaining} мест` : `${u.area} м²`}
                 </span>
-                <span className="min-w-0 truncate font-medium text-ink">{formatMoney(u.price)}</span>
+                <span className="min-w-0 truncate font-medium text-ink">{formatDealMoney(dealMode, u.price)}</span>
                 <div className="flex shrink-0 items-center justify-end gap-1.5">
                   {onLocateClick && (
                     <button
@@ -254,7 +260,7 @@ export function AvailableUnitsTable({
                   <span className="min-w-0 break-words font-medium text-ink">
                     {u.isWorkstation ? 'Рабочее место' : u.zone.label || zoneTypeLabels[u.zone.zoneType]}
                   </span>
-                  <span className="shrink-0 font-semibold text-ink">{formatMoney(u.price)}</span>
+                  <span className="shrink-0 font-semibold text-ink">{formatDealMoney(dealMode, u.price)}</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ink-muted">
                   <span>{u.floor}</span>
