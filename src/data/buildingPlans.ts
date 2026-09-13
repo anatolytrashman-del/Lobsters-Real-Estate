@@ -57,6 +57,29 @@ export function zoneDownPayment(area: number, features: string[] = []): number {
 // фиксированной ценой за штуку (не считается через zonePrice/площадь).
 export const WORKSTATION_PRICE = 12000;
 
+// Аренда — отдельная линейка цен для переключателя "Покупка"/"Аренда" на
+// продающей странице (см. ObjectLandingPage.tsx). Не доля/наценка от цены
+// продажи — независимая ставка, которую задал владелец напрямую, поэтому
+// не через zonePrice/WORKSTATION_PRICE, а свои константы и хелперы.
+export const RENT_PRICE_PER_METER = 20;
+export const RENT_WORKSTATION_PRICE = 100;
+
+export type DealMode = 'sale' | 'rent';
+
+export function pricePerMeterForDeal(dealMode: DealMode): number {
+  return dealMode === 'rent' ? RENT_PRICE_PER_METER : PRICE_PER_METER;
+}
+
+// Аренда — без наценки за санузел (features не учитываются), в отличие от
+// zonePrice для продажи.
+export function priceForDeal(dealMode: DealMode, area: number, features: string[] = []): number {
+  return dealMode === 'rent' ? area * RENT_PRICE_PER_METER : zonePrice(area, features);
+}
+
+export function workstationPriceForDeal(dealMode: DealMode): number {
+  return dealMode === 'rent' ? RENT_WORKSTATION_PRICE : WORKSTATION_PRICE;
+}
+
 export function workstationsRemaining(zone: Pick<BuildingPlanZone, 'workstationCount' | 'workstationsSold'>): number {
   if (zone.workstationCount == null) return 0;
   return Math.max(zone.workstationCount - zone.workstationsSold, 0);

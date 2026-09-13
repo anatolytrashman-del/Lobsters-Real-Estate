@@ -13,12 +13,13 @@ import {
   zoneStatusBadgeClass,
   zoneTypeLabels,
   zoneDownPayment,
-  zonePrice,
   workstationsRemaining,
-  WORKSTATION_PRICE,
-  PRICE_PER_METER,
+  priceForDeal,
+  workstationPriceForDeal,
+  pricePerMeterForDeal,
   type BuildingPlan,
   type BuildingPlanZone,
+  type DealMode,
 } from '../../data/buildingPlans';
 import type { RealtyObject } from '../../data/objects';
 import { NEW_BOOKING_LEAD_STATUS } from '../../data/leads';
@@ -72,13 +73,25 @@ interface PublicPlanAndUnitsProps {
   // плане" и без переключателя план/список, переключать не на что). Страница
   // /plan/:token — про то, чтобы прислать клиенту именно план, там не передаём.
   hidePlanView?: boolean;
+  // Покупка (по умолчанию) или аренда — переключатель на продающей странице
+  // (см. ObjectLandingPage.tsx). Меняет отображаемые цены в таблице и в
+  // карточке кабинета; саму механику брони не меняет.
+  dealMode?: DealMode;
 }
 
 // Планировка + таблица доступных кабинетов — общий блок для всех публичных
 // поверхностей объекта (/plan/:token и продающая страница /:slug), чтобы
 // подсветка, переключение этажей, кнопка "Посмотреть на плане" и
 // бронирование кабинета вели себя одинаково и не расходились между копиями.
-export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass, hidePlanView }: PublicPlanAndUnitsProps) {
+export function PublicPlanAndUnits({
+  object,
+  plans,
+  zones,
+  onZoneUpdated,
+  glass,
+  hidePlanView,
+  dealMode = 'sale',
+}: PublicPlanAndUnitsProps) {
   const PlanWrapper: ElementType = glass ? 'div' : Card;
   const [activePlanId, setActivePlanId] = useState<string | null>(object.buildingPlanIds[0] ?? null);
   // План и список кабинетов теперь вкладки одного блока — "Список" в
@@ -309,6 +322,7 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass,
               onBookClick={handleBookClick}
               glass={glass}
               bare
+              dealMode={dealMode}
             />
           ) : (
             <>
@@ -358,6 +372,7 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass,
                   onBookClick={handleBookClick}
                   glass={glass}
                   bare
+                  dealMode={dealMode}
                 />
               )}
             </>
@@ -388,7 +403,7 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass,
                     </div>
                     <div className="flex items-center justify-between gap-3 py-2">
                       <span className="text-ink-muted">Цена за место</span>
-                      <span className="font-medium text-ink">{formatMoney(WORKSTATION_PRICE)}</span>
+                      <span className="font-medium text-ink">{formatMoney(workstationPriceForDeal(dealMode))}</span>
                     </div>
                   </div>
                 ) : (
@@ -407,20 +422,24 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass,
                       <>
                         <div className="flex items-center justify-between gap-3 py-2">
                           <span className="text-ink-muted">Стоимость за метр</span>
-                          <span className="font-medium text-ink">{formatMoney(PRICE_PER_METER)}</span>
+                          <span className="font-medium text-ink">{formatMoney(pricePerMeterForDeal(dealMode))}</span>
                         </div>
                         <div className="flex items-center justify-between gap-3 py-2">
                           <span className="text-ink-muted">Общая стоимость</span>
                           <span className="font-medium text-ink">
-                            {formatMoney(zonePrice(selectedZone.area, selectedZone.features))}
+                            {formatMoney(priceForDeal(dealMode, selectedZone.area, selectedZone.features))}
                           </span>
                         </div>
-                        <div className="flex items-center justify-between gap-3 py-2">
-                          <span className="text-ink-muted">Первый взнос</span>
-                          <span className="font-medium text-ink">
-                            {formatMoney(zoneDownPayment(selectedZone.area, selectedZone.features))}
-                          </span>
-                        </div>
+                        {/* Первый взнос — только для покупки (рассрочка/лизинг/кредит).
+                            У аренды нет финансирования, поэтому строки нет. */}
+                        {dealMode === 'sale' && (
+                          <div className="flex items-center justify-between gap-3 py-2">
+                            <span className="text-ink-muted">Первый взнос</span>
+                            <span className="font-medium text-ink">
+                              {formatMoney(zoneDownPayment(selectedZone.area, selectedZone.features))}
+                            </span>
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
@@ -498,7 +517,9 @@ export function PublicPlanAndUnits({ object, plans, zones, onZoneUpdated, glass,
                             {wetPointAddon && selectedZone.area != null && (
                               <p className="pl-6 text-xs text-ink-muted">
                                 Итого с допоплатой:{' '}
-                                {formatMoney(zonePrice(selectedZone.area, selectedZone.features) + WET_POINT_ADDON_PRICE)}
+                                {formatMoney(
+                                  priceForDeal(dealMode, selectedZone.area, selectedZone.features) + WET_POINT_ADDON_PRICE,
+                                )}
                               </p>
                             )}
                           </div>
