@@ -81,6 +81,18 @@ function kickerFor(path, title) {
 // Путь → имя файла карточки: /minsk/bcminsk/one → dist/og/minsk-bcminsk-one.png.
 const cardSlug = (path) => path.replace(/\//g, '-') || 'index';
 
+// Точечное переопределение текста ОДНОЙ карточки, когда владелец просит
+// заголовок/подпись превью короче или иначе, чем og:title/раздел страницы
+// (2026-09-13, af839571-minsk-mir-meta-task — обновление превью
+// /minsk/minsk-mir без пересборки текста <title>). Ключ — точный путь
+// (без trailing slash), не префикс: /minsk/minsk-mir/:topic сюда не попадает.
+const CARD_TEXT_OVERRIDES = {
+  'minsk/minsk-mir': {
+    title: 'Коммерческая недвижимость Минск Мира — аналитика и цены',
+    kicker: 'Обновляется ежемесячно · redevelopment.pro',
+  },
+};
+
 function collectHtmlFiles(dir, acc = []) {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
@@ -247,7 +259,7 @@ async function main() {
       continue;
     }
     const path = rel.endsWith('/index.html') ? rel.slice(0, -'/index.html'.length) : rel.slice(0, -'.html'.length);
-    pages.push({ file, html, path, title: trimTitle(title) });
+    pages.push({ file, html, path, title: trimTitle(CARD_TEXT_OVERRIDES[path]?.title ?? title) });
   }
   if (pages.length === 0) {
     console.warn('[og-cards] публичных страниц в dist не нашлось — пропускаю');
@@ -325,7 +337,8 @@ async function main() {
               used = browserPromise;
               page = await (await used).newPage({ viewport: { width: 1200, height: 630 } });
             }
-            await page.setContent(cardHtml(entry.title, kickerFor(entry.path, entry.title)), { waitUntil: 'load' });
+            const kicker = CARD_TEXT_OVERRIDES[entry.path]?.kicker ?? kickerFor(entry.path, entry.title);
+            await page.setContent(cardHtml(entry.title, kicker), { waitUntil: 'load' });
             await page.evaluate(() => document.fonts.ready);
             await page.evaluate(FIT_SCRIPT);
             await page.locator('.card').screenshot({ path: join(CARDS_DIR, `${slug}.png`) });
