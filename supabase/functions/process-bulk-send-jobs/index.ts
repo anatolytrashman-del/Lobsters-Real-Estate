@@ -25,7 +25,7 @@ const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') ?? '';
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-const RESEND_FROM_NAME = 'Redevelopment Закупки';
+const RESEND_FROM_NAME = 'Анатолий Трэшмен';
 const ATTACHMENTS_BUCKET = 'object-documents';
 const MIN_DELAY_MS = 25000;
 const MAX_DELAY_MS = 35000;

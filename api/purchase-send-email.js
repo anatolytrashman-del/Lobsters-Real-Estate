@@ -31,7 +31,7 @@ import { randomUUID } from 'node:crypto';
 import { requireStaffAuth } from './_auth.js';
 import { uploadAttachment } from './_attachments.js';
 
-const RESEND_FROM_NAME = 'Redevelopment Закупки';
+const RESEND_FROM_NAME = 'Анатолий Трэшмен';
 
 // Копия письма с ведомостью материалов владельцу (владелец, 2026-09-11:
 // "при каждой отправке уникальной ведомости копия письма с ведомостью
