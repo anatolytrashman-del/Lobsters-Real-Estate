@@ -614,3 +614,37 @@ messengers/items не собраны вообще — это отдельный,
 бюджете ~200 WebSearch-запросов на сессию). Разумно сначала оценить
 качество/скорость этой первой волны на 190 записях, прежде чем множить
 дочерние сессии дальше.
+
+### Волна 2, 2026-09-13 — items (категории каталога) для всех 1203 записей без ассортимента
+
+Владелец подтвердил: каталоги/позиции — основа категорий платформы,
+приоритет. Запущено сразу, попутно добирая недостающие контакты по тем же
+компаниям (email/телефон/мессенджеры туда, где ещё пусто).
+
+Экономия контекста оркестратора: вместо встраивания списков компаний в
+промпт (как в волне 1) — каждая дочерняя сессия сама делает
+`SELECT ... OFFSET N LIMIT 121` по стабильной сортировке `order by name`,
+не завязываясь на список из моего контекста. Условие отбора то же:
+`website_url is not null and website_url<>'' and (items is null or items='[]'::jsonb)`.
+1203 записи / 121 = 10 батчей, offset 0,121,242,363,484,605,726,847,968,1089:
+
+- `session_0138eZgMBbHSL6jv4H5pJqUJ` — offset 0
+- `session_01MN4z4ZwfaKMLHPScrwc7Jx` — offset 121
+- `session_01DaiwsAdk441KLE2SuTxAk3` — offset 242
+- `session_01Xwh45AS45rNpTvfUfstWE6` — offset 363
+- `session_012httwL4QitRHrhF3SY3pus` — offset 484
+- `session_01RPxmBKnwqT3hthySJs5TXm` — offset 605
+- `session_01Twh4tsmYfad2KSDjZU4dFH` — offset 726
+- `session_018jiddueT2B3Pik9R1ssBr7` — offset 847
+- `session_01DzrdddhzfpeLy3m2nEgtm2` — offset 968
+- `session_01Yb2S5Ry44QqmGCdoUvPEGZ` — offset 1089 (последний батч, ~114 записей)
+
+Все — модель `claude-haiku-4-5-20251001`, каждая с чистым WebSearch-бюджетом
+на сессию. Протокол — тот же CASE-guard UPDATE, приоритет: сначала items
+(1 запрос "домен каталог ассортимент продукция"), контакты — только если
+`need_email`/`need_phone` true у конкретной записи (экономия запросов —
+у большинства из этих 1203 контакты уже заполнены с волны 1). Запрет
+ProxyAPI/`supplier_enrichment_jobs` продублирован в каждом промпте.
+
+Проверка прогресса: SQL на `no_items`/`no_email`/`no_phone`/`no_messengers`
+(см. запрос в начале раздела) и/или `get_session` по каждому из 10 id.
