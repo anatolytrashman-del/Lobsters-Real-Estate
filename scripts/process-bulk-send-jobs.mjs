@@ -40,7 +40,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const DRY_RUN = process.argv.includes('--dry-run');
 
-const RESEND_FROM_NAME = 'Redevelopment Закупки';
+const RESEND_FROM_NAME = 'Анатолий Трэшмен';
 const ATTACHMENTS_BUCKET = 'object-documents';
 
 // Копия письма с ведомостью владельцу — владелец, 2026-09-11: "при каждой

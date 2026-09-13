@@ -29,7 +29,7 @@ const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') ?? '';
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-const RESEND_FROM_NAME = 'Redevelopment Закупки';
+const RESEND_FROM_NAME = 'Анатолий Трэшмен';
 const MAX_EMAILS_PER_RUN = 10;
 const SEND_GAP_MS = 700;
 // Шаг повторов: 1, 5, 15, 30 минут, дальше раз в час. Дневной лимит Resend

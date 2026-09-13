@@ -30,6 +30,24 @@
 - **Риск при задержке:** есть/нет и какой
 ```
 
+### claude/fervent-thompson-xm2a6x
+- **Что:** имя отправителя писем поставщикам (`RESEND_FROM_NAME`) изменено с
+  "Redevelopment Закупки" на "Анатолий Трэшмен" — во всех местах отправки:
+  `api/purchase-send-email.js` (Vercel), Edge Functions
+  `process-bulk-send-jobs` и `process-outgoing-emails`, и ручной запасной
+  скрипт `scripts/process-bulk-send-jobs.mjs`.
+- **Проверено:** `npm run build:app` чистый.
+- **Миграции SQL:** нет. Обе Edge Function задеплоены сразу в этой же сессии
+  через Supabase Management API (`process-bulk-send-jobs` → версия 6,
+  `process-outgoing-emails` → версия 3) — эта часть изменения уже живая,
+  письма из очередей уходят с новым именем прямо сейчас, независимо от
+  публикации ветки. В очереди остаётся только код для Vercel
+  (`api/purchase-send-email.js`, ручная отправка из админки) и запасной
+  ручной скрипт.
+- **Риск при задержке:** нет, только несогласованность имени отправителя
+  между разными путями отправки (Edge Function уже шлёт под новым именем,
+  ручная отправка из админки — ещё под старым) до публикации.
+
 ### claude/wonderful-einstein-vdg945 — ОТЛОЖЕНА ОСОЗНАННО
 - **Что:** очередь повторной отправки одиночных писем (отказ Resend больше не
   теряет письмо): новая таблица `outgoing_email_jobs`, колонки `send_status`/
