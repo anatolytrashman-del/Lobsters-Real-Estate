@@ -3,12 +3,13 @@ import { ChevronDown, ChevronUp, MapPin } from 'lucide-react';
 import { Card } from '../ui/Card';
 import { Input } from '../ui/Input';
 import {
-  zonePrice,
   zoneTypeLabels,
   workstationsRemaining,
-  WORKSTATION_PRICE,
+  priceForDeal,
+  workstationPriceForDeal,
   type BuildingPlan,
   type BuildingPlanZone,
+  type DealMode,
 } from '../../data/buildingPlans';
 import { cn } from '../../lib/cn';
 import { glassCardClass, glassCardShadow } from '../../lib/glass';
@@ -57,6 +58,9 @@ interface AvailableUnitsTableProps {
   // обёртку/паддинги/заголовок, чтобы не получилась карточка в карточке.
   // В админке (BuildingPlanWidget) не передаётся — там своя отдельная карточка.
   bare?: boolean;
+  // Покупка (по умолчанию) или аренда — переключатель на продающей странице
+  // (см. ObjectLandingPage.tsx). Меняет только формулу цены в этой таблице.
+  dealMode?: DealMode;
 }
 
 export function AvailableUnitsTable({
@@ -69,6 +73,7 @@ export function AvailableUnitsTable({
   onBookClick,
   glass,
   bare,
+  dealMode = 'sale',
 }: AvailableUnitsTableProps) {
   const Wrapper: ElementType = bare || glass ? 'div' : Card;
   const [minArea, setMinArea] = useState('');
@@ -88,7 +93,7 @@ export function AvailableUnitsTable({
         zone: z,
         isWorkstation,
         area: isWorkstation ? null : (z.area as number),
-        price: isWorkstation ? WORKSTATION_PRICE : zonePrice(z.area as number, z.features),
+        price: isWorkstation ? workstationPriceForDeal(dealMode) : priceForDeal(dealMode, z.area as number, z.features),
         floor: planNameById.get(z.buildingPlanId) ?? '—',
         remaining: isWorkstation ? workstationsRemaining(z) : null,
         total: isWorkstation ? z.workstationCount : null,
