@@ -30,24 +30,6 @@
 - **Риск при задержке:** есть/нет и какой
 ```
 
-### claude/fervent-thompson-xm2a6x
-- **Что:** имя отправителя писем поставщикам (`RESEND_FROM_NAME`) изменено с
-  "Redevelopment Закупки" на "Анатолий Трэшмен" — во всех местах отправки:
-  `api/purchase-send-email.js` (Vercel), Edge Functions
-  `process-bulk-send-jobs` и `process-outgoing-emails`, и ручной запасной
-  скрипт `scripts/process-bulk-send-jobs.mjs`.
-- **Проверено:** `npm run build:app` чистый.
-- **Миграции SQL:** нет. Обе Edge Function задеплоены сразу в этой же сессии
-  через Supabase Management API (`process-bulk-send-jobs` → версия 6,
-  `process-outgoing-emails` → версия 3) — эта часть изменения уже живая,
-  письма из очередей уходят с новым именем прямо сейчас, независимо от
-  публикации ветки. В очереди остаётся только код для Vercel
-  (`api/purchase-send-email.js`, ручная отправка из админки) и запасной
-  ручной скрипт.
-- **Риск при задержке:** нет, только несогласованность имени отправителя
-  между разными путями отправки (Edge Function уже шлёт под новым именем,
-  ручная отправка из админки — ещё под старым) до публикации.
-
 ### claude/wonderful-einstein-vdg945 — ОТЛОЖЕНА ОСОЗНАННО
 - **Что:** очередь повторной отправки одиночных писем (отказ Resend больше не
   теряет письмо): новая таблица `outgoing_email_jobs`, колонки `send_status`/
@@ -88,6 +70,29 @@ for the client-license prototype (separate repo + Supabase project)", то ес�
 ---
 
 ## Опубликовано
+
+### claude/fervent-thompson-xm2a6x — имя отправителя писем поставщикам
+По команде владельца «мерджи». PR
+[#77](https://github.com/anatolytrashman-del/Redevelopment/pull/77) из
+`claude/release-2026-09-13` (собрана из `claude/fervent-thompson-xm2a6x`) в
+`oodobu`, мердж-коммит `18519bf`, Vercel `dpl_2p1UyX4Pc44smq3T5AJqwYR6nAo4`
+— READY за ~50 сек, законно БЫСТРЫЙ режим (286 путей, 284 скопировано с
+прода, «из-за непригодной копии: 0»).
+- **Что:** имя отправителя писем поставщикам (`RESEND_FROM_NAME`) изменено с
+  «Redevelopment Закупки» на «Анатолий Трэшмен» — во всех местах отправки:
+  `api/purchase-send-email.js` (Vercel), Edge Functions
+  `process-bulk-send-jobs` и `process-outgoing-emails`, и ручной запасной
+  скрипт `scripts/process-bulk-send-jobs.mjs`.
+- **Проверено:** `npm run build:app` чистый в релизном worktree; лог сборки
+  на Vercel без ошибок; живой прод `curl -L https://redevelopment.pro/` →
+  200. Отправку письма поставщику вручную из админки на живом проде глазами
+  не проверяли — просили владельца сделать это самостоятельно (см. test
+  plan в PR).
+- **Миграции SQL:** нет. Обе Edge Function были задеплоены напрямую через
+  Supabase Management API ещё в исходной сессии (до этого PR) —
+  `process-bulk-send-jobs` → версия 6, `process-outgoing-emails` → версия 3.
+- Ветку `claude/fervent-thompson-xm2a6x` (и служебную `claude/release-2026-09-13`)
+  можно удалять.
 
 ### claude/dazzling-knuth-w7ovo8 — новый title/description и og-превью `/minsk/minsk-mir`
 PR [#73](https://github.com/anatolytrashman-del/Redevelopment/pull/73) из
