@@ -37,6 +37,13 @@ function formatMoney(value: number) {
   return `$${Math.round(value).toLocaleString('ru-RU')}`;
 }
 
+// Аренда — ежемесячный платёж, не разовая цена владения как при покупке —
+// суффикс добавляется везде, где показана денежная сумма в режиме "Аренда"
+// (кроме ставки за метр — та уже сама по себе "$X за м²", не итоговая сумма).
+function formatDealMoney(dealMode: DealMode, value: number) {
+  return dealMode === 'rent' ? `${formatMoney(value)}/мес` : formatMoney(value);
+}
+
 // Стартовая цена в заголовке — фиксированный текст под фразу "фиксированные
 // рабочие места" (бюджетнее самих кабинетов), не связана с расчётом
 // стоимости конкретных кабинетов из zonePrice.
@@ -155,11 +162,12 @@ export function ObjectLandingPage() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [ownerOnline, setOwnerOnline] = useState(isOwnerOnlineNow);
-  // Покупка (по умолчанию) или аренда — переключатель в шапке страницы.
-  // Одна и та же вёрстка/данные, только цены и часть блоков меняются в
-  // зависимости от режима (владелец: "точная копия страницы, но другие
-  // цены"). Состояние страницы, не роут — не влияет на SEO/пререндер.
-  const [dealMode, setDealMode] = useState<DealMode>('sale');
+  // Покупка или аренда — переключатель в шапке страницы, по умолчанию
+  // "Аренда" (владелец, 2026-09-13: "давай по умолчанию делать именно
+  // аренду"). Одна и та же вёрстка/данные, только цены и часть блоков
+  // меняются в зависимости от режима. Состояние страницы, не роут —
+  // пререндер (SEO-снимок) снимается с этим значением по умолчанию.
+  const [dealMode, setDealMode] = useState<DealMode>('rent');
 
   useEffect(() => {
     const timer = setInterval(() => setOwnerOnline(isOwnerOnlineNow()), 60_000);
@@ -232,55 +240,59 @@ export function ObjectLandingPage() {
   }
 
   return (
-    <div className="min-h-svh bg-bg">
+    // Без принудительного min-h-svh: в режиме "Аренда" на странице на два
+    // блока меньше (варианты покупки, инвесторам), контент короче одного
+    // экрана на широких мониторах — раньше здесь искусственно растягивалось
+    // пустым фоном до высоты экрана, теперь просто заканчивается по факту.
+    <div className="bg-bg">
       <header className="border-b border-border py-5">
-        <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 sm:px-8">
-          <div className="flex items-center justify-between gap-3">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 sm:px-8">
+          <div className="flex flex-wrap items-center gap-3">
             <div>
               <span className="text-lg font-extrabold tracking-wide text-ink">
                 <span className="font-black text-primary">RED</span>EVELOPMENT
               </span>
             </div>
-            {/* Раньше на мобильном это был отдельный fixed-виджет в правом нижнем
-                углу — при определённых позициях скролла он наезжал на контент
-                под ним (факты об объекте, варианты рассрочки). Перенесена в
-                шапку, как и на десктопе — всегда на виду без риска перекрыть
-                что-то ниже. На мобильном текст скрыт (иконка + онлайн-индикатор
-                с достаточным тап-таргетом), чтобы не сжимать лого в узкой шапке. */}
-            <a
-              href={OWNER_TELEGRAM_URL}
-              target="_blank"
-              rel="noreferrer"
-              title={ownerOnline ? 'Онлайн — на связи' : 'Офлайн — отвечу завтра'}
-              aria-label={`Написать собственнику в Telegram — ${ownerOnline ? 'онлайн' : 'офлайн'}`}
-              className={cn(
-                'flex items-center gap-2 px-3 py-2 text-sm font-medium text-ink hover:border-primary hover:text-primary sm:py-1.5',
-                glassPillClass,
-              )}
-              style={glassPillShadow}
-            >
-              <span className="relative flex h-7 w-7 shrink-0 items-center justify-center sm:h-5 sm:w-5">
-                <TelegramLogo className="h-7 w-7 sm:h-5 sm:w-5" />
-                <span
-                  className={cn(
-                    'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-white',
-                    ownerOnline ? 'bg-success' : 'bg-ink-faint',
-                  )}
-                />
-              </span>
-              <span className="hidden sm:inline">Написать собственнику</span>
-            </a>
+            {/* Верхнее меню "Покупка"/"Аренда" — рядом с логотипом, не под ним
+                (владелец, 2026-09-13). Та же страница и та же вёрстка,
+                переключаются только цены и часть блоков (см. dealMode ниже).
+                Не роут — состояние компонента, поэтому у обоих режимов один и
+                тот же URL/SEO. */}
+            <ToggleGroup
+              options={['Покупка', 'Аренда']}
+              value={dealMode === 'rent' ? 'Аренда' : 'Покупка'}
+              onChange={(v) => setDealMode(v === 'Аренда' ? 'rent' : 'sale')}
+            />
           </div>
-
-          {/* Верхнее меню "Покупка"/"Аренда" — та же страница и та же
-              вёрстка, переключаются только цены и часть блоков (см. dealMode
-              ниже). Не роут — состояние компонента, поэтому у обоих режимов
-              один и тот же URL/SEO. */}
-          <ToggleGroup
-            options={['Покупка', 'Аренда']}
-            value={dealMode === 'rent' ? 'Аренда' : 'Покупка'}
-            onChange={(v) => setDealMode(v === 'Аренда' ? 'rent' : 'sale')}
-          />
+          {/* Раньше на мобильном это был отдельный fixed-виджет в правом нижнем
+              углу — при определённых позициях скролла он наезжал на контент
+              под ним (факты об объекте, варианты рассрочки). Перенесена в
+              шапку, как и на десктопе — всегда на виду без риска перекрыть
+              что-то ниже. На мобильном текст скрыт (иконка + онлайн-индикатор
+              с достаточным тап-таргетом), чтобы не сжимать лого в узкой шапке. */}
+          <a
+            href={OWNER_TELEGRAM_URL}
+            target="_blank"
+            rel="noreferrer"
+            title={ownerOnline ? 'Онлайн — на связи' : 'Офлайн — отвечу завтра'}
+            aria-label={`Задать вопрос в Telegram — ${ownerOnline ? 'онлайн' : 'офлайн'}`}
+            className={cn(
+              'flex items-center gap-2 px-3 py-2 text-sm font-medium text-ink hover:border-primary hover:text-primary sm:py-1.5',
+              glassPillClass,
+            )}
+            style={glassPillShadow}
+          >
+            <span className="relative flex h-7 w-7 shrink-0 items-center justify-center sm:h-5 sm:w-5">
+              <TelegramLogo className="h-7 w-7 sm:h-5 sm:w-5" />
+              <span
+                className={cn(
+                  'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-white',
+                  ownerOnline ? 'bg-success' : 'bg-ink-faint',
+                )}
+              />
+            </span>
+            <span className="hidden sm:inline">Задать вопрос</span>
+          </a>
         </div>
       </header>
 
@@ -289,7 +301,7 @@ export function ObjectLandingPage() {
         <div className="flex flex-col gap-6">
           <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">
             Приватные кабинеты и фиксированные рабочие места от{' '}
-            {formatMoney(dealMode === 'rent' ? RENT_WORKSTATION_PRICE : STARTING_PRICE_FROM)}
+            {formatDealMoney(dealMode, dealMode === 'rent' ? RENT_WORKSTATION_PRICE : STARTING_PRICE_FROM)}
           </h1>
           <div className="flex flex-col gap-3">
             {heroFeatures.map(({ icon: Icon, text }) => (
@@ -318,8 +330,16 @@ export function ObjectLandingPage() {
         </div>
       </div>
 
+      {/* У всех прямых детей ниже — явный key: без него позиция каждого
+          соседа в этом списке сдвигается, когда переключение dealMode
+          убирает/возвращает блоки "3 варианта покупки"/"инвесторам" —
+          React сверяет детей по позиции и без key принял бы, например,
+          PublicPlanAndUnits за старый "инвесторам"-блок на его месте и
+          размонтировал/пересоздал бы его (и всё, что после) заново при
+          каждом клике по переключателю, теряя внутренний стейт (открытая
+          модалка кабинета, фильтры таблицы). */}
       <div className="mx-auto flex max-w-5xl flex-col gap-5 px-4 py-8 sm:px-8">
-        <div className={cn('flex flex-col gap-5 p-5', glassCardClass)} style={glassCardShadow}>
+        <div key="complex-features" className={cn('flex flex-col gap-5 p-5', glassCardClass)} style={glassCardShadow}>
           <div className="text-xl font-extrabold text-ink">Клубный деловой центр Red One</div>
           {/* 4 колонки только с lg (1024px) — на md (768px, планшет) длинные
               слова вроде "Видеонаблюдение"/"коммуникации" не помещались в
@@ -343,13 +363,13 @@ export function ObjectLandingPage() {
             запросам (см. SEO_PLAN.md, Э1-5). Цифры берём из тех же констант,
             что считают реальные цены на плане (zonePrice/WORKSTATION_PRICE),
             а не дублируем их вручную. */}
-        <div className={cn('flex flex-col gap-4 p-5', glassCardClass)} style={glassCardShadow}>
+        <div key="prices" className={cn('flex flex-col gap-4 p-5', glassCardClass)} style={glassCardShadow}>
           <h2 className="text-xl font-extrabold text-ink">Цены</h2>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
               <div className="text-lg font-bold text-ink">
                 Кабинеты {MIN_ROOM_AREA}–{MAX_ROOM_AREA} м² — от{' '}
-                {formatMoney(dealMode === 'rent' ? RENT_ROOM_PRICE_FROM : zonePrice(MIN_ROOM_AREA))}
+                {formatDealMoney(dealMode, dealMode === 'rent' ? RENT_ROOM_PRICE_FROM : zonePrice(MIN_ROOM_AREA))}
               </div>
               <p className="text-sm text-ink-muted">
                 {dealMode === 'rent'
@@ -360,7 +380,7 @@ export function ObjectLandingPage() {
             <div className="flex flex-col gap-1">
               <div className="text-lg font-bold text-ink">
                 Фиксированное рабочее место — от{' '}
-                {formatMoney(dealMode === 'rent' ? RENT_WORKSTATION_PRICE : WORKSTATION_PRICE)}
+                {formatDealMoney(dealMode, dealMode === 'rent' ? RENT_WORKSTATION_PRICE : WORKSTATION_PRICE)}
               </div>
               <p className="text-sm text-ink-muted">Готовое место в общем кабинете, с ремонтом и мебелью</p>
             </div>
@@ -371,7 +391,7 @@ export function ObjectLandingPage() {
             сдача в аренду купленного кабинета), на странице аренды смысла не
             имеют (владелец: "убираем блок из аренды"). */}
         {dealMode === 'sale' && (
-          <div id={PURCHASE_OPTIONS_ANCHOR_ID} className={cn('flex flex-col gap-5 p-5', glassCardClass)} style={glassCardShadow}>
+          <div key="purchase-options" id={PURCHASE_OPTIONS_ANCHOR_ID} className={cn('flex flex-col gap-5 p-5', glassCardClass)} style={glassCardShadow}>
             <div className="text-xl font-extrabold text-ink">3 варианта покупки, если нет полной суммы</div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               {purchaseOptions.map((opt) => (
@@ -407,6 +427,7 @@ export function ObjectLandingPage() {
 
         {dealMode === 'sale' && (
           <div
+            key="investors"
             className={cn(
               'flex flex-col items-start gap-4 p-6 sm:flex-row sm:items-center sm:justify-between',
               glassCardClass,
@@ -439,6 +460,7 @@ export function ObjectLandingPage() {
         )}
 
         <PublicPlanAndUnits
+          key="plan-and-units"
           object={object}
           plans={plans}
           zones={zones}
@@ -448,9 +470,9 @@ export function ObjectLandingPage() {
           dealMode={dealMode}
         />
 
-        <BookingTermsCard agreement={object.intentAgreementFile} />
+        <BookingTermsCard key="booking-terms" agreement={object.intentAgreementFile} />
 
-        <FaqCard dealMode={dealMode} />
+        <FaqCard key="faq" dealMode={dealMode} />
       </div>
       </main>
     </div>
