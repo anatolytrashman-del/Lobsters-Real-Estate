@@ -94,7 +94,9 @@ const cardSlug = (path) => path.replace(/\//g, '-') || 'index';
 const CARD_TEXT_OVERRIDES = {
   'minsk/minsk-mir': {
     title: 'Коммерческая недвижимость Минск Мира: цены и аналитика',
-    kicker: 'Обновляется ежемесячно · redevelopment.pro',
+    // Без "· redevelopment.pro" — домен уже есть в шапке карточки рядом с
+    // "R" (владелец, 2026-09-13: "два раза упоминается домен").
+    kicker: 'Обновляется ежемесячно',
   },
 };
 
