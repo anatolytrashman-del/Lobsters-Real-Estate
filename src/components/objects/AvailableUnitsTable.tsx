@@ -15,6 +15,17 @@ import { glassCardClass, glassCardShadow } from '../../lib/glass';
 
 const VISIBLE_LIMIT = 5;
 
+// Раньше было "120px_100px_110px_120px_1fr" — колонка "Площадь" (110px) не
+// вмещала текст "Свободно N мест" (обрезался троеточием), а последняя
+// колонка (1fr) растягивалась на всю оставшуюся ширину карточки, из-за чего
+// кнопка "Забронировать"/"Посмотреть на плане" улетала к правому краю,
+// оставляя пустой промежуток после "Цена". Теперь первые четыре колонки —
+// гибкие (делят свободное место пропорционально, с минимумом под самый
+// длинный реалистичный текст), а последняя — auto, по ширине кнопок (см.
+// плейсхолдер в шапке ниже, который держит эту ширину синхронной с шапкой).
+const UNIT_ROW_GRID_COLS =
+  'grid-cols-[minmax(110px,1.2fr)_minmax(70px,0.8fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_auto]';
+
 function formatMoney(value: number) {
   return `$${Math.round(value).toLocaleString('ru-RU')}`;
 }
@@ -138,7 +149,8 @@ export function AvailableUnitsTable({
           >
             <div
               className={cn(
-                'grid min-w-[560px] grid-cols-[120px_100px_110px_120px_1fr] gap-4 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-ink-faint',
+                'grid min-w-[560px] gap-4 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-ink-faint',
+                UNIT_ROW_GRID_COLS,
                 glass ? 'bg-white/55 backdrop-blur-md' : 'bg-surface-muted',
                 onBookClick && 'min-w-[760px]',
               )}
@@ -147,7 +159,22 @@ export function AvailableUnitsTable({
               <span>Этаж</span>
               <span>Площадь</span>
               <span>Цена</span>
-              <span />
+              {/* Невидимый плейсхолдер с теми же кнопками, что и в строках —
+                  чтобы последняя колонка (auto-ширина по контенту) совпадала
+                  по ширине с колонками строк данных: у каждой строки/шапки
+                  своя независимая grid-сетка, и без этого шапка "не знает"
+                  сколько места займут реальные кнопки. */}
+              <div className="invisible flex shrink-0 items-center justify-end gap-1.5" aria-hidden="true">
+                {onLocateClick && (
+                  <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium">
+                    <MapPin className="h-3.5 w-3.5" />
+                    Посмотреть на плане
+                  </span>
+                )}
+                {onBookClick && (
+                  <span className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-semibold">Забронировать</span>
+                )}
+              </div>
             </div>
             {visibleUnits.map((u) => (
               <div
@@ -156,7 +183,8 @@ export function AvailableUnitsTable({
                 onMouseEnter={() => onRowHover?.(u.zone)}
                 onMouseLeave={() => onRowHover?.(null)}
                 className={cn(
-                  'grid w-full min-w-[560px] grid-cols-[120px_100px_110px_120px_1fr] cursor-pointer items-center gap-4 border-t px-4 py-2.5 text-sm',
+                  'grid w-full min-w-[560px] items-center gap-4 border-t px-4 py-2.5 text-sm',
+                  UNIT_ROW_GRID_COLS,
                   glass ? 'border-white/50 bg-white/30 hover:bg-white/50' : 'border-border hover:bg-surface-muted',
                   onBookClick && 'min-w-[760px]',
                   u.zone.id === highlightedZoneId && 'bg-primary/10',
