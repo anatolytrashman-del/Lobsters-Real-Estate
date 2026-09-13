@@ -12,11 +12,6 @@ import type { ObjectDocumentFile } from '../../data/objects';
 // компонентами страницы.
 export const PLAN_AND_UNITS_ANCHOR_ID = 'plan-and-units';
 
-// Дублирует PURCHASE_OPTIONS_ANCHOR_ID из ObjectLandingPage.tsx — тот же
-// приём, что и у PLAN_AND_UNITS_ANCHOR_ID выше (строка-якорь продублирована,
-// а не импортирована, чтобы компонент не тянул зависимость на страницу).
-const PURCHASE_OPTIONS_ANCHOR_ID = 'purchase-options';
-
 interface BookingTermsCardProps {
   agreement: ObjectDocumentFile | null;
 }
@@ -26,41 +21,37 @@ interface Step {
   description: string;
 }
 
-// Полный путь сделки видимым текстом (бронь → соглашение о намерениях,
-// подписанное кодом из email — УТП, которого нет у обычных объявлений
-// → бронирование без предоплаты → оплата рассрочкой/лизингом/кредитом) —
-// снимает типичные возражения и заодно коммерческий фактор для Яндекса
-// (см. SEO_PLAN.md, Э1-6).
+// Полный путь бронирования видимым текстом (бронь → соглашение о намерениях,
+// подписанное кодом из email — УТП, которого нет у обычных объявлений →
+// бронирование без предоплаты) — снимает типичные возражения и заодно
+// коммерческий фактор для Яндекса (см. SEO_PLAN.md, Э1-6). Оплаты в самом
+// бронировании нет вообще (владелец: "никакой оплаты нет"), поэтому шага
+// "Оплатите" здесь больше нет — условия оплаты для покупки живут отдельно,
+// в карточке "3 варианта покупки" на странице.
 const steps: Step[] = [
   { title: 'Выберите кабинет', description: 'В списке выше' },
   { title: 'Прочитайте соглашение', description: '2 страницы, без сложных терминов' },
   { title: 'Забронируйте онлайн', description: 'Подписание — кодом из email, без визитов в офис и без оплаты.' },
-  { title: 'Оплатите', description: 'Рассрочка, лизинг или кредит — на выбор' },
 ];
 
 // Блок-закрыватель сомнений, а не справка: раньше был статичным списком
-// фактов рядом с иконкой документа, теперь — путь из 4 шагов (полный цикл
-// сделки: бронь → соглашение о намерениях → бронирование → оплата, видимым
-// текстом — см. SEO_PLAN.md Э1-6). Шаги не отслеживают реальный прогресс
-// брони (нет состояния "активен/пройден"), поэтому все выглядят одинаково —
-// это общий призыв "вот как легко", а не трекер конкретной заявки. Стоит под
-// общим блоком план+список (см. PublicPlanAndUnits) — сначала клиент
-// смотрит кабинеты, потом здесь снимаем тревогу и ведём назад к брони.
-// Главная кнопка брони — на 3-м шаге (а не на 1-м): бронь физически нельзя
-// начать без выбора конкретного кабинета (форма живёт в модалке кабинета
-// в PublicPlanAndUnits), так что и там, и там кнопка ведёт к списку — но на
+// фактов рядом с иконкой документа, теперь — путь из 3 шагов (бронь →
+// соглашение о намерениях → бронирование, видимым текстом — см.
+// SEO_PLAN.md Э1-6). Шаги не отслеживают реальный прогресс брони (нет
+// состояния "активен/пройден"), поэтому все выглядят одинаково — это общий
+// призыв "вот как легко", а не трекер конкретной заявки. Стоит под общим
+// блоком план+список (см. PublicPlanAndUnits) — сначала клиент смотрит
+// кабинеты, потом здесь снимаем тревогу и ведём назад к брони. Главная
+// кнопка брони — на 3-м шаге (а не на 1-м): бронь физически нельзя начать
+// без выбора конкретного кабинета (форма живёт в модалке кабинета в
+// PublicPlanAndUnits), так что и там, и там кнопка ведёт к списку — но на
 // 3-м шаге это финальный, самый заметный призыв после всего объяснения, а
-// не дубль. Шаг 1 — только лёгкая ссылка-подсказка "куда смотреть", шаг 4 —
-// ссылка назад к вариантам оплаты (карточка "3 варианта покупки" выше).
+// не дубль. Шаг 1 — только лёгкая ссылка-подсказка "куда смотреть".
 export function BookingTermsCard({ agreement }: BookingTermsCardProps) {
   const [previewOpen, setPreviewOpen] = useState(false);
 
   function scrollToUnits() {
     document.getElementById(PLAN_AND_UNITS_ANCHOR_ID)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  function scrollToPurchaseOptions() {
-    document.getElementById(PURCHASE_OPTIONS_ANCHOR_ID)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   // Из превью соглашения — не просто закрыть модалку, а сразу отправить
@@ -75,7 +66,7 @@ export function BookingTermsCard({ agreement }: BookingTermsCardProps) {
     <div className={cn('flex flex-col gap-6 p-6', glassCardClass)} style={glassCardShadow}>
       <div className="text-xl font-extrabold text-ink">Онлайн-бронирование без предоплаты</div>
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
         {steps.map((step, i) => {
           return (
             <div key={step.title} className="flex flex-col gap-3 sm:h-full">
@@ -125,15 +116,6 @@ export function BookingTermsCard({ agreement }: BookingTermsCardProps) {
                       className="w-fit text-sm font-semibold text-primary-hover hover:underline"
                     >
                       Забронировать кабинет ↑
-                    </button>
-                  )}
-                  {i === 3 && (
-                    <button
-                      type="button"
-                      onClick={scrollToPurchaseOptions}
-                      className="w-fit text-sm font-semibold text-primary-hover hover:underline"
-                    >
-                      Смотреть варианты ↑
                     </button>
                   )}
                 </div>

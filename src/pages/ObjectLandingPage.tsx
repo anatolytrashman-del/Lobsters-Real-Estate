@@ -25,8 +25,9 @@ import { HeroImageSlider } from '../components/objects/HeroImageSlider';
 import { PublicPlanAndUnits } from '../components/objects/PublicPlanAndUnits';
 import { BookingTermsCard } from '../components/objects/BookingTermsCard';
 import { FaqCard, FAQ_ITEMS } from '../components/objects/FaqCard';
-import { zonePrice, WORKSTATION_PRICE, PRICE_PER_METER } from '../data/buildingPlans';
-import type { BuildingPlan, BuildingPlanZone } from '../data/buildingPlans';
+import { ToggleGroup } from '../components/ui/ToggleGroup';
+import { zonePrice, WORKSTATION_PRICE, PRICE_PER_METER, RENT_WORKSTATION_PRICE } from '../data/buildingPlans';
+import type { BuildingPlan, BuildingPlanZone, DealMode } from '../data/buildingPlans';
 import type { RealtyObject } from '../data/objects';
 import { fetchObjectByLandingSlug } from '../lib/objectsApi';
 import { fetchBuildingPlans, fetchZonesForPlan } from '../lib/buildingPlansApi';
@@ -82,6 +83,11 @@ function isOwnerOnlineNow() {
 // Когда появится второй объект с такой страницей — вынести в данные объекта.
 const MIN_ROOM_AREA = 11;
 const MAX_ROOM_AREA = 40;
+
+// Цена аренды кабинета "от" — такой же фиксированный маркетинговый якорь,
+// как и STARTING_PRICE_FROM выше, не через priceForDeal(MIN_ROOM_AREA):
+// это цена самого дешёвого варианта аренды, а не 11 м² по ставке за метр.
+const RENT_ROOM_PRICE_FROM = 200;
 
 const heroFeatures: { icon: LucideIcon; text: string }[] = [
   { icon: Ruler, text: `Площади от ${MIN_ROOM_AREA} м² до ${MAX_ROOM_AREA} м²` },
@@ -149,6 +155,11 @@ export function ObjectLandingPage() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [ownerOnline, setOwnerOnline] = useState(isOwnerOnlineNow);
+  // Покупка (по умолчанию) или аренда — переключатель в шапке страницы.
+  // Одна и та же вёрстка/данные, только цены и часть блоков меняются в
+  // зависимости от режима (владелец: "точная копия страницы, но другие
+  // цены"). Состояние страницы, не роут — не влияет на SEO/пререндер.
+  const [dealMode, setDealMode] = useState<DealMode>('sale');
 
   useEffect(() => {
     const timer = setInterval(() => setOwnerOnline(isOwnerOnlineNow()), 60_000);
@@ -223,41 +234,53 @@ export function ObjectLandingPage() {
   return (
     <div className="min-h-svh bg-bg">
       <header className="border-b border-border py-5">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 sm:px-8">
-          <div>
-            <span className="text-lg font-extrabold tracking-wide text-ink">
-              <span className="font-black text-primary">RED</span>EVELOPMENT
-            </span>
+        <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 sm:px-8">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <span className="text-lg font-extrabold tracking-wide text-ink">
+                <span className="font-black text-primary">RED</span>EVELOPMENT
+              </span>
+            </div>
+            {/* Раньше на мобильном это был отдельный fixed-виджет в правом нижнем
+                углу — при определённых позициях скролла он наезжал на контент
+                под ним (факты об объекте, варианты рассрочки). Перенесена в
+                шапку, как и на десктопе — всегда на виду без риска перекрыть
+                что-то ниже. На мобильном текст скрыт (иконка + онлайн-индикатор
+                с достаточным тап-таргетом), чтобы не сжимать лого в узкой шапке. */}
+            <a
+              href={OWNER_TELEGRAM_URL}
+              target="_blank"
+              rel="noreferrer"
+              title={ownerOnline ? 'Онлайн — на связи' : 'Офлайн — отвечу завтра'}
+              aria-label={`Написать собственнику в Telegram — ${ownerOnline ? 'онлайн' : 'офлайн'}`}
+              className={cn(
+                'flex items-center gap-2 px-3 py-2 text-sm font-medium text-ink hover:border-primary hover:text-primary sm:py-1.5',
+                glassPillClass,
+              )}
+              style={glassPillShadow}
+            >
+              <span className="relative flex h-7 w-7 shrink-0 items-center justify-center sm:h-5 sm:w-5">
+                <TelegramLogo className="h-7 w-7 sm:h-5 sm:w-5" />
+                <span
+                  className={cn(
+                    'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-white',
+                    ownerOnline ? 'bg-success' : 'bg-ink-faint',
+                  )}
+                />
+              </span>
+              <span className="hidden sm:inline">Написать собственнику</span>
+            </a>
           </div>
-          {/* Раньше на мобильном это был отдельный fixed-виджет в правом нижнем
-              углу — при определённых позициях скролла он наезжал на контент
-              под ним (факты об объекте, варианты рассрочки). Перенесена в
-              шапку, как и на десктопе — всегда на виду без риска перекрыть
-              что-то ниже. На мобильном текст скрыт (иконка + онлайн-индикатор
-              с достаточным тап-таргетом), чтобы не сжимать лого в узкой шапке. */}
-          <a
-            href={OWNER_TELEGRAM_URL}
-            target="_blank"
-            rel="noreferrer"
-            title={ownerOnline ? 'Онлайн — на связи' : 'Офлайн — отвечу завтра'}
-            aria-label={`Написать собственнику в Telegram — ${ownerOnline ? 'онлайн' : 'офлайн'}`}
-            className={cn(
-              'flex items-center gap-2 px-3 py-2 text-sm font-medium text-ink hover:border-primary hover:text-primary sm:py-1.5',
-              glassPillClass,
-            )}
-            style={glassPillShadow}
-          >
-            <span className="relative flex h-7 w-7 shrink-0 items-center justify-center sm:h-5 sm:w-5">
-              <TelegramLogo className="h-7 w-7 sm:h-5 sm:w-5" />
-              <span
-                className={cn(
-                  'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-white',
-                  ownerOnline ? 'bg-success' : 'bg-ink-faint',
-                )}
-              />
-            </span>
-            <span className="hidden sm:inline">Написать собственнику</span>
-          </a>
+
+          {/* Верхнее меню "Покупка"/"Аренда" — та же страница и та же
+              вёрстка, переключаются только цены и часть блоков (см. dealMode
+              ниже). Не роут — состояние компонента, поэтому у обоих режимов
+              один и тот же URL/SEO. */}
+          <ToggleGroup
+            options={['Покупка', 'Аренда']}
+            value={dealMode === 'rent' ? 'Аренда' : 'Покупка'}
+            onChange={(v) => setDealMode(v === 'Аренда' ? 'rent' : 'sale')}
+          />
         </div>
       </header>
 
@@ -265,7 +288,8 @@ export function ObjectLandingPage() {
       <div className="mx-auto grid max-w-5xl grid-cols-1 items-center gap-10 px-4 py-12 sm:px-8 lg:grid-cols-2">
         <div className="flex flex-col gap-6">
           <h1 className="text-2xl font-extrabold leading-tight text-ink sm:text-3xl">
-            Приватные кабинеты и фиксированные рабочие места от {formatMoney(STARTING_PRICE_FROM)}
+            Приватные кабинеты и фиксированные рабочие места от{' '}
+            {formatMoney(dealMode === 'rent' ? RENT_WORKSTATION_PRICE : STARTING_PRICE_FROM)}
           </h1>
           <div className="flex flex-col gap-3">
             {heroFeatures.map(({ icon: Icon, text }) => (
@@ -324,80 +348,95 @@ export function ObjectLandingPage() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
               <div className="text-lg font-bold text-ink">
-                Кабинеты {MIN_ROOM_AREA}–{MAX_ROOM_AREA} м² — от {formatMoney(zonePrice(MIN_ROOM_AREA))}
+                Кабинеты {MIN_ROOM_AREA}–{MAX_ROOM_AREA} м² — от{' '}
+                {formatMoney(dealMode === 'rent' ? RENT_ROOM_PRICE_FROM : zonePrice(MIN_ROOM_AREA))}
               </div>
-              <p className="text-sm text-ink-muted">${PRICE_PER_METER} за м² · рассрочка, лизинг или кредит — см. ниже</p>
+              <p className="text-sm text-ink-muted">
+                {dealMode === 'rent'
+                  ? 'Помещение с чистовой отделкой'
+                  : `$${PRICE_PER_METER} за м² · рассрочка, лизинг или кредит — см. ниже`}
+              </p>
             </div>
             <div className="flex flex-col gap-1">
-              <div className="text-lg font-bold text-ink">Фиксированное рабочее место — от {formatMoney(WORKSTATION_PRICE)}</div>
+              <div className="text-lg font-bold text-ink">
+                Фиксированное рабочее место — от{' '}
+                {formatMoney(dealMode === 'rent' ? RENT_WORKSTATION_PRICE : WORKSTATION_PRICE)}
+              </div>
               <p className="text-sm text-ink-muted">Готовое место в общем кабинете, с ремонтом и мебелью</p>
             </div>
           </div>
         </div>
 
-        <div id={PURCHASE_OPTIONS_ANCHOR_ID} className={cn('flex flex-col gap-5 p-5', glassCardClass)} style={glassCardShadow}>
-          <div className="text-xl font-extrabold text-ink">3 варианта покупки, если нет полной суммы</div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {purchaseOptions.map((opt) => (
-              <div
-                key={opt.title}
-                className="flex flex-col gap-3 rounded-control border border-white bg-white/90 p-4 shadow-card backdrop-blur-md sm:border-white/50 sm:bg-white/40 sm:shadow-none"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center text-ink', glassPillClass)}>
-                    <opt.icon className="h-5 w-5" />
-                  </span>
-                  {opt.badge && (
-                    <span className="rounded-full bg-success-bg px-2.5 py-1 text-xs font-semibold text-success">
-                      {opt.badge}
+        {/* Оба блока ниже — только про покупку (варианты оплаты, инвесторская
+            сдача в аренду купленного кабинета), на странице аренды смысла не
+            имеют (владелец: "убираем блок из аренды"). */}
+        {dealMode === 'sale' && (
+          <div id={PURCHASE_OPTIONS_ANCHOR_ID} className={cn('flex flex-col gap-5 p-5', glassCardClass)} style={glassCardShadow}>
+            <div className="text-xl font-extrabold text-ink">3 варианта покупки, если нет полной суммы</div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {purchaseOptions.map((opt) => (
+                <div
+                  key={opt.title}
+                  className="flex flex-col gap-3 rounded-control border border-white bg-white/90 p-4 shadow-card backdrop-blur-md sm:border-white/50 sm:bg-white/40 sm:shadow-none"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center text-ink', glassPillClass)}>
+                      <opt.icon className="h-5 w-5" />
                     </span>
-                  )}
+                    {opt.badge && (
+                      <span className="rounded-full bg-success-bg px-2.5 py-1 text-xs font-semibold text-success">
+                        {opt.badge}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-base font-bold text-ink">{opt.title}</div>
+                    {opt.audience && (
+                      <span className="w-fit shrink-0 rounded-full bg-surface-muted px-2 py-0.5 text-xs font-medium text-ink-muted">
+                        {opt.audience}
+                      </span>
+                    )}
+                  </div>
+                  {opt.terms && <div className="text-sm font-semibold text-ink">{opt.terms}</div>}
+                  <p className="text-sm text-ink-muted">{opt.description}</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="text-base font-bold text-ink">{opt.title}</div>
-                  {opt.audience && (
-                    <span className="w-fit shrink-0 rounded-full bg-surface-muted px-2 py-0.5 text-xs font-medium text-ink-muted">
-                      {opt.audience}
-                    </span>
-                  )}
-                </div>
-                {opt.terms && <div className="text-sm font-semibold text-ink">{opt.terms}</div>}
-                <p className="text-sm text-ink-muted">{opt.description}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div
-          className={cn(
-            'flex flex-col items-start gap-4 p-6 sm:flex-row sm:items-center sm:justify-between',
-            glassCardClass,
-          )}
-          style={glassCardShadow}
-        >
-          <div className="flex items-start gap-4 sm:items-center">
-            <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center text-ink', glassPillClass)}>
-              <TrendingUp className="h-5 w-5" />
-            </span>
-            <div className="flex flex-col gap-1">
-              <div className="text-lg font-extrabold text-ink">Помещения с арендаторами для инвесторов</div>
-              <p className="text-sm text-ink-muted">Заселим арендатора без комиссии и вашего участия</p>
+              ))}
             </div>
           </div>
-          <a
-            href={OWNER_TELEGRAM_URL}
-            target="_blank"
-            rel="noreferrer"
+        )}
+
+        {dealMode === 'sale' && (
+          <div
             className={cn(
-              'flex w-fit shrink-0 items-center gap-2 self-center px-4 py-2.5 text-sm font-medium text-ink hover:border-primary hover:text-primary',
-              glassPillClass,
+              'flex flex-col items-start gap-4 p-6 sm:flex-row sm:items-center sm:justify-between',
+              glassCardClass,
             )}
-            style={glassPillShadow}
+            style={glassCardShadow}
           >
-            <TelegramLogo className="h-5 w-5" />
-            Обсудить с собственником
-          </a>
-        </div>
+            <div className="flex items-start gap-4 sm:items-center">
+              <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center text-ink', glassPillClass)}>
+                <TrendingUp className="h-5 w-5" />
+              </span>
+              <div className="flex flex-col gap-1">
+                <div className="text-lg font-extrabold text-ink">Помещения с арендаторами для инвесторов</div>
+                <p className="text-sm text-ink-muted">Заселим арендатора без комиссии и вашего участия</p>
+              </div>
+            </div>
+            <a
+              href={OWNER_TELEGRAM_URL}
+              target="_blank"
+              rel="noreferrer"
+              className={cn(
+                'flex w-fit shrink-0 items-center gap-2 self-center px-4 py-2.5 text-sm font-medium text-ink hover:border-primary hover:text-primary',
+                glassPillClass,
+              )}
+              style={glassPillShadow}
+            >
+              <TelegramLogo className="h-5 w-5" />
+              Обсудить с собственником
+            </a>
+          </div>
+        )}
 
         <PublicPlanAndUnits
           object={object}
@@ -406,11 +445,12 @@ export function ObjectLandingPage() {
           onZoneUpdated={(z) => setZones((prev) => prev.map((x) => (x.id === z.id ? z : x)))}
           glass
           hidePlanView
+          dealMode={dealMode}
         />
 
         <BookingTermsCard agreement={object.intentAgreementFile} />
 
-        <FaqCard />
+        <FaqCard dealMode={dealMode} />
       </div>
       </main>
     </div>

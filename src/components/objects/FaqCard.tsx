@@ -1,5 +1,14 @@
 import { FaqAccordion } from '../ui/FaqAccordion';
 import type { FaqItem } from '../ui/FaqAccordion';
+import type { DealMode } from '../../data/buildingPlans';
+
+interface SaleFaqItem extends FaqItem {
+  // Вопросы, привязанные к теме покупки (цена владения, рассрочка/лизинг/
+  // кредит, приобретённый кабинет) — на странице аренды не показываются
+  // (владелец: "убери частые вопросы, связанные с темой покупки"), но
+  // остаются в JSON-LD/SEO-версии (та не зависит от dealMode, см. ниже).
+  purchaseOnly?: boolean;
+}
 
 // Пока продающая страница только у одного шаблона (см. MIN_ROOM_AREA в
 // ObjectLandingPage.tsx) — контент общий для всех объектов, не поле в базе.
@@ -7,11 +16,12 @@ import type { FaqItem } from '../ui/FaqAccordion';
 // его цитируют AI-системы, разметку читают Яндекс и Bing (см. SEO_PLAN.md,
 // Э1-7) — поэтому нужен и видимый блок, не только JSON-LD (setFaqJsonLd в
 // pageMeta.ts, вызывается из ObjectLandingPage тем же списком).
-export const FAQ_ITEMS: FaqItem[] = [
+export const FAQ_ITEMS: SaleFaqItem[] = [
   {
     question: 'Сколько стоит кабинет или рабочее место?',
     answer:
       'Кабинеты — от $23 100 (от 11 м², $2100 за м², большая площадь — цена выше пропорционально). Фиксированное рабочее место в общем кабинете — $12 000.',
+    purchaseOnly: true,
   },
   {
     question: 'Что входит в отделку?',
@@ -30,13 +40,16 @@ export const FAQ_ITEMS: FaqItem[] = [
     question: 'Можно ли купить в рассрочку, лизинг или кредит?',
     answer:
       'Да. Рассрочка — взнос 25%, срок 4 месяца. Лизинг (ИП и юрлица) — взнос от 10%, срок до 10 лет. Кредит (ИП и юрлица) — взнос от 20%, срок до 20 лет, финансирование от банков-партнёров.',
+    purchaseOnly: true,
   },
   {
     question: 'Можно ли зарегистрировать юридический адрес на кабинет?',
     answer: 'Да, можно зарегистрировать юридический адрес компании на приобретённый кабинет или рабочее место.',
+    purchaseOnly: true,
   },
 ];
 
-export function FaqCard() {
-  return <FaqAccordion title="Частые вопросы" items={FAQ_ITEMS} />;
+export function FaqCard({ dealMode = 'sale' }: { dealMode?: DealMode }) {
+  const items = dealMode === 'rent' ? FAQ_ITEMS.filter((item) => !item.purchaseOnly) : FAQ_ITEMS;
+  return <FaqAccordion title="Частые вопросы" items={items} />;
 }
