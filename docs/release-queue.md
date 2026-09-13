@@ -60,28 +60,6 @@
   `src/components/layout/Sidebar.tsx` (блок под логотипом, рядом с
   `profile.displayName`).
 
-### claude/dazzling-knuth-w7ovo8
-- **Что:** новые title/description для `/minsk/minsk-mir` (задача владельца
-  af839571-minsk-mir-meta-task — под запросы про цены/помещения/аналитику) +
-  перегенерированная og-картинка превью с новым текстом (заголовок короче,
-  чем `<title>`, плюс подпись "Обновляется ежемесячно · redevelopment.pro").
-  Видимый `<h1>` страницы не менялся — задача только про мета/превью. Другие
-  страницы (включая topic-подстраницы `/minsk/minsk-mir/:topic`) не затронуты.
-- **Проверено:** `npm run build:app` чистый; локальный прогон
-  `PRERENDER_ONLY=minsk/minsk-mir node scripts/prerender.mjs` +
-  `node scripts/generate-og-cards.mjs` — итоговый `<head>` (title/description/
-  canonical/og:url/og:type=article/og:image/twitter:*) и сама PNG-карточка
-  1200×630 соответствуют требованиям задачи; соседние topic-страницы Минск
-  Мира сохранили прежний текст карточки (проверено визуально).
-- **Миграции SQL:** нет.
-- **Риск при задержке:** нет — чисто текстовая правка меты одной публичной
-  страницы, ничего не ломает и не зависит от прочих веток в очереди.
-- **Конфликты при сборке:** маловероятны — правки только в
-  `src/pages/DistrictGuidePage.tsx` (константы TITLE/DESCRIPTION) и
-  `scripts/generate-og-cards.mjs` (точечный оверрайд текста карточки под
-  один путь, добавлен как отдельная структура, не трогает существующую
-  логику для остальных страниц).
-
 ### claude/wonderful-einstein-vdg945 — ОТЛОЖЕНА ОСОЗНАННО
 - **Что:** очередь повторной отправки одиночных писем (отказ Resend больше не
   теряет письмо): новая таблица `outgoing_email_jobs`, колонки `send_status`/
@@ -122,6 +100,33 @@ for the client-license prototype (separate repo + Supabase project)", то ес�
 ---
 
 ## Опубликовано
+
+### claude/dazzling-knuth-w7ovo8 — новый title/description и og-превью `/minsk/minsk-mir`
+PR [#73](https://github.com/anatolytrashman-del/Redevelopment/pull/73) из
+`claude/dazzling-knuth-w7ovo8` в `oodobu`, мердж-коммит `761efe8`, Vercel
+`dpl_3UniGDVV14Yy4eV3cMPRGRNZ7QUG` — READY за 6 мин (по команде владельца
+«Делай все, мерджи»). Первый прод-билд после публикации законно ПОЛНЫЙ —
+отпечаток публичного кода изменился из-за правки `scripts/generate-og-cards.mjs`
+(этот файл входит в `public-build-id`, см. CLAUDE.md): в логе
+«291 страниц со своей обложкой ... отрендерено 291, скопировано с прода 0».
+- **Что:** новые title/description для `/minsk/minsk-mir` (задача владельца
+  af839571-minsk-mir-meta-task — под запросы про цены/помещения/аналитику) +
+  перегенерированная og-картинка превью с новым текстом (заголовок короче,
+  чем `<title>`, плюс подпись «Обновляется ежемесячно · redevelopment.pro»,
+  точечный оверрайд только для этого пути в `generate-og-cards.mjs`).
+  Видимый `<h1>` страницы не менялся. Другие страницы (включая topic-
+  подстраницы `/minsk/minsk-mir/:topic`) не затронуты.
+- **Проверено:** `npm run build:app` чистый; локальный прогон
+  `PRERENDER_ONLY=minsk/minsk-mir` + `generate-og-cards.mjs` до публикации;
+  ПОСЛЕ публикации — живой прод: `curl https://redevelopment.pro/minsk/minsk-mir`
+  отдаёт новые `<title>`/`<meta name="description">`/`canonical`/`og:*` (в т.ч.
+  `og:image` → `/og/minsk-minsk-mir.png`), сама картинка 200 `image/png`,
+  визуально — новый заголовок и подпись поверх фирменного красного макета.
+- **Миграции SQL:** нет.
+- **Что сказать владельцу:** после публикации нужно сбросить кэш превью в
+  Telegram через `@WebpageBot` (отправить ему ссылку на страницу) — Telegram
+  кэширует старую карточку надолго.
+- Ветку `claude/dazzling-knuth-w7ovo8` можно удалять.
 
 ### Релиз 2026-09-12 (десятый — «база/гипермаркет» тоже по сайту)
 PR [#68](https://github.com/anatolytrashman-del/Redevelopment/pull/68) из
