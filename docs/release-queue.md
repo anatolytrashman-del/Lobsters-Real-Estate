@@ -129,7 +129,23 @@ PR [#73](https://github.com/anatolytrashman-del/Redevelopment/pull/73) из
   «пропавшим»), а не считать деплой зависшим.
 - Проверено на живом проде уже ПОСЛЕ этого билда: `/og/minsk-minsk-mir.png`
   — ровно 3 строки заголовка.
-- Ветку `claude/dazzling-knuth-w7ovo8` можно удалять (после обоих заходов).
+
+### claude/dazzling-knuth-w7ovo8 (заход 3) — убран дублирующийся домен из подписи og-картинки
+Владелец: «два раза упоминается домен, убери его из нижней строки». PR
+[#76](https://github.com/anatolytrashman-del/Redevelopment/pull/76) из той же
+ветки в `oodobu`, мердж-коммит `772ca0d`, Vercel `dpl_69DcTgJNFCnuwCydQLCG3jCY69Ny`
+— READY (fast-forward, без параллельных пушей на этот раз).
+- **Что:** подпись под заголовком на og-картинке `/minsk/minsk-mir`
+  (`CARD_TEXT_OVERRIDES['minsk/minsk-mir'].kicker` в
+  `scripts/generate-og-cards.mjs`) была «Обновляется ежемесячно ·
+  redevelopment.pro» — домен уже есть в шапке карточки рядом с «R», внизу
+  дублировался. Убран до «Обновляется ежемесячно».
+- **Проверено:** `npm run build:app` чистый; `PRERENDER_ONLY=minsk/minsk-mir`
+  + `generate-og-cards.mjs` локально, визуально — домен один раз, заголовок
+  по-прежнему 3 строки; после публикации то же самое подтверждено на живом
+  проде.
+- **Миграции SQL:** нет.
+- Ветку `claude/dazzling-knuth-w7ovo8` можно удалять (после всех трёх заходов).
 
 ### claude/optimistic-ramanujan-69f6jz — индикатор "N онлайн на сайте" в админке
 По команде владельца «мерджи». PR
